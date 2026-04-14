@@ -18,11 +18,15 @@ struct VoronoiCell {
     moab::EntityHandle cell;
 };
 
+// Test-local area wrapper. Production code exposes signed_area so tests can
+// verify convex clipping and source-target coverage independently.
 double polygon_area(const std::vector<Eigen::Vector2d>& points)
 {
     return std::abs(mimetic::signed_area(points));
 }
 
+// Half-plane clipping kernel for both Voronoi construction and convex polygon
+// intersection. This is the Sutherland-Hodgman step used in report Algorithm 3.
 std::vector<Eigen::Vector2d> clip_by_halfplane(const std::vector<Eigen::Vector2d>& polygon,
                                                const Eigen::Vector2d& normal,
                                                const double offset)
@@ -57,6 +61,9 @@ std::vector<Eigen::Vector2d> clip_by_halfplane(const std::vector<Eigen::Vector2d
     return output;
 }
 
+// Clip a subject polygon by every target polygon edge. All Voronoi cells are
+// convex, so repeated half-plane clipping is sufficient for exact intersections
+// up to floating-point roundoff.
 std::vector<Eigen::Vector2d> convex_intersection(std::vector<Eigen::Vector2d> subject,
                                                  const std::vector<Eigen::Vector2d>& clipper)
 {
@@ -82,6 +89,8 @@ std::vector<Eigen::Vector2d> convex_intersection(std::vector<Eigen::Vector2d> su
     return subject;
 }
 
+// Construct one bounded planar Voronoi cell by starting from the unit square and
+// clipping by the perpendicular bisector to every other seed.
 std::vector<Eigen::Vector2d> voronoi_cell_polygon(const Eigen::Vector2d& seed,
                                                   const std::vector<Eigen::Vector2d>& seeds)
 {
@@ -106,6 +115,8 @@ std::vector<Eigen::Vector2d> voronoi_cell_polygon(const Eigen::Vector2d& seed,
     return cell;
 }
 
+// Create all nondegenerate Voronoi cells as MOAB polygons. Cells with four sides
+// are written as MBQUAD by create_polygon; all n>4 cells are MBPOLYGON.
 std::vector<VoronoiCell> create_voronoi_mesh(moab::Core& mb, const std::vector<Eigen::Vector2d>& seeds)
 {
     std::vector<VoronoiCell> cells;
@@ -119,6 +130,8 @@ std::vector<VoronoiCell> create_voronoi_mesh(moab::Core& mb, const std::vector<E
     return cells;
 }
 
+// Convert absolute overlap vertices into the source-cell local frame expected
+// by MimeticInterpolator::polygon_boundary_flux.
 std::vector<Eigen::Vector2d> points_in_source_frame(const std::vector<Eigen::Vector2d>& points,
                                                     const mimetic::LocalPolygon& source)
 {

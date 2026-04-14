@@ -13,6 +13,7 @@ void check_moab(const moab::ErrorCode code, const std::string& message)
     }
 }
 
+// Harmonic basis used by the level-2 truncation in report Eq. (3).
 double p1(const Eigen::Vector2d& p) { return p.x(); }
 double q1(const Eigen::Vector2d& p) { return p.y(); }
 double p2(const Eigen::Vector2d& p) { return p.x() * p.x() - p.y() * p.y(); }
@@ -23,6 +24,8 @@ Eigen::Vector2d grad_q1(const Eigen::Vector2d&) { return Eigen::Vector2d(0.0, 1.
 Eigen::Vector2d grad_p2(const Eigen::Vector2d& p) { return Eigen::Vector2d(2.0 * p.x(), -2.0 * p.y()); }
 Eigen::Vector2d grad_q2(const Eigen::Vector2d& p) { return Eigen::Vector2d(2.0 * p.y(), 2.0 * p.x()); }
 
+// Shoelace geometry utilities; these correspond to the polygon preprocessing
+// stage in report Algorithm 1, steps 1--2.
 double signed_area(const std::vector<Eigen::Vector2d>& points)
 {
     double area2 = 0.0;
@@ -66,6 +69,9 @@ moab::EntityHandle find_or_create_edge(moab::Core& mb, const moab::EntityHandle 
     return edge;
 }
 
+// Extract MOAB connectivity into a local cell frame. The code enforces positive
+// orientation because all later outward-normal signs assume counter-clockwise
+// boundary order.
 LocalPolygon local_polygon(moab::Core& mb, const moab::EntityHandle polygon)
 {
     const moab::EntityHandle* conn = nullptr;
@@ -179,6 +185,7 @@ moab::Tag MimeticInterpolator::coeffs_tag() const { return tag_coeffs_; }
 
 ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab::EntityHandle polygon)
 {
+    // Algorithm 1, step 1: recover ordered local geometry and source flux data.
     const LocalPolygon poly = local_polygon(mb_, polygon);
     const std::vector<LocalEdge> edges = local_edges(mb_, poly);
 
@@ -189,11 +196,16 @@ ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab:
         source_flux(static_cast<Eigen::Index>(i)) = flux;
     }
 
+    // Eq. (4) in the report: constant divergence is the signed edge-flux sum
+    // divided by polygon area.
     const double divergence = source_flux.sum() / poly.area;
 
     std::array<double (*)(const Eigen::Vector2d&), 4> basis = {{p1, q1, p2, q2}};
     std::array<Eigen::Vector2d (*)(const Eigen::Vector2d&), 4> gradients = {{grad_p1, grad_q1, grad_p2, grad_q2}};
 
+    // Algorithm 1, steps 3--6: assemble the harmonic Gram matrix and the
+    // Gauss-theorem moment right-hand side. The divergence correction subtracts
+    // the known (d/2)x contribution, leaving only harmonic coefficients unknown.
     Eigen::MatrixXd v = Eigen::MatrixXd::Zero(4, 4);
     Eigen::VectorXd rhs = Eigen::VectorXd::Zero(4);
     const Eigen::Vector2d origin(0.0, 0.0);
@@ -224,6 +236,8 @@ ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab:
         }
     }
 
+    // Fixed-size in practice (4 harmonic unknowns), but dynamic Eigen matrices
+    // keep the prototype close to the mathematical notation in the report.
     const Eigen::VectorXd harmonic_coeffs = v.ldlt().solve(rhs);
     ReconstructionCoeffs coeffs = {
         0.0,
@@ -247,6 +261,8 @@ double MimeticInterpolator::line_integral(const moab::EntityHandle source_polygo
                                           const Eigen::Vector2d& a,
                                           const Eigen::Vector2d& b) const
 {
+    // Algorithm 2, reduction step: u_h is a gradient plus (d/2)x, so the line
+    // integral is the potential difference plus d/4(|b|^2-|a|^2).
     ReconstructionCoeffs coeffs{};
     check_moab(mb_.tag_get_data(tag_coeffs_, &source_polygon, 1, &coeffs), "Failed to read reconstruction coefficients");
     return 0.25 * coeffs.d * (b.squaredNorm() - a.squaredNorm()) + coeffs.a1 * (p1(b) - p1(a)) +
@@ -257,6 +273,8 @@ double MimeticInterpolator::edge_flux(const ReconstructionCoeffs& coeffs,
                                       const Eigen::Vector2d& a,
                                       const Eigen::Vector2d& b) const
 {
+    // Boundary edges are treated as directed counter-clockwise edges of the
+    // integration polygon. The outward normal is therefore the right normal.
     const Eigen::Vector2d delta = b - a;
     const double length = delta.norm();
     const Eigen::Vector2d outward(delta.y(), -delta.x());
@@ -267,6 +285,8 @@ double MimeticInterpolator::edge_flux(const ReconstructionCoeffs& coeffs,
 double MimeticInterpolator::polygon_boundary_flux(const ReconstructionCoeffs& coeffs,
                                                   const std::vector<Eigen::Vector2d>& points) const
 {
+    // Report Eq. (9): this is the discrete divergence-theorem check on one
+    // source-target overlap polygon.
     double flux = 0.0;
     for (std::size_t i = 0; i < points.size(); ++i) {
         flux += edge_flux(coeffs, points[i], points[(i + 1) % points.size()]);
@@ -277,6 +297,8 @@ double MimeticInterpolator::polygon_boundary_flux(const ReconstructionCoeffs& co
 std::vector<double> MimeticInterpolator::transfer_to_target_polygon_edges(const moab::EntityHandle source_polygon,
                                                                           const moab::EntityHandle target_polygon)
 {
+    // Single-source-cell target-edge transfer used by the patch test. General
+    // nonmatching meshes use clipped overlap polygons in the tests instead.
     ReconstructionCoeffs coeffs{};
     check_moab(mb_.tag_get_data(tag_coeffs_, &source_polygon, 1, &coeffs),
                "Failed to read source reconstruction coefficients");
