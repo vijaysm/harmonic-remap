@@ -8,3 +8,16 @@ cmake_install.cmake
 *.a
 patch_test
 conservative_intersection_test
+mimetic_voronoi_report.aux
+mimetic_voronoi_report.bbl
+mimetic_voronoi_report.blg
+mimetic_voronoi_report.log
+mimetic_voronoi_report.out
+mimetic_voronoi_report.pdf
+docs/1-s2.0-S0021999120306276-main.pdf
+docs/mimetic_voronoi_report.aux
+docs/mimetic_voronoi_report.bbl
+docs/mimetic_voronoi_report.blg
+docs/mimetic_voronoi_report.log
+docs/mimetic_voronoi_report.out
+docs/mimetic_voronoi_report.pdf

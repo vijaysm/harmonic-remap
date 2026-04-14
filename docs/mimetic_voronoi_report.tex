@@ -3,6 +3,7 @@
 \usepackage[margin=1in]{geometry}
 \usepackage{amsmath,amssymb}
 \usepackage{booktabs}
+\usepackage{graphicx}
 \usepackage{hyperref}
 \usepackage{array}
 \newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
@@ -17,6 +18,7 @@
 \newcommand{\x}{\mathbf{x}}
 \newcommand{\n}{\mathbf{n}}
 \newcommand{\R}{\mathbb{R}}
+\graphicspath{{docs/figures/}{figures/}}
 
 \begin{document}
 \maketitle
@@ -56,6 +58,9 @@ The current repository contains:
         rectangular nonmatching source-target overlap test.
   \item \texttt{tests/voronoi\_}\allowbreak\texttt{intersection\_test.cpp}:
         deterministic Voronoi source-target n-gon overlap test.
+  \item \texttt{docs/make\_report\_figures.py}: deterministic figure generator
+        for the manuscript visualizations.
+  \item \texttt{docs/figures/}: generated PDF figures included in the manuscript.
 \end{itemize}
 
 \section{Literature Survey}
@@ -303,14 +308,63 @@ Each source cell stores six doubles in \texttt{COEFFS}.  Each source or target
 edge stores one double flux tag.  Temporary dense matrices are \(4\times4\) and
 are allocated per reconstructed source cell.
 
-\section{Verification and Results}
+\section{Results and Discussion}
 
 All results below were produced by:
 \begin{verbatim}
 cmake -S . -B /tmp/mimetic-sphpoly-build
 cmake --build /tmp/mimetic-sphpoly-build --parallel
 ctest --test-dir /tmp/mimetic-sphpoly-build --output-on-failure
+env MPLCONFIGDIR=/tmp/mimetic-sphpoly-mpl python3 docs/make_report_figures.py
 \end{verbatim}
+
+\subsection{Visualization of the Overlap Geometry}
+
+Figure~\ref{fig:rectangular-overlap} shows the simplest nonmatching transfer
+geometry.  The source mesh has four cells, the target mesh has nine cells, and
+their overlay creates 16 nonempty source-target intersections.  This case is
+useful because every clipped region is a rectangle, so area and boundary flux
+can be checked independently of any complicated polygon clipping.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.68\linewidth]{rectangular_overlap.pdf}
+  \caption{Rectangular source-target overlay.  Blue cells are the \(2\times2\)
+  source mesh, dashed orange cells are the nonmatching \(3\times3\) target mesh,
+  and the green rectangle is one clipped source-target intersection.}
+  \label{fig:rectangular-overlap}
+\end{figure}
+
+Figure~\ref{fig:voronoi-patch} shows the more relevant polygonal case: two
+bounded Voronoi meshes with different seeds and different side counts.  The
+source mesh contains seven cells with more than four sides; those cells are
+marked by their side count.  The target mesh contains ten cells with more than
+four sides.  The visual point of this test is that the reconstruction and
+conservative reduction are exercised on genuine n-sided polygons rather than on
+quadrilateral cells.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.70\linewidth]{voronoi_patch.pdf}
+  \caption{Nonmatching bounded Voronoi patch.  Blue polygons are source cells
+  and dashed orange polygons are target cells.  The numbers mark source cells
+  with \(n>4\) sides.}
+  \label{fig:voronoi-patch}
+\end{figure}
+
+Figure~\ref{fig:voronoi-overlap-detail} isolates one source-target pair in
+which both cells have more than four sides.  The green polygon is the clipped
+intersection \(O=K_s\cap K_t\).  In the test, the conservative flux check is
+performed on this clipped polygon and on every other nonempty overlap.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.68\linewidth]{voronoi_overlap_detail.pdf}
+  \caption{Example n-gon to n-gon overlap.  The conservative diagnostic
+  integrates the reconstructed source field around the green intersection
+  boundary and compares it with \(d_s|O|\).}
+  \label{fig:voronoi-overlap-detail}
+\end{figure}
 
 \subsection{Constant-Field Patch Test}
 
@@ -323,6 +377,8 @@ recovers
 to roundoff.  The interior line integral from
 \((-0.2,-0.3)\) to \((0.4,0.2)\) in source-local coordinates is exactly \(1.1\).
 The target edge fluxes are \((-0.55,0.55,0.55,-0.55)\), and their sum is zero.
+The maximum printed absolute error in the coefficient, line-integral, and target
+edge checks is zero at the displayed precision.
 
 \subsection{Rectangular Nonmatching Mesh Test}
 
@@ -332,6 +388,10 @@ target grid over the same unit square.  The analytic source field is
 of the 16 source-target rectangular intersections.  Each overlap satisfies
 Eq.~\eqref{eq:overlap_conservation} to roundoff.  The aggregate overlap area is
 1 and the aggregate divergence integral is 2.
+The largest printed per-overlap boundary-flux error is
+\(2.78\times10^{-17}\).  The aggregate source-target area error is
+\(2.22\times10^{-16}\), and the aggregate integral error relative to
+\(\int_\Omega\nabla\cdot(x,y)\,dA=2\) is \(4.44\times10^{-16}\).
 
 \subsection{Voronoi n-gon Patch Test}
 
@@ -356,6 +416,71 @@ is covered by source overlaps to roundoff.  The aggregate checks are:
   \sum \int_{\partial(K_s\cap K_t)}{\uh}_s\cdot\n\,ds = 2,\qquad
   \int_\Omega \nabla\cdot(x,y)\,dA = 2.
 \]
+The largest printed overlap or aggregate residual is \(4.44\times10^{-16}\),
+well below the \(5\times10^{-10}\) tolerance used for the summed Voronoi flux
+check.  Figure~\ref{fig:results-summary} summarizes the Voronoi coverage counts
+and the conservation residual scale across the three tests.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=0.92\linewidth]{results_summary.pdf}
+  \caption{Summary of verification coverage and conservation residuals.  The
+  patch-test residual is plotted at \(10^{-16}\) to show it on the logarithmic
+  scale; the printed test output reports zero at displayed precision.}
+  \label{fig:results-summary}
+\end{figure}
+
+\begin{table}[t]
+  \centering
+  \small
+  \begin{tabular}{@{}L{0.24\linewidth}L{0.34\linewidth}L{0.22\linewidth}L{0.12\linewidth}@{}}
+  \toprule
+  Test & Geometry exercised & Strongest checked invariant & Observed residual \\
+  \midrule
+  Constant patch &
+  One source quadrilateral and one contained target quadrilateral &
+  Constant field coefficients and closed target-edge flux sum &
+  \(0\) printed \\
+  Rectangular overlay &
+  Four source cells, nine target cells, 16 clipped intersections &
+  \(\int_{\partial O}\uh\cdot\n ds = d_s|O|\) on each overlap and
+  aggregate \(\int_\Omega\nabla\cdot(x,y)dA=2\) &
+  \(4.44\times10^{-16}\) \\
+  Voronoi n-gon overlay &
+  Nine source cells, 14 target cells, 36 overlaps, 23 n-gon to n-gon overlaps &
+  Same overlap invariant plus target-cell area coverage &
+  \(4.44\times10^{-16}\) \\
+  \bottomrule
+  \end{tabular}
+  \caption{Verification summary from the current CTest runs.  Residuals are
+  absolute errors reported by the deterministic regression tests.}
+  \label{tab:verification-summary}
+\end{table}
+
+\subsection{Discussion}
+
+The results show that the conservative property is controlled by two local
+ingredients: exact reconstruction of the polynomial moments used by the
+level-2 basis and exact reduction over each clipped overlap boundary.  For the
+manufactured field \(\mathbf{u}=(x,y)\), the reconstructed divergence is
+constant and equal to 2 on every source cell.  Therefore the expected overlap
+flux is \(2|O|\), and the residuals in Table~\ref{tab:verification-summary}
+measure only floating-point and clipping-roundoff effects.
+
+The Voronoi test is the most informative current result.  It rules out a common
+false positive in polygon remapping prototypes: passing only quadrilateral or
+axis-aligned cases.  Here both source and target meshes contain five- and
+six-sided cells, and 23 nonempty intersections involve n-gons on both sides.
+The exact overlap identity holds on each of those intersections, which is the
+local condition needed before adding spatial acceleration, parallel ownership,
+or spherical geometry.
+
+The visualizations also clarify what is not yet tested.  The clipping kernel is
+currently convex and planar; it does not cover nonconvex polygons, spherical
+great-circle arcs, or overlaps crossing a projection singularity.  Those
+extensions should preserve the same acceptance criterion,
+Eq.~\eqref{eq:overlap_conservation}, but they will need geometry-specific
+intersection and quadrature tests.
 
 \section{Assumptions and Limitations}
 
