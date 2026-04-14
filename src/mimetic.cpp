@@ -127,19 +127,34 @@ std::vector<LocalEdge> local_edges(moab::Core& mb, const LocalPolygon& polygon)
 
 moab::EntityHandle create_quad(moab::Core& mb, const std::array<Eigen::Vector2d, 4>& points)
 {
-    std::array<moab::EntityHandle, 4> vertices = {{0, 0, 0, 0}};
+    return create_polygon(mb, std::vector<Eigen::Vector2d>(points.begin(), points.end()));
+}
+
+moab::EntityHandle create_polygon(moab::Core& mb, const std::vector<Eigen::Vector2d>& points)
+{
+    if (points.size() < 3) {
+        throw std::runtime_error("Cannot create a polygon with fewer than three points");
+    }
+
+    std::vector<Eigen::Vector2d> ordered_points = points;
+    if (signed_area(ordered_points) < 0.0) {
+        std::reverse(ordered_points.begin(), ordered_points.end());
+    }
+
+    std::vector<moab::EntityHandle> vertices(ordered_points.size(), 0);
     for (std::size_t i = 0; i < points.size(); ++i) {
-        const double xyz[3] = {points[i].x(), points[i].y(), 0.0};
+        const double xyz[3] = {ordered_points[i].x(), ordered_points[i].y(), 0.0};
         check_moab(mb.create_vertex(xyz, vertices[i]), "Failed to create vertex");
     }
 
-    moab::EntityHandle quad = 0;
-    check_moab(mb.create_element(moab::MBQUAD, vertices.data(), static_cast<int>(vertices.size()), quad),
-               "Failed to create quad");
+    moab::EntityHandle polygon = 0;
+    const moab::EntityType type = (vertices.size() == 4) ? moab::MBQUAD : moab::MBPOLYGON;
+    check_moab(mb.create_element(type, vertices.data(), static_cast<int>(vertices.size()), polygon),
+               "Failed to create polygon");
     for (std::size_t i = 0; i < vertices.size(); ++i) {
         find_or_create_edge(mb, vertices[i], vertices[(i + 1) % vertices.size()]);
     }
-    return quad;
+    return polygon;
 }
 
 MimeticInterpolator::MimeticInterpolator(moab::Core& moab_instance) : mb_(moab_instance)

@@ -1,0 +1,10 @@
+build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+CTestTestfile.cmake
+Makefile
+cmake_install.cmake
+*.a
+patch_test
+conservative_intersection_test

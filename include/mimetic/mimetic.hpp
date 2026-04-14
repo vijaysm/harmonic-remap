@@ -87,6 +87,7 @@ Eigen::Vector2d polygon_centroid(const std::vector<Eigen::Vector2d>& points);
 moab::EntityHandle find_or_create_edge(moab::Core& mb, moab::EntityHandle v0, moab::EntityHandle v1);
 LocalPolygon local_polygon(moab::Core& mb, moab::EntityHandle polygon);
 std::vector<LocalEdge> local_edges(moab::Core& mb, const LocalPolygon& polygon);
+moab::EntityHandle create_polygon(moab::Core& mb, const std::vector<Eigen::Vector2d>& points);
 moab::EntityHandle create_quad(moab::Core& mb, const std::array<Eigen::Vector2d, 4>& points);
 
 class MimeticInterpolator {
