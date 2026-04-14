@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <exception>
 #include <iostream>
+#include <map>
 #include <vector>
 
 namespace {
@@ -129,6 +130,35 @@ std::vector<Eigen::Vector2d> points_in_source_frame(const std::vector<Eigen::Vec
     return shifted;
 }
 
+std::map<std::size_t, int> side_histogram(const std::vector<VoronoiCell>& cells)
+{
+    std::map<std::size_t, int> histogram;
+    for (const VoronoiCell& cell : cells) {
+        ++histogram[cell.points.size()];
+    }
+    return histogram;
+}
+
+int count_ngons(const std::vector<VoronoiCell>& cells)
+{
+    int count = 0;
+    for (const VoronoiCell& cell : cells) {
+        if (cell.points.size() > 4) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+void print_histogram(const std::string& label, const std::map<std::size_t, int>& histogram)
+{
+    std::cout << label << " side-count histogram:";
+    for (const auto& item : histogram) {
+        std::cout << " n=" << item.first << ":" << item.second;
+    }
+    std::cout << "\n";
+}
+
 }  // namespace
 
 int main()
@@ -151,6 +181,11 @@ int main()
 
         const std::vector<VoronoiCell> source_cells = create_voronoi_mesh(mb, source_seeds);
         const std::vector<VoronoiCell> target_cells = create_voronoi_mesh(mb, target_seeds);
+        const int source_ngons = count_ngons(source_cells);
+        const int target_ngons = count_ngons(target_cells);
+
+        print_histogram("Source Voronoi", side_histogram(source_cells));
+        print_histogram("Target Voronoi", side_histogram(target_cells));
 
         for (const VoronoiCell& source : source_cells) {
             mimetic::test::set_source_fluxes_from_field(
@@ -163,6 +198,7 @@ int main()
         double total_overlap_area = 0.0;
         double total_boundary_flux = 0.0;
         double total_expected_flux = 0.0;
+        int ngon_overlap_count = 0;
 
         for (const VoronoiCell& target : target_cells) {
             double target_area_from_overlaps = 0.0;
@@ -183,6 +219,9 @@ int main()
                 const double boundary_flux =
                     interpolator.polygon_boundary_flux(coeffs, points_in_source_frame(overlap, source_poly));
                 const double expected_flux = coeffs.d * area;
+                if (source.points.size() > 4 && target.points.size() > 4) {
+                    ++ngon_overlap_count;
+                }
 
                 ++overlap_count;
                 target_area_from_overlaps += area;
@@ -205,6 +244,9 @@ int main()
         }
 
         std::cout << "\nAggregate Voronoi checks:\n";
+        ok = mimetic::test::near(source_ngons, 7.0, mimetic::kTolerance, "source cells with n > 4") && ok;
+        ok = mimetic::test::near(target_ngons, 10.0, mimetic::kTolerance, "target cells with n > 4") && ok;
+        ok = mimetic::test::near(ngon_overlap_count, 23.0, mimetic::kTolerance, "n-gon to n-gon overlaps") && ok;
         ok = mimetic::test::near(total_overlap_area, 1.0, 5.0e-11, "total overlap area") && ok;
         ok = mimetic::test::near(total_boundary_flux, total_expected_flux, 5.0e-10,
                                  "summed overlap boundary flux") &&
