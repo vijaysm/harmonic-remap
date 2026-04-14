@@ -130,6 +130,25 @@ std::vector<VoronoiCell> create_voronoi_mesh(moab::Core& mb, const std::vector<E
     return cells;
 }
 
+std::vector<moab::EntityHandle> cell_handles(const std::vector<VoronoiCell>& cells)
+{
+    std::vector<moab::EntityHandle> handles;
+    handles.reserve(cells.size());
+    for (const VoronoiCell& cell : cells) {
+        handles.push_back(cell.cell);
+    }
+    return handles;
+}
+
+std::size_t directed_edge_count(const std::vector<VoronoiCell>& cells)
+{
+    std::size_t count = 0;
+    for (const VoronoiCell& cell : cells) {
+        count += cell.points.size();
+    }
+    return count;
+}
+
 // Convert absolute overlap vertices into the source-cell local frame expected
 // by MimeticInterpolator::polygon_boundary_flux.
 std::vector<Eigen::Vector2d> points_in_source_frame(const std::vector<Eigen::Vector2d>& points,
@@ -194,6 +213,8 @@ int main()
 
         const std::vector<VoronoiCell> source_cells = create_voronoi_mesh(mb, source_seeds);
         const std::vector<VoronoiCell> target_cells = create_voronoi_mesh(mb, target_seeds);
+        const std::vector<moab::EntityHandle> source_handles = cell_handles(source_cells);
+        const std::vector<moab::EntityHandle> target_handles = cell_handles(target_cells);
         const int source_ngons = count_ngons(source_cells);
         const int target_ngons = count_ngons(target_cells);
 
@@ -201,8 +222,8 @@ int main()
         print_histogram("Target Voronoi", side_histogram(target_cells));
 
         for (const VoronoiCell& source : source_cells) {
-            mimetic::test::set_source_fluxes_from_field(
-                mb, interpolator.source_flux_tag(), source.cell, mimetic::test::linear_source_field);
+            mimetic::test::set_source_fluxes_from_absolute_field(
+                mb, interpolator.source_flux_tag(), source.cell, mimetic::test::linear_absolute_field);
             interpolator.reconstruct_source_polygon(source.cell);
         }
 
@@ -265,6 +286,36 @@ int main()
                                  "summed overlap boundary flux") &&
              ok;
         ok = mimetic::test::near(total_expected_flux, 2.0, 5.0e-10, "integral of div(x,y)") && ok;
+
+        std::cout << "\nEdge-wise Voronoi source-to-target transfer checks:\n";
+        const mimetic::EdgeTransferResult edge_transfer =
+            interpolator.transfer_source_to_target_edges(source_handles, target_handles);
+        ok = mimetic::test::near(static_cast<double>(edge_transfer.target_edges.size()),
+                                 static_cast<double>(directed_edge_count(target_cells)), mimetic::kTolerance,
+                                 "directed target Voronoi edge DOFs") &&
+             ok;
+
+        std::size_t target_dof = 0;
+        for (const VoronoiCell& target : target_cells) {
+            const mimetic::LocalPolygon target_poly = mimetic::local_polygon(mb, target.cell);
+            const std::vector<mimetic::LocalEdge> target_edges = mimetic::local_edges(mb, target_poly);
+            double target_cell_flux = 0.0;
+            for (const mimetic::LocalEdge& edge : target_edges) {
+                const Eigen::Vector2d a = target_poly.centroid + edge.a;
+                const Eigen::Vector2d b = target_poly.centroid + edge.b;
+                const double exact_flux =
+                    mimetic::test::directed_edge_flux_from_absolute_field(a, b, mimetic::test::linear_absolute_field);
+                target_cell_flux += edge_transfer.target_fluxes[target_dof];
+                ok = mimetic::test::near(edge_transfer.target_fluxes[target_dof], exact_flux, 5.0e-11,
+                                         "Voronoi target directed edge " + std::to_string(target_dof)) &&
+                     ok;
+                ++target_dof;
+            }
+
+            ok = mimetic::test::near(target_cell_flux, 2.0 * polygon_area(target.points), 5.0e-11,
+                                     "Voronoi target cell edge-flux divergence") &&
+                 ok;
+        }
 
         if (!ok) {
             std::cout << "\n[FAILED] Voronoi conservative interpolation test failed.\n";

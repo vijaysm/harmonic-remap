@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <stdexcept>
 
 namespace mimetic {
@@ -23,6 +24,74 @@ Eigen::Vector2d grad_p1(const Eigen::Vector2d&) { return Eigen::Vector2d(1.0, 0.
 Eigen::Vector2d grad_q1(const Eigen::Vector2d&) { return Eigen::Vector2d(0.0, 1.0); }
 Eigen::Vector2d grad_p2(const Eigen::Vector2d& p) { return Eigen::Vector2d(2.0 * p.x(), -2.0 * p.y()); }
 Eigen::Vector2d grad_q2(const Eigen::Vector2d& p) { return Eigen::Vector2d(2.0 * p.y(), 2.0 * p.x()); }
+
+namespace {
+
+std::vector<Eigen::Vector2d> absolute_points(const LocalPolygon& polygon)
+{
+    std::vector<Eigen::Vector2d> points;
+    points.reserve(polygon.points.size());
+    for (const Eigen::Vector2d& p : polygon.points) {
+        points.push_back(p + polygon.centroid);
+    }
+    return points;
+}
+
+Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly, const std::vector<LocalEdge>& edges)
+{
+    std::array<double (*)(const Eigen::Vector2d&), 4> basis = {{p1, q1, p2, q2}};
+    std::array<Eigen::Vector2d (*)(const Eigen::Vector2d&), 4> gradients = {{grad_p1, grad_q1, grad_p2, grad_q2}};
+
+    Eigen::MatrixXd v = Eigen::MatrixXd::Zero(4, 4);
+    Eigen::MatrixXd moment = Eigen::MatrixXd::Zero(4, static_cast<Eigen::Index>(edges.size()));
+    const Eigen::Vector2d origin(0.0, 0.0);
+
+    for (int i = 0; i < 4; ++i) {
+        double cell_basis_integral = 0.0;
+        double div_integral = 0.0;
+        for (const LocalEdge& edge : edges) {
+            cell_basis_integral += integrate_triangle_scalar(origin, edge.a, edge.b, basis[i]);
+            div_integral += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
+                return p.dot(gradients[i](p));
+            });
+        }
+
+        const double cell_basis_average = cell_basis_integral / poly.area;
+        for (std::size_t e = 0; e < edges.size(); ++e) {
+            const double edge_average = integrate_edge_scalar(edges[e].a, edges[e].b, basis[i]) / edges[e].length;
+            moment(i, static_cast<Eigen::Index>(e)) =
+                (edge_average - cell_basis_average) - 0.5 * div_integral / poly.area;
+        }
+
+        for (int j = 0; j < 4; ++j) {
+            for (const LocalEdge& edge : edges) {
+                v(i, j) += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
+                    return gradients[i](p).dot(gradients[j](p));
+                });
+            }
+        }
+    }
+
+    Eigen::MatrixXd reconstruction = Eigen::MatrixXd::Zero(5, static_cast<Eigen::Index>(edges.size()));
+    reconstruction.row(0).setConstant(1.0 / poly.area);
+    reconstruction.block(1, 0, 4, static_cast<Eigen::Index>(edges.size())) = v.ldlt().solve(moment);
+    return reconstruction;
+}
+
+void write_edge_map_csv(const std::string& path, const std::vector<DirectedEdgeDof>& edges)
+{
+    std::ofstream out(path.c_str());
+    if (!out) {
+        throw std::runtime_error("Failed to open edge map for writing: " + path);
+    }
+
+    out << "index,polygon_handle,edge_handle,local_edge_index\n";
+    for (std::size_t i = 0; i < edges.size(); ++i) {
+        out << i << "," << edges[i].polygon << "," << edges[i].edge << "," << edges[i].local_edge_index << "\n";
+    }
+}
+
+}  // namespace
 
 // Shoelace geometry utilities; these correspond to the polygon preprocessing
 // stage in report Algorithm 1, steps 1--2.
@@ -161,6 +230,88 @@ moab::EntityHandle create_polygon(moab::Core& mb, const std::vector<Eigen::Vecto
         find_or_create_edge(mb, vertices[i], vertices[(i + 1) % vertices.size()]);
     }
     return polygon;
+}
+
+bool clip_segment_to_convex_polygon(const Eigen::Vector2d& segment_a,
+                                    const Eigen::Vector2d& segment_b,
+                                    const std::vector<Eigen::Vector2d>& polygon,
+                                    Eigen::Vector2d& clipped_a,
+                                    Eigen::Vector2d& clipped_b,
+                                    const double tolerance)
+{
+    if (polygon.size() < 3) {
+        return false;
+    }
+
+    std::vector<Eigen::Vector2d> clip = polygon;
+    if (signed_area(clip) < 0.0) {
+        std::reverse(clip.begin(), clip.end());
+    }
+
+    const Eigen::Vector2d delta = segment_b - segment_a;
+    double t_enter = 0.0;
+    double t_exit = 1.0;
+
+    for (std::size_t i = 0; i < clip.size(); ++i) {
+        const Eigen::Vector2d a = clip[i];
+        const Eigen::Vector2d b = clip[(i + 1) % clip.size()];
+        const Eigen::Vector2d edge = b - a;
+        const Eigen::Vector2d inward_normal(-edge.y(), edge.x());
+        const double offset = inward_normal.dot(a);
+        const double signed_distance = inward_normal.dot(segment_a) - offset;
+        const double rate = inward_normal.dot(delta);
+
+        if (std::abs(rate) < tolerance) {
+            if (signed_distance < -tolerance) {
+                return false;
+            }
+            continue;
+        }
+
+        const double t = -signed_distance / rate;
+        if (rate > 0.0) {
+            t_enter = std::max(t_enter, t);
+        } else {
+            t_exit = std::min(t_exit, t);
+        }
+
+        if (t_enter > t_exit + tolerance) {
+            return false;
+        }
+    }
+
+    t_enter = std::max(0.0, t_enter);
+    t_exit = std::min(1.0, t_exit);
+    if (t_exit - t_enter <= tolerance) {
+        return false;
+    }
+
+    clipped_a = segment_a + t_enter * delta;
+    clipped_b = segment_a + t_exit * delta;
+    return true;
+}
+
+void write_matrix_market(const SparseEdgeProjection& projection,
+                         const std::string& matrix_path,
+                         const std::string& source_edges_path,
+                         const std::string& target_edges_path)
+{
+    std::ofstream out(matrix_path.c_str());
+    if (!out) {
+        throw std::runtime_error("Failed to open MatrixMarket file for writing: " + matrix_path);
+    }
+
+    out << "%%MatrixMarket matrix coordinate real general\n";
+    out << "% rows are directed target edges; columns are directed source edges\n";
+    out << projection.matrix.rows() << " " << projection.matrix.cols() << " " << projection.matrix.nonZeros() << "\n";
+    for (int row = 0; row < projection.matrix.outerSize(); ++row) {
+        for (Eigen::SparseMatrix<double, Eigen::RowMajor>::InnerIterator it(projection.matrix, row); it; ++it) {
+            out << (it.row() + 1) << " " << (it.col() + 1) << " " << it.value() << "\n";
+        }
+    }
+
+    write_edge_map_csv(source_edges_path, projection.source_edges);
+    write_edge_map_csv(target_edges_path, projection.target_edges);
 }
 
 MimeticInterpolator::MimeticInterpolator(moab::Core& moab_instance) : mb_(moab_instance)
@@ -323,6 +474,152 @@ std::vector<double> MimeticInterpolator::transfer_to_target_polygon_edges(const 
         check_moab(mb_.tag_set_data(tag_target_flux_, &edge, 1, &flux), "Failed to write target flux tag");
     }
     return target_fluxes;
+}
+
+EdgeTransferResult MimeticInterpolator::transfer_source_to_target_edges(
+    const std::vector<moab::EntityHandle>& source_polygons,
+    const std::vector<moab::EntityHandle>& target_polygons)
+{
+    struct SourceCache {
+        moab::EntityHandle polygon;
+        LocalPolygon local;
+        std::vector<Eigen::Vector2d> absolute_points;
+        ReconstructionCoeffs coeffs;
+    };
+
+    std::vector<SourceCache> sources;
+    sources.reserve(source_polygons.size());
+    for (const moab::EntityHandle source_polygon : source_polygons) {
+        ReconstructionCoeffs coeffs{};
+        check_moab(mb_.tag_get_data(tag_coeffs_, &source_polygon, 1, &coeffs),
+                   "Failed to read source reconstruction coefficients");
+        const LocalPolygon local = local_polygon(mb_, source_polygon);
+        sources.push_back(SourceCache{source_polygon, local, absolute_points(local), coeffs});
+    }
+
+    EdgeTransferResult result;
+
+    for (const moab::EntityHandle target_polygon : target_polygons) {
+        const LocalPolygon target = local_polygon(mb_, target_polygon);
+        const std::vector<LocalEdge> target_edges = local_edges(mb_, target);
+
+        for (std::size_t edge_index = 0; edge_index < target_edges.size(); ++edge_index) {
+            const LocalEdge& target_edge = target_edges[edge_index];
+            const Eigen::Vector2d target_a = target.centroid + target_edge.a;
+            const Eigen::Vector2d target_b = target.centroid + target_edge.b;
+
+            const std::size_t target_dof = result.target_edges.size();
+            result.target_edges.push_back(DirectedEdgeDof{target_polygon, target_edge.handle, edge_index});
+            result.target_fluxes.push_back(0.0);
+
+            for (const SourceCache& source : sources) {
+                Eigen::Vector2d clipped_a;
+                Eigen::Vector2d clipped_b;
+                if (!clip_segment_to_convex_polygon(target_a, target_b, source.absolute_points, clipped_a, clipped_b)) {
+                    continue;
+                }
+
+                const Eigen::Vector2d local_a = clipped_a - source.local.centroid;
+                const Eigen::Vector2d local_b = clipped_b - source.local.centroid;
+                const double flux = edge_flux(source.coeffs, local_a, local_b);
+                result.target_fluxes[target_dof] += flux;
+                result.contributions.push_back(EdgeTransferContribution{
+                    target_dof,
+                    source.polygon,
+                    clipped_a,
+                    clipped_b,
+                    flux,
+                });
+            }
+
+            check_moab(mb_.tag_set_data(tag_target_flux_, &target_edge.handle, 1, &result.target_fluxes[target_dof]),
+                       "Failed to write edge-wise target flux tag");
+        }
+    }
+
+    return result;
+}
+
+SparseEdgeProjection MimeticInterpolator::assemble_edge_projection_operator(
+    const std::vector<moab::EntityHandle>& source_polygons,
+    const std::vector<moab::EntityHandle>& target_polygons)
+{
+    struct SourceCache {
+        moab::EntityHandle polygon;
+        LocalPolygon local;
+        std::vector<LocalEdge> edges;
+        std::vector<Eigen::Vector2d> absolute_points;
+        Eigen::MatrixXd reconstruction;
+        std::vector<std::size_t> columns;
+    };
+
+    std::vector<SourceCache> sources;
+    sources.reserve(source_polygons.size());
+    SparseEdgeProjection projection;
+
+    for (const moab::EntityHandle source_polygon : source_polygons) {
+        const LocalPolygon local = local_polygon(mb_, source_polygon);
+        const std::vector<LocalEdge> edges = local_edges(mb_, local);
+        SourceCache cache{
+            source_polygon,
+            local,
+            edges,
+            absolute_points(local),
+            source_reconstruction_matrix(local, edges),
+            std::vector<std::size_t>(),
+        };
+        cache.columns.reserve(edges.size());
+        for (std::size_t i = 0; i < edges.size(); ++i) {
+            cache.columns.push_back(projection.source_edges.size());
+            projection.source_edges.push_back(DirectedEdgeDof{source_polygon, edges[i].handle, i});
+        }
+        sources.push_back(cache);
+    }
+
+    std::vector<Eigen::Triplet<double>> triplets;
+    for (const moab::EntityHandle target_polygon : target_polygons) {
+        const LocalPolygon target = local_polygon(mb_, target_polygon);
+        const std::vector<LocalEdge> target_edges = local_edges(mb_, target);
+
+        for (std::size_t edge_index = 0; edge_index < target_edges.size(); ++edge_index) {
+            const LocalEdge& target_edge = target_edges[edge_index];
+            const Eigen::Vector2d target_a = target.centroid + target_edge.a;
+            const Eigen::Vector2d target_b = target.centroid + target_edge.b;
+            const std::size_t target_dof = projection.target_edges.size();
+            projection.target_edges.push_back(DirectedEdgeDof{target_polygon, target_edge.handle, edge_index});
+
+            for (const SourceCache& source : sources) {
+                Eigen::Vector2d clipped_a;
+                Eigen::Vector2d clipped_b;
+                if (!clip_segment_to_convex_polygon(target_a, target_b, source.absolute_points, clipped_a, clipped_b)) {
+                    continue;
+                }
+
+                const Eigen::Vector2d local_a = clipped_a - source.local.centroid;
+                const Eigen::Vector2d local_b = clipped_b - source.local.centroid;
+                Eigen::Matrix<double, 1, 5> evaluation;
+                evaluation(0, 0) = edge_flux(ReconstructionCoeffs{0.0, 1.0, 0.0, 0.0, 0.0, 0.0}, local_a, local_b);
+                evaluation(0, 1) = edge_flux(ReconstructionCoeffs{0.0, 0.0, 1.0, 0.0, 0.0, 0.0}, local_a, local_b);
+                evaluation(0, 2) = edge_flux(ReconstructionCoeffs{0.0, 0.0, 0.0, 1.0, 0.0, 0.0}, local_a, local_b);
+                evaluation(0, 3) = edge_flux(ReconstructionCoeffs{0.0, 0.0, 0.0, 0.0, 1.0, 0.0}, local_a, local_b);
+                evaluation(0, 4) = edge_flux(ReconstructionCoeffs{0.0, 0.0, 0.0, 0.0, 0.0, 1.0}, local_a, local_b);
+
+                const Eigen::RowVectorXd weights = evaluation * source.reconstruction;
+                for (Eigen::Index j = 0; j < weights.cols(); ++j) {
+                    const double weight = weights(j);
+                    if (std::abs(weight) > 1.0e-14) {
+                        triplets.push_back(Eigen::Triplet<double>(
+                            static_cast<int>(target_dof), static_cast<int>(source.columns[static_cast<std::size_t>(j)]), weight));
+                    }
+                }
+            }
+        }
+    }
+
+    projection.matrix.resize(static_cast<int>(projection.target_edges.size()), static_cast<int>(projection.source_edges.size()));
+    projection.matrix.setFromTriplets(triplets.begin(), triplets.end());
+    projection.matrix.makeCompressed();
+    return projection;
 }
 
 }  // namespace mimetic

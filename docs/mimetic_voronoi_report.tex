@@ -204,6 +204,46 @@ This is the local divergence theorem.  It is the key invariant that a
 conservative source-to-target interpolation must satisfy on every intersection
 region.
 
+\subsection{Edge-wise Source-to-Target Transfer}
+
+The overlap diagnostic above is necessary but not sufficient for a usable edge
+remap.  A target edge degree of freedom must be computed on the target edge
+itself.  For a directed target edge \(e_t=[A,B]\) with target outward normal
+\(\n_t\), the implemented transfer clips the edge against every source cell and
+sums the source-cell contributions:
+\begin{equation}
+  U^t_{e_t}
+  =
+  \sum_{K_s:\, e_t\cap K_s\neq\emptyset}
+  \int_{e_t\cap K_s} {\uh}_{K_s}\cdot\n_t\,ds .
+  \label{eq:edge_transfer}
+\end{equation}
+The segment orientation is inherited from the target cell boundary, so the
+normal in Eq.~\eqref{eq:edge_transfer} is the target-cell normal rather than the
+source-cell normal.  This is the edge-wise source-to-target transfer that the
+current nonmatching tests now validate.
+
+The map is linear in the source edge fluxes.  For each source cell \(K_s\), the
+local reconstruction can be written
+\begin{equation}
+  \beta_{K_s}=B_{K_s}U_{K_s},
+  \qquad
+  \beta_{K_s}=(d,a_1,b_1,a_2,b_2)^T,
+  \label{eq:local_reconstruction_matrix}
+\end{equation}
+and each clipped target-edge segment defines a row functional
+\(L_{\gamma,K_s}\).  The assembled sparse projection is therefore
+\begin{equation}
+  U_t = P U_s,\qquad
+  P_{e_t,f_s} \mathrel{+}=
+  L_{\gamma,K_s} B_{K_s}(:,f_s).
+  \label{eq:sparse_projection}
+\end{equation}
+Rows of \(P\) are directed target-cell edges, and columns are directed
+source-cell edges.  This directed convention is important because normal flux
+orientation is cell-local; a shared undirected mesh edge needs a separate
+orientation map before edge DOFs are collapsed.
+
 \section{Algorithms and Code Traceability}
 
 \subsection*{Algorithm 1: Source-Cell Reconstruction}
@@ -242,6 +282,22 @@ region.
         and that the overlap-summed conservative integral equals \(2|K_t|\).
 \end{enumerate}
 
+\subsection*{Algorithm 4: Directed Edge Transfer and Sparse Projection}
+\begin{enumerate}
+  \item Enumerate directed source-cell edge DOFs and directed target-cell edge
+        DOFs.
+  \item For each source cell, build \(B_{K_s}\) from
+        Eq.~\eqref{eq:local_reconstruction_matrix}.
+  \item For each directed target edge, clip the target segment against every
+        source polygon.
+  \item For direct transfer, evaluate Eq.~\eqref{eq:edge_transfer} on each
+        clipped segment and sum into the target edge flux tag.
+  \item For matrix assembly, apply the segment functional to \(B_{K_s}\) and add
+        triplets to the global sparse matrix \(P\) in Eq.~\eqref{eq:sparse_projection}.
+  \item Store \(P\) in MatrixMarket coordinate format and write CSV maps for row
+        and column DOFs.
+\end{enumerate}
+
 \begin{center}
 \small
 \begin{tabular}{@{}L{0.24\linewidth}L{0.31\linewidth}L{0.35\linewidth}@{}}
@@ -276,6 +332,14 @@ Source-target overlap &
 \texttt{convex\_intersection()} in
 \texttt{voronoi\_intersection\_}\newline\texttt{test.cpp} &
 Computes \(K_s\cap K_t\) for convex polygon pairs. \\
+Target edge transfer &
+\texttt{transfer\_source\_to\_}\newline\texttt{target\_edges()} &
+Implements Eq.~\eqref{eq:edge_transfer} by clipping each target edge by source
+cells. \\
+Sparse projection &
+\texttt{assemble\_edge\_projection\_}\newline\texttt{operator()} and
+\texttt{write\_matrix\_market()} &
+Builds and writes the directed edge map in Eq.~\eqref{eq:sparse_projection}. \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -303,10 +367,20 @@ loop should be replaced by a spatial index or advancing-front intersection
 algorithm; the current test intentionally uses direct all-pairs clipping for
 clarity and reproducibility.
 
+\paragraph{Edge transfer and projection assembly.}
+Let \(E_t\) be the number of directed target edges and \(N_s\) the number of
+source cells.  The current all-pairs implementation clips each target edge
+against each source polygon, so its cost is \(O(E_t N_s \bar n_s)\) for average
+source side count \(\bar n_s\).  Sparse matrix assembly has the same geometric
+cost plus local coefficient-row multiplication.  The number of nonzeros is
+proportional to the number of source-edge basis functions that influence each
+clipped target-edge segment.
+
 \paragraph{Memory.}
 Each source cell stores six doubles in \texttt{COEFFS}.  Each source or target
 edge stores one double flux tag.  Temporary dense matrices are \(4\times4\) and
-are allocated per reconstructed source cell.
+are allocated per reconstructed source cell.  The sparse projection stores
+directed source and target edge maps plus compressed sparse matrix arrays.
 
 \section{Results and Discussion}
 
@@ -392,6 +466,16 @@ The largest printed per-overlap boundary-flux error is
 \(2.78\times10^{-17}\).  The aggregate source-target area error is
 \(2.22\times10^{-16}\), and the aggregate integral error relative to
 \(\int_\Omega\nabla\cdot(x,y)\,dA=2\) is \(4.44\times10^{-16}\).
+The edge-wise transfer then computes 36 directed target edge fluxes.  Each
+target edge agrees with the analytic integral of \(\mathbf{u}(x,y)=(x,y)\) to
+roundoff, and each target cell satisfies
+\[
+  \sum_{e_t\subset\partial K_t} U^t_{e_t}=2|K_t|.
+\]
+The assembled sparse projection for this case has 36 rows, 16 columns, and 80
+nonzeros.  Applying this matrix to the directed source edge flux vector
+reproduces the direct edge-transfer result to roundoff, and the matrix is
+written to MatrixMarket format with source and target edge-map CSV files.
 
 \subsection{Voronoi n-gon Patch Test}
 
@@ -420,6 +504,10 @@ The largest printed overlap or aggregate residual is \(4.44\times10^{-16}\),
 well below the \(5\times10^{-10}\) tolerance used for the summed Voronoi flux
 check.  Figure~\ref{fig:results-summary} summarizes the Voronoi coverage counts
 and the conservation residual scale across the three tests.
+The edge-wise Voronoi transfer computes 71 directed target edge fluxes.  Every
+target edge agrees with the analytic global linear field integral to roundoff,
+and every target cell satisfies the same edge-flux divergence check
+\(\sum U^t_{e_t}=2|K_t|\).
 
 \begin{figure}[t]
   \centering
@@ -443,12 +531,12 @@ and the conservation residual scale across the three tests.
   \(0\) printed \\
   Rectangular overlay &
   Four source cells, nine target cells, 16 clipped intersections &
-  \(\int_{\partial O}\uh\cdot\n ds = d_s|O|\) on each overlap and
-  aggregate \(\int_\Omega\nabla\cdot(x,y)dA=2\) &
+  Overlap conservation, 36 directed target edge fluxes, and 36-by-16 sparse
+  projection application &
   \(4.44\times10^{-16}\) \\
   Voronoi n-gon overlay &
   Nine source cells, 14 target cells, 36 overlaps, 23 n-gon to n-gon overlaps &
-  Same overlap invariant plus target-cell area coverage &
+  Same overlap invariant plus 71 directed target edge fluxes &
   \(4.44\times10^{-16}\) \\
   \bottomrule
   \end{tabular}
@@ -459,13 +547,15 @@ and the conservation residual scale across the three tests.
 
 \subsection{Discussion}
 
-The results show that the conservative property is controlled by two local
+The results show that the conservative property is controlled by three local
 ingredients: exact reconstruction of the polynomial moments used by the
-level-2 basis and exact reduction over each clipped overlap boundary.  For the
+level-2 basis, exact reduction over each clipped overlap boundary, and
+edge-wise target-segment clipping with the target edge normal.  For the
 manufactured field \(\mathbf{u}=(x,y)\), the reconstructed divergence is
 constant and equal to 2 on every source cell.  Therefore the expected overlap
-flux is \(2|O|\), and the residuals in Table~\ref{tab:verification-summary}
-measure only floating-point and clipping-roundoff effects.
+flux is \(2|O|\), and the target-cell edge flux sum is \(2|K_t|\).  The
+residuals in Table~\ref{tab:verification-summary} measure only floating-point
+and clipping-roundoff effects.
 
 The Voronoi test is the most informative current result.  It rules out a common
 false positive in polygon remapping prototypes: passing only quadrilateral or
@@ -473,7 +563,9 @@ axis-aligned cases.  Here both source and target meshes contain five- and
 six-sided cells, and 23 nonempty intersections involve n-gons on both sides.
 The exact overlap identity holds on each of those intersections, which is the
 local condition needed before adding spatial acceleration, parallel ownership,
-or spherical geometry.
+or spherical geometry.  The new directed-edge checks additionally verify that
+the remapped edge data themselves, not only overlap-cell diagnostics, reproduce
+the analytic target edge integrals.
 
 The visualizations also clarify what is not yet tested.  The clipping kernel is
 currently convex and planar; it does not cover nonconvex polygons, spherical
@@ -500,7 +592,10 @@ intersection and quadrature tests.
         consistency, not global PDE accuracy.
   \item The current source-target transfer routine for target edges assumes a
         target polygon contained in one source cell.  General nonmatching meshes
-        should use clipped overlaps, as in the conservative tests.
+        should use \texttt{transfer\_source\_to\_}\allowbreak\texttt{target\_edges()}
+        or the sparse projection assembly path.
+  \item The sparse projection currently uses directed cell-edge DOFs.  Shared
+        mesh-edge collapse requires explicit orientation metadata.
 \end{itemize}
 
 \section{Conclusions}
@@ -509,10 +604,12 @@ The present implementation demonstrates that the level-2 harmonic-polynomial
 mimetic reconstruction can be expressed cleanly in MOAB/Eigen3 and verified on
 nonmatching polygon patches.  The strongest current result is the Voronoi n-gon
 test: it exercises genuine five- and six-sided source and target cells, clips
-all nonempty source-target intersections, and verifies the conservative overlap
-identity on every region.  This validates the core local reconstruction and
-local conservative integration kernels needed for a future spherical polygon
-mesh transfer tool.
+all nonempty source-target intersections, verifies the conservative overlap
+identity on every region, and computes 71 directed target edge fluxes.  The
+rectangular test also assembles and writes an explicit sparse directed
+source-edge to target-edge projection matrix.  This validates the core local
+reconstruction, edge-wise remap, and local conservative integration kernels
+needed for a future spherical polygon mesh transfer tool.
 
 The next implementation phase should move convex polygon intersection into the
 library, add MOAB spatial acceleration, and then introduce spherical geometry.

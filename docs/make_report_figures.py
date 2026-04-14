@@ -280,9 +280,9 @@ def make_results_summary(figdir):
         ax0.text(i, value + 0.8, str(value), ha="center", va="bottom", fontsize=9)
     ax0.set_ylim(0, 40)
 
-    error_labels = ["patch", "rect.", "Voronoi"]
-    errors = [1.0e-16, 4.44e-16, 4.44e-16]
-    ax1.bar(error_labels, errors, color=[BLUE, PURPLE, GREEN], alpha=0.82)
+    error_labels = ["patch", "rect.\noverlap", "rect.\nedge", "Vor.\noverlap", "Vor.\nedge"]
+    errors = [1.0e-16, 4.44e-16, 5.55e-17, 4.44e-16, 2.78e-16]
+    ax1.bar(error_labels, errors, color=[BLUE, PURPLE, GRAY, GREEN, ORANGE], alpha=0.82)
     ax1.axhline(5.0e-10, color=ORANGE, linestyle="--", linewidth=1.4, label="loose test tolerance")
     ax1.set_yscale("log")
     ax1.set_ylim(1.0e-17, 1.0e-8)

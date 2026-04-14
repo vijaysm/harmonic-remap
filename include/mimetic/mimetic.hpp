@@ -2,10 +2,12 @@
 #define MIMETIC_MIMETIC_HPP
 
 #include <Eigen/Dense>
+#include <Eigen/Sparse>
 #include <moab/Core.hpp>
 
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <string>
 #include <utility>
 #include <vector>
@@ -140,6 +142,49 @@ struct LocalEdge {
     double length;
 };
 
+/**
+ * Directed cell-edge degree of freedom.
+ *
+ * The current prototype treats source and target edge data as cell-local,
+ * directed edge DOFs. This avoids silently losing orientation information on
+ * shared MOAB edges. Production shared-edge meshes should add an explicit
+ * orientation map before collapsing these directed DOFs to unique mesh edges.
+ */
+struct DirectedEdgeDof {
+    moab::EntityHandle polygon;
+    moab::EntityHandle edge;
+    std::size_t local_edge_index;
+};
+
+/// One clipped source-cell contribution to one directed target edge.
+struct EdgeTransferContribution {
+    std::size_t target_dof_index;
+    moab::EntityHandle source_polygon;
+    Eigen::Vector2d segment_a;
+    Eigen::Vector2d segment_b;
+    double flux;
+};
+
+/// Result of applying the reconstructed source field to all directed target edges.
+struct EdgeTransferResult {
+    std::vector<DirectedEdgeDof> target_edges;
+    std::vector<double> target_fluxes;
+    std::vector<EdgeTransferContribution> contributions;
+};
+
+/**
+ * Sparse source-edge to target-edge projection.
+ *
+ * `matrix.rows()` equals `target_edges.size()` and `matrix.cols()` equals
+ * `source_edges.size()`. The matrix maps directed source edge fluxes to directed
+ * target edge fluxes: U_t = P U_s.
+ */
+struct SparseEdgeProjection {
+    Eigen::SparseMatrix<double, Eigen::RowMajor> matrix;
+    std::vector<DirectedEdgeDof> source_edges;
+    std::vector<DirectedEdgeDof> target_edges;
+};
+
 /// Signed shoelace area; positive for counter-clockwise point order.
 double signed_area(const std::vector<Eigen::Vector2d>& points);
 /// Area-weighted polygon centroid in absolute planar coordinates.
@@ -154,6 +199,18 @@ std::vector<LocalEdge> local_edges(moab::Core& mb, const LocalPolygon& polygon);
 moab::EntityHandle create_polygon(moab::Core& mb, const std::vector<Eigen::Vector2d>& points);
 /// Convenience wrapper for creating a four-sided polygon.
 moab::EntityHandle create_quad(moab::Core& mb, const std::array<Eigen::Vector2d, 4>& points);
+/// Clip a directed segment against a convex counter-clockwise polygon.
+bool clip_segment_to_convex_polygon(const Eigen::Vector2d& segment_a,
+                                    const Eigen::Vector2d& segment_b,
+                                    const std::vector<Eigen::Vector2d>& polygon,
+                                    Eigen::Vector2d& clipped_a,
+                                    Eigen::Vector2d& clipped_b,
+                                    double tolerance = kTolerance);
+/// Write a sparse projection and its directed-edge maps in MatrixMarket/CSV form.
+void write_matrix_market(const SparseEdgeProjection& projection,
+                         const std::string& matrix_path,
+                         const std::string& source_edges_path,
+                         const std::string& target_edges_path);
 
 /**
  * Level-2 mimetic interpolation kernel backed by MOAB tags.
@@ -196,6 +253,12 @@ class MimeticInterpolator {
     double polygon_boundary_flux(const ReconstructionCoeffs& coeffs, const std::vector<Eigen::Vector2d>& points) const;
     /// Compute target edge fluxes for a target polygon contained in one source cell.
     std::vector<double> transfer_to_target_polygon_edges(moab::EntityHandle source_polygon, moab::EntityHandle target_polygon);
+    /// Compute edge-wise source-to-target transfer on nonmatching convex meshes.
+    EdgeTransferResult transfer_source_to_target_edges(const std::vector<moab::EntityHandle>& source_polygons,
+                                                       const std::vector<moab::EntityHandle>& target_polygons);
+    /// Assemble the linear sparse operator U_t = P U_s for directed edge DOFs.
+    SparseEdgeProjection assemble_edge_projection_operator(const std::vector<moab::EntityHandle>& source_polygons,
+                                                           const std::vector<moab::EntityHandle>& target_polygons);
 
   private:
     moab::Core& mb_;
