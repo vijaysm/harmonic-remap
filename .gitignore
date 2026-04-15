@@ -8,6 +8,7 @@ cmake_install.cmake
 *.a
 patch_test
 conservative_intersection_test
+cubed_sphere*.vtk
 mimetic_voronoi_report.aux
 mimetic_voronoi_report.bbl
 mimetic_voronoi_report.blg
