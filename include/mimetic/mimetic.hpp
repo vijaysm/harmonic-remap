@@ -117,6 +117,13 @@ struct LocalPolygon {
     std::vector<Eigen::Vector2d> points;
     Eigen::Vector2d centroid;
     double area;
+
+    // Spherical geometry data
+    std::vector<Eigen::Vector3d> points_3d;
+    Eigen::Vector3d centroid_3d;
+    Eigen::Vector3d e_x;
+    Eigen::Vector3d e_y;
+    Eigen::Vector3d n;
 };
 
 /**
@@ -183,7 +190,7 @@ Eigen::Vector2d polygon_centroid(const std::vector<Eigen::Vector2d>& points);
 /// Return an existing MOAB edge between two vertices or create one if absent.
 moab::EntityHandle find_or_create_edge(moab::Core& mb, moab::EntityHandle v0, moab::EntityHandle v1);
 /// Extract a MOAB polygon/quad into a centroid-relative LocalPolygon.
-LocalPolygon local_polygon(moab::Core& mb, moab::EntityHandle polygon);
+LocalPolygon local_polygon(moab::Core& mb, moab::EntityHandle polygon, bool is_spherical = false);
 /// Build ordered LocalEdge records from a LocalPolygon.
 std::vector<LocalEdge> local_edges(moab::Core& mb, const LocalPolygon& polygon);
 /// Create a MOAB polygon, using MBQUAD for 4-sided cells and MBPOLYGON otherwise.
@@ -215,6 +222,9 @@ class MimeticInterpolator {
   public:
     /// Create SOURCE_FLUX, TARGET_FLUX, and COEFFS tags if needed.
     explicit MimeticInterpolator(moab::Core& moab_instance);
+
+    void set_spherical(bool is_spherical) { is_spherical_ = is_spherical; }
+    bool is_spherical() const { return is_spherical_; }
 
     /// MOAB tag storing signed integrated normal flux on source edges.
     moab::Tag source_flux_tag() const;
@@ -253,6 +263,7 @@ class MimeticInterpolator {
 
   private:
     moab::Core& mb_;
+    bool is_spherical_ = false;
     moab::Tag tag_source_flux_ = 0;
     moab::Tag tag_target_flux_ = 0;
     moab::Tag tag_coeffs_ = 0;

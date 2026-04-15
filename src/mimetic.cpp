@@ -210,7 +210,7 @@ moab::EntityHandle find_or_create_edge(moab::Core& mb, const moab::EntityHandle 
 // Extract MOAB connectivity into a local cell frame. The code enforces positive
 // orientation because all later outward-normal signs assume counter-clockwise
 // boundary order.
-LocalPolygon local_polygon(moab::Core& mb, const moab::EntityHandle polygon)
+LocalPolygon local_polygon(moab::Core& mb, const moab::EntityHandle polygon, bool is_spherical)
 {
     const moab::EntityHandle* conn = nullptr;
     int num_vertices = 0;
@@ -223,15 +223,57 @@ LocalPolygon local_polygon(moab::Core& mb, const moab::EntityHandle polygon)
     std::vector<Eigen::Vector2d> absolute_points;
     absolute_points.reserve(vertices.size());
 
-    for (const moab::EntityHandle vertex : vertices) {
-        double xyz[3] = {0.0, 0.0, 0.0};
-        check_moab(mb.get_coords(&vertex, 1, xyz), "Failed to get vertex coordinates");
-        absolute_points.emplace_back(xyz[0], xyz[1]);
+    std::vector<Eigen::Vector3d> points_3d;
+    Eigen::Vector3d centroid_3d(0, 0, 0);
+    Eigen::Vector3d e_x(1, 0, 0);
+    Eigen::Vector3d e_y(0, 1, 0);
+    Eigen::Vector3d n(0, 0, 1);
+
+    if (is_spherical) {
+        points_3d.reserve(vertices.size());
+        for (const moab::EntityHandle vertex : vertices) {
+            double xyz[3] = {0.0, 0.0, 0.0};
+            check_moab(mb.get_coords(&vertex, 1, xyz), "Failed to get vertex coordinates");
+            Eigen::Vector3d p(xyz[0], xyz[1], xyz[2]);
+            points_3d.push_back(p);
+            centroid_3d += p;
+        }
+        centroid_3d /= vertices.size();
+        
+        n = centroid_3d.normalized();
+        
+        Eigen::Vector3d arbitrary(0, 0, 1);
+        if (std::abs(n.z()) > 0.9) {
+            arbitrary = Eigen::Vector3d(1, 0, 0);
+        }
+        e_y = n.cross(arbitrary).normalized();
+        e_x = e_y.cross(n).normalized();
+
+        for (const auto& p3d : points_3d) {
+            double dot_n = p3d.dot(n);
+            if (dot_n < 1e-10) {
+                throw std::runtime_error("Polygon spans more than a hemisphere, cannot gnomonic project");
+            }
+            Eigen::Vector3d p_gnom = p3d / dot_n;
+            absolute_points.emplace_back(p_gnom.dot(e_x), p_gnom.dot(e_y));
+        }
+    } else {
+        for (const moab::EntityHandle vertex : vertices) {
+            double xyz[3] = {0.0, 0.0, 0.0};
+            check_moab(mb.get_coords(&vertex, 1, xyz), "Failed to get vertex coordinates");
+            absolute_points.emplace_back(xyz[0], xyz[1]);
+            // Still populate 3D points for consistency, but z is ignored
+            Eigen::Vector3d p(xyz[0], xyz[1], xyz[2]);
+            points_3d.push_back(p);
+            centroid_3d += p;
+        }
+        centroid_3d /= vertices.size();
     }
 
     if (signed_area(absolute_points) < 0.0) {
         std::reverse(vertices.begin(), vertices.end());
         std::reverse(absolute_points.begin(), absolute_points.end());
+        std::reverse(points_3d.begin(), points_3d.end());
     }
 
     const Eigen::Vector2d centroid = polygon_centroid(absolute_points);
@@ -241,7 +283,7 @@ LocalPolygon local_polygon(moab::Core& mb, const moab::EntityHandle polygon)
         relative_points.push_back(p - centroid);
     }
 
-    return LocalPolygon{vertices, relative_points, centroid, std::abs(signed_area(absolute_points))};
+    return LocalPolygon{vertices, relative_points, centroid, std::abs(signed_area(absolute_points)), points_3d, centroid_3d, e_x, e_y, n};
 }
 
 std::vector<LocalEdge> local_edges(moab::Core& mb, const LocalPolygon& polygon)
@@ -404,7 +446,7 @@ moab::Tag MimeticInterpolator::coeffs_tag() const { return tag_coeffs_; }
 
 ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab::EntityHandle polygon)
 {
-    const LocalPolygon poly = local_polygon(mb_, polygon);
+    const LocalPolygon poly = local_polygon(mb_, polygon, is_spherical_);
     const std::vector<LocalEdge> edges = local_edges(mb_, poly);
 
     const int N = static_cast<int>(edges.size());
@@ -601,13 +643,24 @@ std::vector<double> MimeticInterpolator::transfer_to_target_polygon_edges(const 
     coeffs.d = dptr[0];
     coeffs.harmonic.assign(dptr + 1, dptr + size);
 
-    const LocalPolygon source = local_polygon(mb_, source_polygon);
-    const LocalPolygon target_absolute = local_polygon(mb_, target_polygon);
+    const LocalPolygon source = local_polygon(mb_, source_polygon, is_spherical_);
+    const LocalPolygon target_absolute = local_polygon(mb_, target_polygon, is_spherical_);
 
     std::vector<Eigen::Vector2d> target_points_in_source_frame;
     target_points_in_source_frame.reserve(target_absolute.points.size());
-    for (const Eigen::Vector2d& target_relative : target_absolute.points) {
-        target_points_in_source_frame.push_back(target_relative + target_absolute.centroid - source.centroid);
+    if (is_spherical_) {
+        for (const Eigen::Vector3d& p3d : target_absolute.points_3d) {
+            double dot = p3d.dot(source.n);
+            if (dot < 1e-10) {
+                throw std::runtime_error("Target polygon cannot be projected onto source tangent plane");
+            }
+            Eigen::Vector3d p_gnom = p3d / dot;
+            target_points_in_source_frame.emplace_back(p_gnom.dot(source.e_x) - source.centroid.x(), p_gnom.dot(source.e_y) - source.centroid.y());
+        }
+    } else {
+        for (const Eigen::Vector2d& target_relative : target_absolute.points) {
+            target_points_in_source_frame.push_back(target_relative + target_absolute.centroid - source.centroid);
+        }
     }
 
     std::vector<double> target_fluxes;
@@ -645,26 +698,44 @@ EdgeTransferResult MimeticInterpolator::transfer_source_to_target_edges(
         ReconstructionCoeffs coeffs;
         coeffs.d = dptr[0];
         coeffs.harmonic.assign(dptr + 1, dptr + size);
-        const LocalPolygon local = local_polygon(mb_, source_polygon);
+        const LocalPolygon local = local_polygon(mb_, source_polygon, is_spherical_);
         sources.push_back(SourceCache{source_polygon, local, absolute_points(local), coeffs});
     }
 
     EdgeTransferResult result;
 
     for (const moab::EntityHandle target_polygon : target_polygons) {
-        const LocalPolygon target = local_polygon(mb_, target_polygon);
+        const LocalPolygon target = local_polygon(mb_, target_polygon, is_spherical_);
         const std::vector<LocalEdge> target_edges = local_edges(mb_, target);
 
         for (std::size_t edge_index = 0; edge_index < target_edges.size(); ++edge_index) {
             const LocalEdge& target_edge = target_edges[edge_index];
-            const Eigen::Vector2d target_a = target.centroid + target_edge.a;
-            const Eigen::Vector2d target_b = target.centroid + target_edge.b;
-
             const std::size_t target_dof = result.target_edges.size();
             result.target_edges.push_back(DirectedEdgeDof{target_polygon, target_edge.handle, edge_index});
             result.target_fluxes.push_back(0.0);
 
+            Eigen::Vector3d v_t1 = target.points_3d[edge_index];
+            Eigen::Vector3d v_t2 = target.points_3d[(edge_index + 1) % target.points_3d.size()];
+
             for (const SourceCache& source : sources) {
+                Eigen::Vector2d target_a;
+                Eigen::Vector2d target_b;
+
+                if (is_spherical_) {
+                    double dot1 = v_t1.dot(source.local.n);
+                    double dot2 = v_t2.dot(source.local.n);
+                    if (dot1 < 1e-10 || dot2 < 1e-10) {
+                        continue;
+                    }
+                    Eigen::Vector3d p1 = v_t1 / dot1;
+                    Eigen::Vector3d p2 = v_t2 / dot2;
+                    target_a = Eigen::Vector2d(p1.dot(source.local.e_x), p1.dot(source.local.e_y));
+                    target_b = Eigen::Vector2d(p2.dot(source.local.e_x), p2.dot(source.local.e_y));
+                } else {
+                    target_a = target.centroid + target_edge.a;
+                    target_b = target.centroid + target_edge.b;
+                }
+
                 Eigen::Vector2d clipped_a;
                 Eigen::Vector2d clipped_b;
                 if (!clip_segment_to_convex_polygon(target_a, target_b, source.absolute_points, clipped_a, clipped_b)) {
@@ -710,7 +781,7 @@ SparseEdgeProjection MimeticInterpolator::assemble_edge_projection_operator(
     SparseEdgeProjection projection;
 
     for (const moab::EntityHandle source_polygon : source_polygons) {
-        const LocalPolygon local = local_polygon(mb_, source_polygon);
+        const LocalPolygon local = local_polygon(mb_, source_polygon, is_spherical_);
         const std::vector<LocalEdge> edges = local_edges(mb_, local);
         SourceCache cache{
             source_polygon,
@@ -730,7 +801,7 @@ SparseEdgeProjection MimeticInterpolator::assemble_edge_projection_operator(
 
     std::vector<Eigen::Triplet<double>> triplets;
     for (const moab::EntityHandle target_polygon : target_polygons) {
-        const LocalPolygon target = local_polygon(mb_, target_polygon);
+        const LocalPolygon target = local_polygon(mb_, target_polygon, is_spherical_);
         const std::vector<LocalEdge> target_edges = local_edges(mb_, target);
 
         for (std::size_t edge_index = 0; edge_index < target_edges.size(); ++edge_index) {
