@@ -103,9 +103,18 @@ int main()
 
         for (const Rect& source_rect : source_cells) {
             const mimetic::LocalPolygon source_poly = mimetic::local_polygon(mb, source_rect.cell);
-            mimetic::ReconstructionCoeffs coeffs{};
-            mimetic::check_moab(mb.tag_get_data(interpolator.coeffs_tag(), &source_rect.cell, 1, &coeffs),
+            
+            const void* ptr = nullptr;
+            int size = 0;
+            mimetic::check_moab(mb.tag_get_by_ptr(interpolator.coeffs_tag(), &source_rect.cell, 1, &ptr, &size),
                                 "Failed to read source coefficients");
+            
+            const double* d_ptr = static_cast<const double*>(ptr);
+            mimetic::ReconstructionCoeffs coeffs{};
+            if (size > 0) {
+                coeffs.d = d_ptr[0];
+                coeffs.harmonic.assign(d_ptr + 1, d_ptr + size);
+            }
 
             for (const Rect& target_rect : target_cells) {
                 Rect overlap{};
