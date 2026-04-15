@@ -662,7 +662,7 @@ intersection and quadrature tests.
         mesh-edge collapse requires explicit orientation metadata.
 \end{itemize}
 
-\section{Conclusions}
+\section{Conclusions and Future Research Directions}
 
 The present implementation demonstrates that the level-2 harmonic-polynomial
 mimetic reconstruction can be expressed cleanly in MOAB/Eigen3 and verified on
@@ -675,10 +675,18 @@ source-edge to target-edge projection matrix.  This validates the core local
 reconstruction, edge-wise remap, and local conservative integration kernels
 needed for a future spherical polygon mesh transfer tool.
 
-The next implementation phase should move convex polygon intersection into the
-library, add MOAB spatial acceleration, and then introduce spherical geometry.
+\subsection*{Future Research Directions}
+Building on the rigorously verified 2D planar framework, the following logical paths are proposed for future research:
+
+\begin{itemize}
+    \item \textbf{Spherical Meshes}: Extend the mimetic interpolation framework to handle meshes on a sphere (e.g., cubed-sphere or spherical Voronoi meshes). This requires mapping the 2D planar algorithms to curved manifolds, projecting the reconstruction and intersection algorithms while maintaining exact geometric mass conservation on spherical polygons.
+    \item \textbf{Performance Optimization}: Profile and optimize the KKT saddle-point solver. As the local patch sizes and polynomial degrees grow, swapping the current dense \texttt{Eigen::FullPivLU} solver for a more efficient sparse direct solver or a preconditioned iterative method will become critical for high-resolution and high-degree applications.
+    \item \textbf{3D Polyhedral Support}: Begin extending the geometric intersection and interpolation logic to fully 3D polyhedrons (e.g., hexahedra, prisms, arbitrary Voronoi cells). This involves extending the boundary flux theorems to 3D surface integrals and defining basis functions over volumetric domains.
+    \item \textbf{Integration}: Package the library into a modular component for integration into larger simulation frameworks (such as global climate or weather models). This includes supporting distributed MOAB mesh loading, managing MPI parallel halo exchanges for cross-processor polygon intersections, and exposing a clean C/Fortran API.
+\end{itemize}
+
 At that point the same overlap invariant, Eq.~\eqref{eq:overlap_conservation},
-should remain the primary acceptance test.
+should remain the primary acceptance test for these generalized topologies.
 
 \bibliographystyle{plain}
 \bibliography{references}
