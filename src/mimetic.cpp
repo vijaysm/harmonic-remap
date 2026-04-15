@@ -14,16 +14,20 @@ void check_moab(const moab::ErrorCode code, const std::string& message)
     }
 }
 
-// Harmonic basis used by the level-2 truncation in report Eq. (3).
-double p1(const Eigen::Vector2d& p) { return p.x(); }
-double q1(const Eigen::Vector2d& p) { return p.y(); }
-double p2(const Eigen::Vector2d& p) { return p.x() * p.x() - p.y() * p.y(); }
-double q2(const Eigen::Vector2d& p) { return 2.0 * p.x() * p.y(); }
+#include <complex>
 
-Eigen::Vector2d grad_p1(const Eigen::Vector2d&) { return Eigen::Vector2d(1.0, 0.0); }
-Eigen::Vector2d grad_q1(const Eigen::Vector2d&) { return Eigen::Vector2d(0.0, 1.0); }
-Eigen::Vector2d grad_p2(const Eigen::Vector2d& p) { return Eigen::Vector2d(2.0 * p.x(), -2.0 * p.y()); }
-Eigen::Vector2d grad_q2(const Eigen::Vector2d& p) { return Eigen::Vector2d(2.0 * p.y(), 2.0 * p.x()); }
+void eval_harmonic_basis(int k, const Eigen::Vector2d& p,
+                         double& P, double& Q,
+                         Eigen::Vector2d& gradP, Eigen::Vector2d& gradQ)
+{
+    std::complex<double> z(p.x(), p.y());
+    std::complex<double> zk = std::pow(z, k);
+    P = zk.real();
+    Q = zk.imag();
+    std::complex<double> zk1 = (k == 1) ? std::complex<double>(1.0, 0.0) : std::pow(z, k - 1);
+    gradP = Eigen::Vector2d(k * zk1.real(), -k * zk1.imag());
+    gradQ = Eigen::Vector2d(k * zk1.imag(),  k * zk1.real());
+}
 
 namespace {
 
@@ -39,42 +43,77 @@ std::vector<Eigen::Vector2d> absolute_points(const LocalPolygon& polygon)
 
 Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly, const std::vector<LocalEdge>& edges)
 {
-    std::array<double (*)(const Eigen::Vector2d&), 4> basis = {{p1, q1, p2, q2}};
-    std::array<Eigen::Vector2d (*)(const Eigen::Vector2d&), 4> gradients = {{grad_p1, grad_q1, grad_p2, grad_q2}};
+    const int N = static_cast<int>(edges.size());
+    const int K_max = N / 2;
+    const int N_h = 2 * K_max;
+    const int S = N_h + N - 1;
 
-    Eigen::MatrixXd v = Eigen::MatrixXd::Zero(4, 4);
-    Eigen::MatrixXd moment = Eigen::MatrixXd::Zero(4, static_cast<Eigen::Index>(edges.size()));
-    const Eigen::Vector2d origin(0.0, 0.0);
+    Eigen::MatrixXd V = Eigen::MatrixXd::Zero(N_h, N_h);
+    for (int i = 0; i < N_h; ++i) {
+        int ki = (i / 2) + 1;
+        bool is_Q_i = (i % 2 == 1);
+        for (int j = 0; j < N_h; ++j) {
+            int kj = (j / 2) + 1;
+            bool is_Q_j = (j % 2 == 1);
 
-    for (int i = 0; i < 4; ++i) {
-        double cell_basis_integral = 0.0;
-        double div_integral = 0.0;
-        for (const LocalEdge& edge : edges) {
-            cell_basis_integral += integrate_triangle_scalar(origin, edge.a, edge.b, basis[i]);
-            div_integral += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
-                return p.dot(gradients[i](p));
-            });
-        }
-
-        const double cell_basis_average = cell_basis_integral / poly.area;
-        for (std::size_t e = 0; e < edges.size(); ++e) {
-            const double edge_average = integrate_edge_scalar(edges[e].a, edges[e].b, basis[i]) / edges[e].length;
-            moment(i, static_cast<Eigen::Index>(e)) =
-                (edge_average - cell_basis_average) - 0.5 * div_integral / poly.area;
-        }
-
-        for (int j = 0; j < 4; ++j) {
+            double val = 0.0;
             for (const LocalEdge& edge : edges) {
-                v(i, j) += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
-                    return gradients[i](p).dot(gradients[j](p));
+                val += integrate_triangle_scalar(Eigen::Vector2d::Zero(), edge.a, edge.b, [&](const Eigen::Vector2d& p) {
+                    double Pi, Qi, Pj, Qj;
+                    Eigen::Vector2d gPi, gQi, gPj, gQj;
+                    eval_harmonic_basis(ki, p, Pi, Qi, gPi, gQi);
+                    eval_harmonic_basis(kj, p, Pj, Qj, gPj, gQj);
+                    Eigen::Vector2d gi = is_Q_i ? gQi : gPi;
+                    Eigen::Vector2d gj = is_Q_j ? gQj : gPj;
+                    return gi.dot(gj);
                 });
+            }
+            V(i, j) = val;
+            if (i == j && ki >= 3) {
+                V(i, i) += 1.0e6 * poly.area;
             }
         }
     }
 
-    Eigen::MatrixXd reconstruction = Eigen::MatrixXd::Zero(5, static_cast<Eigen::Index>(edges.size()));
+    Eigen::MatrixXd C = Eigen::MatrixXd::Zero(N - 1, N_h);
+    for (int e = 0; e < N - 1; ++e) {
+        for (int i = 0; i < N_h; ++i) {
+            int ki = (i / 2) + 1;
+            bool is_Q_i = (i % 2 == 1);
+            C(e, i) = integrate_edge_scalar(edges[e].a, edges[e].b, [&](const Eigen::Vector2d& p) {
+                double P, Q;
+                Eigen::Vector2d gP, gQ;
+                eval_harmonic_basis(ki, p, P, Q, gP, gQ);
+                Eigen::Vector2d g = is_Q_i ? gQ : gP;
+                return g.dot(edges[e].outward_normal);
+            });
+        }
+    }
+
+    Eigen::MatrixXd F = Eigen::MatrixXd::Zero(N - 1, N);
+    for (int e = 0; e < N - 1; ++e) {
+        double Ee = integrate_edge_scalar(edges[e].a, edges[e].b, [&](const Eigen::Vector2d& p) {
+            return p.dot(edges[e].outward_normal);
+        });
+        for (int j = 0; j < N; ++j) {
+            F(e, j) = (e == j ? 1.0 : 0.0) - Ee / (2.0 * poly.area);
+        }
+    }
+
+    Eigen::MatrixXd KKT = Eigen::MatrixXd::Zero(S, S);
+    KKT.block(0, 0, N_h, N_h) = V;
+    KKT.block(N_h, 0, N - 1, N_h) = C;
+    KKT.block(0, N_h, N_h, N - 1) = C.transpose();
+
+    Eigen::MatrixXd RHS = Eigen::MatrixXd::Zero(S, N);
+    RHS.block(N_h, 0, N - 1, N) = F;
+
+    Eigen::MatrixXd X = KKT.ldlt().solve(RHS).block(0, 0, N_h, N);
+
+    Eigen::MatrixXd reconstruction = Eigen::MatrixXd::Zero(1 + N_h, N);
     reconstruction.row(0).setConstant(1.0 / poly.area);
-    reconstruction.block(1, 0, 4, static_cast<Eigen::Index>(edges.size())) = v.ldlt().solve(moment);
+    reconstruction.block(1, 0, N_h, N) = X;
+
     return reconstruction;
 }
 
@@ -324,9 +363,8 @@ MimeticInterpolator::MimeticInterpolator(moab::Core& moab_instance) : mb_(moab_i
                                   moab::MB_TAG_DENSE | moab::MB_TAG_CREAT, &default_flux),
                "Failed to create TARGET_FLUX tag");
 
-    const std::array<double, 6> default_coeffs = {{0.0, 0.0, 0.0, 0.0, 0.0, 0.0}};
-    check_moab(mb_.tag_get_handle("COEFFS", 6, moab::MB_TYPE_DOUBLE, tag_coeffs_,
-                                  moab::MB_TAG_DENSE | moab::MB_TAG_CREAT, default_coeffs.data()),
+        check_moab(mb_.tag_get_handle("COEFFS", 0, moab::MB_TYPE_DOUBLE, tag_coeffs_,
+                                  moab::MB_TAG_VARLEN | moab::MB_TAG_SPARSE | moab::MB_TAG_CREAT),
                "Failed to create COEFFS tag");
 }
 
@@ -336,88 +374,131 @@ moab::Tag MimeticInterpolator::coeffs_tag() const { return tag_coeffs_; }
 
 ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab::EntityHandle polygon)
 {
-    // Algorithm 1, step 1: recover ordered local geometry and source flux data.
     const LocalPolygon poly = local_polygon(mb_, polygon);
     const std::vector<LocalEdge> edges = local_edges(mb_, poly);
 
-    Eigen::VectorXd source_flux(edges.size());
-    for (std::size_t i = 0; i < edges.size(); ++i) {
+    const int N = static_cast<int>(edges.size());
+    const int K_max = N / 2;
+    const int N_h = 2 * K_max;
+    const int S = N_h + N - 1;
+
+    Eigen::VectorXd source_flux(N);
+    for (int i = 0; i < N; ++i) {
         double flux = 0.0;
         check_moab(mb_.tag_get_data(tag_source_flux_, &edges[i].handle, 1, &flux), "Failed to read source flux tag");
-        source_flux(static_cast<Eigen::Index>(i)) = flux;
+        source_flux(i) = flux;
     }
 
-    // Eq. (4) in the report: constant divergence is the signed edge-flux sum
-    // divided by polygon area.
     const double divergence = source_flux.sum() / poly.area;
 
-    std::array<double (*)(const Eigen::Vector2d&), 4> basis = {{p1, q1, p2, q2}};
-    std::array<Eigen::Vector2d (*)(const Eigen::Vector2d&), 4> gradients = {{grad_p1, grad_q1, grad_p2, grad_q2}};
+    Eigen::MatrixXd V = Eigen::MatrixXd::Zero(N_h, N_h);
+    for (int i = 0; i < N_h; ++i) {
+        int ki = (i / 2) + 1;
+        bool is_Q_i = (i % 2 == 1);
+        for (int j = 0; j < N_h; ++j) {
+            int kj = (j / 2) + 1;
+            bool is_Q_j = (j % 2 == 1);
 
-    // Algorithm 1, steps 3--6: assemble the harmonic Gram matrix and the
-    // Gauss-theorem moment right-hand side. The divergence correction subtracts
-    // the known (d/2)x contribution, leaving only harmonic coefficients unknown.
-    Eigen::MatrixXd v = Eigen::MatrixXd::Zero(4, 4);
-    Eigen::VectorXd rhs = Eigen::VectorXd::Zero(4);
-    const Eigen::Vector2d origin(0.0, 0.0);
-
-    for (int i = 0; i < 4; ++i) {
-        double cell_basis_integral = 0.0;
-        double div_integral = 0.0;
-        for (const LocalEdge& edge : edges) {
-            cell_basis_integral += integrate_triangle_scalar(origin, edge.a, edge.b, basis[i]);
-            div_integral += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
-                return p.dot(gradients[i](p));
-            });
-        }
-        const double cell_basis_average = cell_basis_integral / poly.area;
-        rhs(i) -= 0.5 * divergence * div_integral;
-
-        for (std::size_t e = 0; e < edges.size(); ++e) {
-            const double edge_average = integrate_edge_scalar(edges[e].a, edges[e].b, basis[i]) / edges[e].length;
-            rhs(i) += source_flux(static_cast<Eigen::Index>(e)) * (edge_average - cell_basis_average);
-        }
-
-        for (int j = 0; j < 4; ++j) {
+            double val = 0.0;
             for (const LocalEdge& edge : edges) {
-                v(i, j) += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
-                    return gradients[i](p).dot(gradients[j](p));
+                val += integrate_triangle_scalar(Eigen::Vector2d::Zero(), edge.a, edge.b, [&](const Eigen::Vector2d& p) {
+                    double Pi, Qi, Pj, Qj;
+                    Eigen::Vector2d gPi, gQi, gPj, gQj;
+                    eval_harmonic_basis(ki, p, Pi, Qi, gPi, gQi);
+                    eval_harmonic_basis(kj, p, Pj, Qj, gPj, gQj);
+                    Eigen::Vector2d gi = is_Q_i ? gQi : gPi;
+                    Eigen::Vector2d gj = is_Q_j ? gQj : gPj;
+                    return gi.dot(gj);
                 });
+            }
+            V(i, j) = val;
+            if (i == j && ki >= 3) {
+                V(i, i) += 1.0e6 * poly.area;
             }
         }
     }
 
-    // Fixed-size in practice (4 harmonic unknowns), but dynamic Eigen matrices
-    // keep the prototype close to the mathematical notation in the report.
-    const Eigen::VectorXd harmonic_coeffs = v.ldlt().solve(rhs);
-    ReconstructionCoeffs coeffs = {
-        0.0,
-        divergence,
-        harmonic_coeffs(0),
-        harmonic_coeffs(1),
-        harmonic_coeffs(2),
-        harmonic_coeffs(3),
-    };
-    check_moab(mb_.tag_set_data(tag_coeffs_, &polygon, 1, &coeffs), "Failed to store reconstruction coefficients");
+    Eigen::MatrixXd C = Eigen::MatrixXd::Zero(N - 1, N_h);
+    Eigen::VectorXd F_vec = Eigen::VectorXd::Zero(N - 1);
+    for (int e = 0; e < N - 1; ++e) {
+        for (int i = 0; i < N_h; ++i) {
+            int ki = (i / 2) + 1;
+            bool is_Q_i = (i % 2 == 1);
+            C(e, i) = integrate_edge_scalar(edges[e].a, edges[e].b, [&](const Eigen::Vector2d& p) {
+                double P, Q;
+                Eigen::Vector2d gP, gQ;
+                eval_harmonic_basis(ki, p, P, Q, gP, gQ);
+                Eigen::Vector2d g = is_Q_i ? gQ : gP;
+                return g.dot(edges[e].outward_normal);
+            });
+        }
+        double Ee = integrate_edge_scalar(edges[e].a, edges[e].b, [&](const Eigen::Vector2d& p) {
+            return p.dot(edges[e].outward_normal);
+        });
+        F_vec(e) = source_flux(e) - 0.5 * divergence * Ee;
+    }
+
+    Eigen::MatrixXd KKT = Eigen::MatrixXd::Zero(S, S);
+    KKT.block(0, 0, N_h, N_h) = V;
+    KKT.block(N_h, 0, N - 1, N_h) = C;
+    KKT.block(0, N_h, N_h, N - 1) = C.transpose();
+
+    Eigen::VectorXd rhs = Eigen::VectorXd::Zero(S);
+    rhs.segment(N_h, N - 1) = F_vec;
+
+    Eigen::VectorXd sol = KKT.ldlt().solve(rhs);
+    
+    ReconstructionCoeffs coeffs;
+    coeffs.d = divergence;
+    coeffs.harmonic.assign(sol.data(), sol.data() + N_h);
+
+    std::vector<double> tag_data(1 + N_h);
+    tag_data[0] = coeffs.d;
+    for (int i = 0; i < N_h; ++i) tag_data[1 + i] = coeffs.harmonic[i];
+
+    const void* ptr = tag_data.data();
+    int size = tag_data.size();
+    check_moab(mb_.tag_set_by_ptr(tag_coeffs_, &polygon, 1, &ptr, &size), "Failed to store reconstruction coefficients");
+
     return coeffs;
 }
 
 Eigen::Vector2d MimeticInterpolator::velocity(const ReconstructionCoeffs& coeffs, const Eigen::Vector2d& p) const
 {
-    return 0.5 * coeffs.d * p + coeffs.a1 * grad_p1(p) + coeffs.b1 * grad_q1(p) + coeffs.a2 * grad_p2(p) +
-           coeffs.b2 * grad_q2(p);
+    Eigen::Vector2d v = 0.5 * coeffs.d * p;
+    const int N_h = static_cast<int>(coeffs.harmonic.size());
+    for (int i = 0; i < N_h; ++i) {
+        int k = (i / 2) + 1;
+        bool is_Q = (i % 2 == 1);
+        double P, Q;
+        Eigen::Vector2d gP, gQ;
+        eval_harmonic_basis(k, p, P, Q, gP, gQ);
+        v += coeffs.harmonic[i] * (is_Q ? gQ : gP);
+    }
+    return v;
 }
 
 double MimeticInterpolator::line_integral(const moab::EntityHandle source_polygon,
                                           const Eigen::Vector2d& a,
                                           const Eigen::Vector2d& b) const
 {
-    // Algorithm 2, reduction step: u_h is a gradient plus (d/2)x, so the line
-    // integral is the potential difference plus d/4(|b|^2-|a|^2).
-    ReconstructionCoeffs coeffs{};
-    check_moab(mb_.tag_get_data(tag_coeffs_, &source_polygon, 1, &coeffs), "Failed to read reconstruction coefficients");
-    return 0.25 * coeffs.d * (b.squaredNorm() - a.squaredNorm()) + coeffs.a1 * (p1(b) - p1(a)) +
-           coeffs.b1 * (q1(b) - q1(a)) + coeffs.a2 * (p2(b) - p2(a)) + coeffs.b2 * (q2(b) - q2(a));
+    const void* ptr = nullptr;
+    int size = 0;
+    check_moab(mb_.tag_get_by_ptr(tag_coeffs_, &source_polygon, 1, &ptr, &size), "Failed to read reconstruction coefficients");
+    const double* dptr = static_cast<const double*>(ptr);
+    const double d = dptr[0];
+
+    double val = 0.25 * d * (b.squaredNorm() - a.squaredNorm());
+    for (int i = 0; i < size - 1; ++i) {
+        int k = (i / 2) + 1;
+        bool is_Q = (i % 2 == 1);
+        double Pa, Qa, Pb, Qb;
+        Eigen::Vector2d gPa, gQa, gPb, gQb;
+        eval_harmonic_basis(k, a, Pa, Qa, gPa, gQa);
+        eval_harmonic_basis(k, b, Pb, Qb, gPb, gQb);
+        val += dptr[1 + i] * (is_Q ? (Qb - Qa) : (Pb - Pa));
+    }
+    return val;
 }
 
 double MimeticInterpolator::edge_flux(const ReconstructionCoeffs& coeffs,
@@ -450,9 +531,14 @@ std::vector<double> MimeticInterpolator::transfer_to_target_polygon_edges(const 
 {
     // Single-source-cell target-edge transfer used by the patch test. General
     // nonmatching meshes use clipped overlap polygons in the tests instead.
-    ReconstructionCoeffs coeffs{};
-    check_moab(mb_.tag_get_data(tag_coeffs_, &source_polygon, 1, &coeffs),
+    const void* ptr = nullptr;
+    int size = 0;
+    check_moab(mb_.tag_get_by_ptr(tag_coeffs_, &source_polygon, 1, &ptr, &size),
                "Failed to read source reconstruction coefficients");
+    const double* dptr = static_cast<const double*>(ptr);
+    ReconstructionCoeffs coeffs;
+    coeffs.d = dptr[0];
+    coeffs.harmonic.assign(dptr + 1, dptr + size);
 
     const LocalPolygon source = local_polygon(mb_, source_polygon);
     const LocalPolygon target_absolute = local_polygon(mb_, target_polygon);
@@ -490,9 +576,14 @@ EdgeTransferResult MimeticInterpolator::transfer_source_to_target_edges(
     std::vector<SourceCache> sources;
     sources.reserve(source_polygons.size());
     for (const moab::EntityHandle source_polygon : source_polygons) {
-        ReconstructionCoeffs coeffs{};
-        check_moab(mb_.tag_get_data(tag_coeffs_, &source_polygon, 1, &coeffs),
+        const void* ptr = nullptr;
+        int size = 0;
+        check_moab(mb_.tag_get_by_ptr(tag_coeffs_, &source_polygon, 1, &ptr, &size),
                    "Failed to read source reconstruction coefficients");
+        const double* dptr = static_cast<const double*>(ptr);
+        ReconstructionCoeffs coeffs;
+        coeffs.d = dptr[0];
+        coeffs.harmonic.assign(dptr + 1, dptr + size);
         const LocalPolygon local = local_polygon(mb_, source_polygon);
         sources.push_back(SourceCache{source_polygon, local, absolute_points(local), coeffs});
     }
@@ -597,12 +688,21 @@ SparseEdgeProjection MimeticInterpolator::assemble_edge_projection_operator(
 
                 const Eigen::Vector2d local_a = clipped_a - source.local.centroid;
                 const Eigen::Vector2d local_b = clipped_b - source.local.centroid;
-                Eigen::Matrix<double, 1, 5> evaluation;
-                evaluation(0, 0) = edge_flux(ReconstructionCoeffs{0.0, 1.0, 0.0, 0.0, 0.0, 0.0}, local_a, local_b);
-                evaluation(0, 1) = edge_flux(ReconstructionCoeffs{0.0, 0.0, 1.0, 0.0, 0.0, 0.0}, local_a, local_b);
-                evaluation(0, 2) = edge_flux(ReconstructionCoeffs{0.0, 0.0, 0.0, 1.0, 0.0, 0.0}, local_a, local_b);
-                evaluation(0, 3) = edge_flux(ReconstructionCoeffs{0.0, 0.0, 0.0, 0.0, 1.0, 0.0}, local_a, local_b);
-                evaluation(0, 4) = edge_flux(ReconstructionCoeffs{0.0, 0.0, 0.0, 0.0, 0.0, 1.0}, local_a, local_b);
+                const int N_h = source.reconstruction.rows() - 1;
+                Eigen::MatrixXd evaluation = Eigen::MatrixXd::Zero(1, 1 + N_h);
+                
+                ReconstructionCoeffs c_div;
+                c_div.d = 1.0;
+                c_div.harmonic.resize(N_h, 0.0);
+                evaluation(0, 0) = edge_flux(c_div, local_a, local_b);
+
+                for (int i = 0; i < N_h; ++i) {
+                    ReconstructionCoeffs c_harm;
+                    c_harm.d = 0.0;
+                    c_harm.harmonic.resize(N_h, 0.0);
+                    c_harm.harmonic[i] = 1.0;
+                    evaluation(0, 1 + i) = edge_flux(c_harm, local_a, local_b);
+                }
 
                 const Eigen::RowVectorXd weights = evaluation * source.reconstruction;
                 for (Eigen::Index j = 0; j < weights.cols(); ++j) {

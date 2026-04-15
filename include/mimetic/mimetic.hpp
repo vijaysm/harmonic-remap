@@ -32,23 +32,13 @@ constexpr double kTolerance = 1.0e-12;
  */
 void check_moab(moab::ErrorCode code, const std::string& message);
 
-/// Level-1 harmonic polynomial P_1(x,y)=x.
-double p1(const Eigen::Vector2d& p);
-/// Level-1 harmonic polynomial Q_1(x,y)=y.
-double q1(const Eigen::Vector2d& p);
-/// Level-2 harmonic polynomial P_2(x,y)=x^2-y^2.
-double p2(const Eigen::Vector2d& p);
-/// Level-2 harmonic polynomial Q_2(x,y)=2xy.
-double q2(const Eigen::Vector2d& p);
-
-/// Gradient of P_1 used in the reconstruction basis.
-Eigen::Vector2d grad_p1(const Eigen::Vector2d& p);
-/// Gradient of Q_1 used in the reconstruction basis.
-Eigen::Vector2d grad_q1(const Eigen::Vector2d& p);
-/// Gradient of P_2 used in the reconstruction basis.
-Eigen::Vector2d grad_p2(const Eigen::Vector2d& p);
-/// Gradient of Q_2 used in the reconstruction basis.
-Eigen::Vector2d grad_q2(const Eigen::Vector2d& p);
+/**
+ * Evaluate the k-th harmonic basis functions P_k, Q_k and their gradients.
+ * P_k(x,y) = Re((x+iy)^k), Q_k(x,y) = Im((x+iy)^k).
+ */
+void eval_harmonic_basis(int k, const Eigen::Vector2d& p,
+                         double& P, double& Q,
+                         Eigen::Vector2d& gradP, Eigen::Vector2d& gradQ);
 
 /**
  * Integrate a scalar function on a straight edge with two-point Gauss-Legendre.
@@ -60,11 +50,14 @@ Eigen::Vector2d grad_q2(const Eigen::Vector2d& p);
 template <typename Func>
 double integrate_edge_scalar(const Eigen::Vector2d& a, const Eigen::Vector2d& b, const Func& func)
 {
-    const double xi = 1.0 / std::sqrt(3.0);
     const double length = (b - a).norm();
-    const Eigen::Vector2d midpoint = 0.5 * (a + b);
+    const Eigen::Vector2d mid = 0.5 * (a + b);
     const Eigen::Vector2d half_delta = 0.5 * (b - a);
-    return 0.5 * length * (func(midpoint - xi * half_delta) + func(midpoint + xi * half_delta));
+    // 4-point Gauss-Legendre (degree 7)
+    const double x1 = 0.3399810435848563, w1 = 0.6521451548625461;
+    const double x2 = 0.8611363115940526, w2 = 0.3478548451374538;
+    return 0.5 * length * (w1 * func(mid - x1 * half_delta) + w1 * func(mid + x1 * half_delta) +
+                           w2 * func(mid - x2 * half_delta) + w2 * func(mid + x2 * half_delta));
 }
 
 /**
@@ -83,18 +76,20 @@ double integrate_triangle_scalar(const Eigen::Vector2d& a,
 {
     const double signed_twice_area = (b - a).x() * (c - a).y() - (b - a).y() * (c - a).x();
     const double area = 0.5 * std::abs(signed_twice_area);
-    const std::array<std::array<double, 3>, 3> bary = {{
-        {{1.0 / 6.0, 1.0 / 6.0, 2.0 / 3.0}},
-        {{1.0 / 6.0, 2.0 / 3.0, 1.0 / 6.0}},
-        {{2.0 / 3.0, 1.0 / 6.0, 1.0 / 6.0}},
-    }};
 
+    const double a1 = 0.4701420641051151, b1 = 1.0 - 2.0 * a1, w1 = 0.1323941527885062;
+    const double a2 = 0.1012865073234563, b2 = 1.0 - 2.0 * a2, w2 = 0.1259391805448271;
+    struct Pt { double w, u, v, w_bary; };
+    const Pt pts[7] = {
+        {0.225, 1.0/3.0, 1.0/3.0, 1.0/3.0},
+        {w1, a1, a1, b1}, {w1, a1, b1, a1}, {w1, b1, a1, a1},
+        {w2, a2, a2, b2}, {w2, a2, b2, a2}, {w2, b2, a2, a2}
+    };
     double sum = 0.0;
-    for (const auto& w : bary) {
-        const Eigen::Vector2d p = w[0] * a + w[1] * b + w[2] * c;
-        sum += func(p);
+    for (int i = 0; i < 7; ++i) {
+        sum += pts[i].w * func(pts[i].u * a + pts[i].v * b + pts[i].w_bary * c);
     }
-    return area * sum / 3.0;
+    return area * sum;
 }
 
 /**
@@ -106,12 +101,8 @@ double integrate_triangle_scalar(const Eigen::Vector2d& a,
  * but drops out of all gradient and line-integral evaluations in this prototype.
  */
 struct ReconstructionCoeffs {
-    double c;
     double d;
-    double a1;
-    double b1;
-    double a2;
-    double b2;
+    std::vector<double> harmonic;
 };
 
 /**

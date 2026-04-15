@@ -33,19 +33,19 @@ int main()
 
         std::cout << "Reconstructed coefficients:\n";
         std::cout << std::fixed << std::setprecision(15);
-        std::cout << "  c  = " << coeffs.c << "\n";
+        std::cout << "  c  = " << 0.0 << "\n";
         std::cout << "  d  = " << coeffs.d << "\n";
-        std::cout << "  a1 = " << coeffs.a1 << "\n";
-        std::cout << "  b1 = " << coeffs.b1 << "\n";
-        std::cout << "  a2 = " << coeffs.a2 << "\n";
-        std::cout << "  b2 = " << coeffs.b2 << "\n\n";
+        std::cout << "  a1 = " << coeffs.harmonic[0] << "\n";
+        std::cout << "  b1 = " << coeffs.harmonic[1] << "\n";
+        std::cout << "  a2 = " << coeffs.harmonic[2] << "\n";
+        std::cout << "  b2 = " << coeffs.harmonic[3] << "\n\n";
 
         bool ok = true;
         ok = mimetic::test::near(coeffs.d, 0.0, mimetic::kTolerance, "zero divergence") && ok;
-        ok = mimetic::test::near(coeffs.a1, 1.0, mimetic::kTolerance, "constant x velocity coeff") && ok;
-        ok = mimetic::test::near(coeffs.b1, 1.0, mimetic::kTolerance, "constant y velocity coeff") && ok;
-        ok = mimetic::test::near(coeffs.a2, 0.0, mimetic::kTolerance, "zero P2 coefficient") && ok;
-        ok = mimetic::test::near(coeffs.b2, 0.0, mimetic::kTolerance, "zero Q2 coefficient") && ok;
+        ok = mimetic::test::near(coeffs.harmonic[0], 1.0, mimetic::kTolerance, "constant x velocity coeff") && ok;
+        ok = mimetic::test::near(coeffs.harmonic[1], 1.0, mimetic::kTolerance, "constant y velocity coeff") && ok;
+        ok = mimetic::test::near(coeffs.harmonic[2], 0.0, mimetic::kTolerance, "zero P2 coefficient") && ok;
+        ok = mimetic::test::near(coeffs.harmonic[3], 0.0, mimetic::kTolerance, "zero Q2 coefficient") && ok;
 
         const Vector2d segment_a(-0.2, -0.3);
         const Vector2d segment_b(0.4, 0.2);
