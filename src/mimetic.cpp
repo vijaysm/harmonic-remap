@@ -69,9 +69,7 @@ Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly, const std
                 });
             }
             V(i, j) = val;
-            if (i == j && ki >= 3) {
-                V(i, i) += 1.0e6 * poly.area;
-            }
+
         }
     }
 
@@ -100,15 +98,18 @@ Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly, const std
         }
     }
 
-    Eigen::MatrixXd KKT = Eigen::MatrixXd::Zero(S, S);
-    KKT.block(0, 0, N_h, N_h) = V;
-    KKT.block(N_h, 0, N - 1, N_h) = C;
-    KKT.block(0, N_h, N_h, N - 1) = C.transpose();
-
-    Eigen::MatrixXd RHS = Eigen::MatrixXd::Zero(S, N);
-    RHS.block(N_h, 0, N - 1, N) = F;
-
-    Eigen::MatrixXd X = KKT.ldlt().solve(RHS).block(0, 0, N_h, N);
+    for (int i = 4; i < N_h; ++i) {
+        V(i, i) += 1.0e2 * poly.area;
+    }
+    Eigen::LLT<Eigen::MatrixXd> llt(V);
+    Eigen::MatrixXd L = llt.matrixL();
+    Eigen::MatrixXd L_inv = L.inverse();
+    Eigen::MatrixXd A = C * L_inv.transpose();
+    
+    Eigen::CompleteOrthogonalDecomposition<Eigen::MatrixXd> cod(A);
+    Eigen::MatrixXd A_pinv = cod.pseudoInverse();
+    
+    Eigen::MatrixXd X = L_inv.transpose() * A_pinv * F;
 
     Eigen::MatrixXd reconstruction = Eigen::MatrixXd::Zero(1 + N_h, N);
     reconstruction.row(0).setConstant(1.0 / poly.area);
@@ -412,9 +413,7 @@ ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab:
                 });
             }
             V(i, j) = val;
-            if (i == j && ki >= 3) {
-                V(i, i) += 1.0e6 * poly.area;
-            }
+
         }
     }
 
@@ -438,19 +437,22 @@ ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab:
         F_vec(e) = source_flux(e) - 0.5 * divergence * Ee;
     }
 
-    Eigen::MatrixXd KKT = Eigen::MatrixXd::Zero(S, S);
-    KKT.block(0, 0, N_h, N_h) = V;
-    KKT.block(N_h, 0, N - 1, N_h) = C;
-    KKT.block(0, N_h, N_h, N - 1) = C.transpose();
-
-    Eigen::VectorXd rhs = Eigen::VectorXd::Zero(S);
-    rhs.segment(N_h, N - 1) = F_vec;
-
-    Eigen::VectorXd sol = KKT.ldlt().solve(rhs);
+    for (int i = 4; i < N_h; ++i) {
+        V(i, i) += 1.0e2 * poly.area;
+    }
+    Eigen::LLT<Eigen::MatrixXd> llt(V);
+    Eigen::MatrixXd L = llt.matrixL();
+    Eigen::MatrixXd L_inv = L.inverse();
+    Eigen::MatrixXd A = C * L_inv.transpose();
+    
+    Eigen::CompleteOrthogonalDecomposition<Eigen::MatrixXd> cod(A);
+    Eigen::MatrixXd A_pinv = cod.pseudoInverse();
+    
+    Eigen::VectorXd X = L_inv.transpose() * A_pinv * F_vec;
     
     ReconstructionCoeffs coeffs;
     coeffs.d = divergence;
-    coeffs.harmonic.assign(sol.data(), sol.data() + N_h);
+    coeffs.harmonic.assign(X.data(), X.data() + N_h);
 
     std::vector<double> tag_data(1 + N_h);
     tag_data[0] = coeffs.d;
