@@ -268,7 +268,7 @@ Here, $V$ is the mass matrix of the harmonic polynomial basis, $C$ represents th
 
 For highly irregular planar elements like general Voronoi cells, the evaluation matrix $C$ can become ill-conditioned for high-degree modes ($i \ge 4$). To stabilize the solver without breaking the hard constraints $CX = F$, we apply a Tikhonov regularization penalty directly to the high-degree basis diagonal entries of $V$:
 \begin{equation}
-V_{ii} \leftarrow V_{ii} + 1.0 \times 10^6 |A_K| \quad \text{for } i \ge 4
+V_{ii} \leftarrow V_{ii} + 1.0 \times 10^2 |A_K| \quad \text{for } i \ge 4
 \end{equation}
 where $|A_K|$ is the area of the polygon $K$. The system is inverted robustly via an \texttt{Eigen::FullPivLU} dense solver.
 
