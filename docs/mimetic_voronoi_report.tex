@@ -508,7 +508,24 @@ written to MatrixMarket format with source and target edge-map CSV files.
 \subsection{Voronoi n-gon Patch Test}
 
 \subsection{Convergence and Error Visualization}
-Recent development introduced a comprehensive grid visualization pipeline to qualitatively confirm the $O(h^2)$ reconstruction accuracy. The script exports full polygon geometries, the analytic exact solution, and the mimetic reconstructed solution, calculating cell-wise divergence errors on the target grid. 
+Recent development introduced a comprehensive grid visualization pipeline to qualitatively confirm the $O(h^2)$ reconstruction accuracy. The script exports full polygon geometries, the analytic exact solution, and the mimetic reconstructed solution, calculating cell-wise divergence errors on the target grid.
+
+
+\subsubsection*{Distinction Between Error Metrics and Visualizations}
+It is important to precisely distinguish between the quantitative error metrics reported in the convergence tables and the qualitative fields displayed in the visual plots. 
+
+The quantitative error norms ($L_2$ and $L_\infty$) are evaluated directly on the \textbf{edges} of the target grid. For every target edge $e$, the method computes the discrete error between the true analytical line integral of the normal flux ($\int_e \mathbf{u}_{\text{exact}} \cdot \mathbf{n} \, ds$) and the mimetic reconstructed flux transferred onto that edge from the source grid. Evaluating the edge fluxes directly rigorously proves that the local vector field reconstruction is highly accurate and consistent (achieving expected $O(h^2)$ convergence rates) in $H(\text{div})$ space.
+
+In contrast, the multi-panel visualizations evaluate the \textbf{cell-averaged divergence}, a macroscopic scalar field. For each target polygon $K$, the visualization sums the reconstructed fluxes of all edges forming its boundary and divides by the cell area ($\frac{1}{|K|} \sum_{e \in \partial K} \int_e \mathbf{u}_h \cdot \mathbf{n} \, ds$). The three visualization panels display:
+\begin{enumerate}
+    \item \textbf{Source Grid \& Solution:} The exact analytical cell-averaged divergence on the source mesh.
+    \item \textbf{Target Grid \& Reconstructed Solution:} The reconstructed cell-averaged divergence on the target mesh derived from the transferred edge fluxes.
+    \item \textbf{Target Grid \& Error Profile:} The difference between the exact and reconstructed target cell divergences.
+\end{enumerate}
+
+This dual evaluation approach is intentional. The edge metrics prove the $H(\text{div})$ consistency of the local vector field, while the cell-averaged divergence visually confirms macroscopic scalar quantities (such as mass conservation) without numerical artifacts. Because the mimetic method enforces strict geometric conservation, a smooth reconstructed divergence field visually guarantees that the underlying fluxes are behaving perfectly in aggregate.
+
+ 
 
 Figure \ref{fig:error_quad} demonstrates the remapping of a harmonic field from a source quad mesh to a refined target quad mesh. The maximum error profile stays bounded exactly as predicted by the $O(h^2)$ theory. Figures \ref{fig:error_vq} and \ref{fig:error_vv} showcase the corresponding results for Voronoi-to-Quad and Voronoi-to-Voronoi configurations.
 
