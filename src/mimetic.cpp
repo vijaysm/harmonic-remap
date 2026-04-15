@@ -85,6 +85,60 @@ std::vector<Eigen::Vector2d> absolute_points(const LocalPolygon& polygon)
     return points;
 }
 
+bool point_in_convex_polygon(const Eigen::Vector2d& point,
+                             const std::vector<Eigen::Vector2d>& polygon,
+                             const double tolerance)
+{
+    if (polygon.size() < 3) {
+        return false;
+    }
+
+    std::vector<Eigen::Vector2d> clip = polygon;
+    if (signed_area(clip) < 0.0) {
+        std::reverse(clip.begin(), clip.end());
+    }
+
+    for (std::size_t i = 0; i < clip.size(); ++i) {
+        const Eigen::Vector2d a = clip[i];
+        const Eigen::Vector2d b = clip[(i + 1) % clip.size()];
+        const Eigen::Vector2d edge = b - a;
+        const Eigen::Vector2d inward_normal(-edge.y(), edge.x());
+        if (inward_normal.dot(point - a) < -tolerance) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool target_interior_side_intersects_source(const Eigen::Vector2d& clipped_a,
+                                            const Eigen::Vector2d& clipped_b,
+                                            const std::vector<Eigen::Vector2d>& source_polygon,
+                                            const double tolerance)
+{
+    const Eigen::Vector2d delta = clipped_b - clipped_a;
+    const double length = delta.norm();
+    if (length <= tolerance) {
+        return false;
+    }
+
+    double scale = length;
+    for (std::size_t i = 0; i < source_polygon.size(); ++i) {
+        scale = std::max(scale, (source_polygon[(i + 1) % source_polygon.size()] - source_polygon[i]).norm());
+    }
+
+    const Eigen::Vector2d midpoint = 0.5 * (clipped_a + clipped_b);
+    const double strict_tolerance = 1.0e-11 * (1.0 + scale);
+    if (point_in_convex_polygon(midpoint, source_polygon, -strict_tolerance)) {
+        return true;
+    }
+
+    const Eigen::Vector2d target_left_normal(-delta.y(), delta.x());
+    const Eigen::Vector2d probe =
+        midpoint + (strict_tolerance / length) * target_left_normal;
+
+    return point_in_convex_polygon(probe, source_polygon, 0.0);
+}
+
 Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly, const std::vector<LocalEdge>& edges)
 {
     const int N = static_cast<int>(edges.size());
@@ -970,6 +1024,11 @@ EdgeTransferResult MimeticInterpolator::transfer_source_to_target_edges(
                 if (!clip_segment_to_convex_polygon(target_a, target_b, source.absolute_points, clipped_a, clipped_b)) {
                     continue;
                 }
+                if (!target_interior_side_intersects_source(clipped_a, clipped_b,
+                                                            source.absolute_points,
+                                                            options_.geometry_tolerance)) {
+                    continue;
+                }
 
                 const Eigen::Vector2d local_a = clipped_a - source.local.centroid;
                 const Eigen::Vector2d local_b = clipped_b - source.local.centroid;
@@ -1061,6 +1120,11 @@ SparseEdgeProjection MimeticInterpolator::assemble_edge_projection_operator(
                 Eigen::Vector2d clipped_a;
                 Eigen::Vector2d clipped_b;
                 if (!clip_segment_to_convex_polygon(target_a, target_b, source.absolute_points, clipped_a, clipped_b)) {
+                    continue;
+                }
+                if (!target_interior_side_intersects_source(clipped_a, clipped_b,
+                                                            source.absolute_points,
+                                                            options_.geometry_tolerance)) {
                     continue;
                 }
 
