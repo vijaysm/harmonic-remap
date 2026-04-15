@@ -244,6 +244,34 @@ source-cell edges.  This directed convention is important because normal flux
 orientation is cell-local; a shared undirected mesh edge needs a separate
 orientation map before edge DOFs are collapsed.
 
+
+\subsection{KKT Saddle-Point Formulation and Tikhonov Regularization}
+Initial attempts to solve the local reconstruction problem relied on an unconstrained Moore-Penrose pseudo-inverse of the evaluation matrix $C$. While this preserved global geometric conservation, it effectively dropped the Galerkin moment right-hand side, forcing a minimum-norm interpolant that destroyed polynomial consistency and degraded the theoretical $O(h^2)$ convergence rates.
+
+To rigorously enforce the geometric constraints (i.e. exact recovery of edge fluxes) while simultaneously minimizing the $L_2$ error of the reconstruction, we formulated a Karush-Kuhn-Tucker (KKT) saddle-point block system:
+\begin{equation}
+\begin{bmatrix}
+V & C^T \\
+C & 0
+\end{bmatrix}
+\begin{bmatrix}
+X \\
+L
+\end{bmatrix}
+=
+\begin{bmatrix}
+M \\
+F
+\end{bmatrix}
+\end{equation}
+Here, $V$ is the mass matrix of the harmonic polynomial basis, $C$ represents the edge-integral constraint evaluation matrix, $M$ is the Galerkin right-hand side moment vector, $F$ contains the target edge fluxes, $X$ are the unknown polynomial coefficients, and $L$ are the Lagrange multipliers enforcing exact conservation.
+
+For highly irregular planar elements like general Voronoi cells, the evaluation matrix $C$ can become ill-conditioned for high-degree modes ($i \ge 4$). To stabilize the solver without breaking the hard constraints $CX = F$, we apply a Tikhonov regularization penalty directly to the high-degree basis diagonal entries of $V$:
+\begin{equation}
+V_{ii} \leftarrow V_{ii} + 1.0 \times 10^6 |A_K| \quad \text{for } i \ge 4
+\end{equation}
+where $|A_K|$ is the area of the polygon $K$. The system is inverted robustly via an \texttt{Eigen::FullPivLU} dense solver.
+
 \section{Algorithms and Code Traceability}
 
 \subsection*{Algorithm 1: Source-Cell Reconstruction}
@@ -478,6 +506,33 @@ reproduces the direct edge-transfer result to roundoff, and the matrix is
 written to MatrixMarket format with source and target edge-map CSV files.
 
 \subsection{Voronoi n-gon Patch Test}
+
+\subsection{Convergence and Error Visualization}
+Recent development introduced a comprehensive grid visualization pipeline to qualitatively confirm the $O(h^2)$ reconstruction accuracy. The script exports full polygon geometries, the analytic exact solution, and the mimetic reconstructed solution, calculating cell-wise divergence errors on the target grid. 
+
+Figure \ref{fig:error_quad} demonstrates the remapping of a harmonic field from a source quad mesh to a refined target quad mesh. The maximum error profile stays bounded exactly as predicted by the $O(h^2)$ theory. Figures \ref{fig:error_vq} and \ref{fig:error_vv} showcase the corresponding results for Voronoi-to-Quad and Voronoi-to-Voronoi configurations.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{vis_quad_quad_A__harmonic_exact.png}
+    \caption{Quad-to-Quad Domain: Left panel displays the exact source field. The middle panel shows the reconstructed field on the target geometry, and the right panel plots the exact cell-wise reconstruction error.}
+    \label{fig:error_quad}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{vis_voronoi_quad_C__quad_vardiv.png}
+    \caption{Voronoi-to-Quad Domain: Visualization of a variable divergence field transfer.}
+    \label{fig:error_vq}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{vis_voronoi_voronoi_B__sincos_divfree.png}
+    \caption{Voronoi-to-Voronoi Domain: Sin-cos divergence-free field remapped between two independent random seed configurations.}
+    \label{fig:error_vv}
+\end{figure}
+
 
 The Voronoi test uses two different bounded Voronoi meshes over the unit square.
 The source mesh side-count histogram is
