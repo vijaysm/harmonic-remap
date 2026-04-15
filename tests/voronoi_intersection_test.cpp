@@ -273,15 +273,17 @@ int main()
                 total_boundary_flux += boundary_flux;
                 total_expected_flux += expected_flux;
 
-                ok = mimetic::test::near(boundary_flux, expected_flux, 5.0e-11,
+                ok = mimetic::test::near(boundary_flux, expected_flux, mimetic::kConservationTolerance,
                                          "Voronoi overlap " + std::to_string(overlap_count)) &&
                      ok;
             }
 
-            ok = mimetic::test::near(target_area_from_overlaps, polygon_area(target.points), 5.0e-11,
+            ok = mimetic::test::near(target_area_from_overlaps, polygon_area(target.points),
+                                     mimetic::kConservationTolerance,
                                      "target cell covered by overlaps") &&
                  ok;
-            ok = mimetic::test::near(target_flux_from_overlaps, 2.0 * polygon_area(target.points), 5.0e-11,
+            ok = mimetic::test::near(target_flux_from_overlaps, 2.0 * polygon_area(target.points),
+                                     mimetic::kConservationTolerance,
                                      "target conservative integral") &&
                  ok;
         }
@@ -290,11 +292,13 @@ int main()
         ok = mimetic::test::near(source_ngons, 7.0, mimetic::kTolerance, "source cells with n > 4") && ok;
         ok = mimetic::test::near(target_ngons, 10.0, mimetic::kTolerance, "target cells with n > 4") && ok;
         ok = mimetic::test::near(ngon_overlap_count, 23.0, mimetic::kTolerance, "n-gon to n-gon overlaps") && ok;
-        ok = mimetic::test::near(total_overlap_area, 1.0, 5.0e-11, "total overlap area") && ok;
-        ok = mimetic::test::near(total_boundary_flux, total_expected_flux, 5.0e-10,
+        ok = mimetic::test::near(total_overlap_area, 1.0, mimetic::kConservationTolerance,
+                                 "total overlap area") && ok;
+        ok = mimetic::test::near(total_boundary_flux, total_expected_flux, mimetic::kConservationTolerance,
                                  "summed overlap boundary flux") &&
              ok;
-        ok = mimetic::test::near(total_expected_flux, 2.0, 5.0e-10, "integral of div(x,y)") && ok;
+        ok = mimetic::test::near(total_expected_flux, 2.0, mimetic::kConservationTolerance,
+                                 "integral of div(x,y)") && ok;
 
         std::cout << "\nEdge-wise Voronoi source-to-target transfer checks:\n";
         const mimetic::EdgeTransferResult edge_transfer =
@@ -315,13 +319,15 @@ int main()
                 const double exact_flux =
                     mimetic::test::directed_edge_flux_from_absolute_field(a, b, mimetic::test::linear_absolute_field);
                 target_cell_flux += edge_transfer.target_fluxes[target_dof];
-                ok = mimetic::test::near(edge_transfer.target_fluxes[target_dof], exact_flux, 5.0e-11,
+                ok = mimetic::test::near(edge_transfer.target_fluxes[target_dof], exact_flux,
+                                         mimetic::kConservationTolerance,
                                          "Voronoi target directed edge " + std::to_string(target_dof)) &&
                      ok;
                 ++target_dof;
             }
 
-            ok = mimetic::test::near(target_cell_flux, 2.0 * polygon_area(target.points), 5.0e-11,
+            ok = mimetic::test::near(target_cell_flux, 2.0 * polygon_area(target.points),
+                                     mimetic::kConservationTolerance,
                                      "Voronoi target cell edge-flux divergence") &&
                  ok;
         }

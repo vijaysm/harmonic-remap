@@ -131,7 +131,7 @@ int main()
                 total_boundary_flux += boundary_flux;
                 total_expected_flux += expected_flux;
 
-                ok = mimetic::test::near(boundary_flux, expected_flux, 2.0e-12,
+                ok = mimetic::test::near(boundary_flux, expected_flux, mimetic::kConservationTolerance,
                                          "overlap " + std::to_string(overlap_count) + " boundary flux") &&
                      ok;
             }
@@ -139,10 +139,11 @@ int main()
 
         std::cout << "\nAggregate overlap checks:\n";
         ok = mimetic::test::near(total_overlap_area, 1.0, mimetic::kTolerance, "source-target overlap area") && ok;
-        ok = mimetic::test::near(total_boundary_flux, total_expected_flux, 5.0e-12,
+        ok = mimetic::test::near(total_boundary_flux, total_expected_flux, mimetic::kConservationTolerance,
                                  "summed overlap divergence theorem") &&
              ok;
-        ok = mimetic::test::near(total_expected_flux, 2.0, 5.0e-12, "exact integral of div(x,y)") && ok;
+        ok = mimetic::test::near(total_expected_flux, 2.0, mimetic::kConservationTolerance,
+                                 "exact integral of div(x,y)") && ok;
 
         std::cout << "\nEdge-wise source-to-target transfer checks:\n";
         const mimetic::EdgeTransferResult edge_transfer =
@@ -162,19 +163,21 @@ int main()
                 const double exact_flux =
                     mimetic::test::directed_edge_flux_from_absolute_field(a, b, mimetic::test::linear_absolute_field);
                 target_cell_flux += edge_transfer.target_fluxes[target_dof];
-                ok = mimetic::test::near(edge_transfer.target_fluxes[target_dof], exact_flux, 5.0e-12,
+                ok = mimetic::test::near(edge_transfer.target_fluxes[target_dof], exact_flux,
+                                         mimetic::kConservationTolerance,
                                          "target directed edge " + std::to_string(target_dof)) &&
                      ok;
 
                 double tagged_flux = 0.0;
                 mimetic::check_moab(mb.tag_get_data(interpolator.target_flux_tag(), &edge.handle, 1, &tagged_flux),
                                     "Failed to read target flux tag");
-                ok = mimetic::test::near(tagged_flux, exact_flux, 5.0e-12,
+                ok = mimetic::test::near(tagged_flux, exact_flux, mimetic::kConservationTolerance,
                                          "target flux tag " + std::to_string(target_dof)) &&
                      ok;
                 ++target_dof;
             }
-            ok = mimetic::test::near(target_cell_flux, 2.0 * rect_area(target_rect), 5.0e-12,
+            ok = mimetic::test::near(target_cell_flux, 2.0 * rect_area(target_rect),
+                                     mimetic::kConservationTolerance,
                                      "target cell edge-flux divergence") &&
                  ok;
         }
@@ -198,7 +201,8 @@ int main()
                                  "projection columns") &&
              ok;
         for (Eigen::Index i = 0; i < projected_fluxes.size(); ++i) {
-            ok = mimetic::test::near(projected_fluxes(i), edge_transfer.target_fluxes[static_cast<std::size_t>(i)], 5.0e-12,
+            ok = mimetic::test::near(projected_fluxes(i), edge_transfer.target_fluxes[static_cast<std::size_t>(i)],
+                                     mimetic::kConservationTolerance,
                                      "matrix-applied target edge " + std::to_string(i)) &&
                  ok;
         }

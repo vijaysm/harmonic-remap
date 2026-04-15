@@ -443,6 +443,16 @@ bool run_refinement_study(const std::string& domain_label,
             print_table_row(tf.name, metrics[i], rate_l2, rate_linf);
         }
 
+        for (const ErrorMetrics& m : metrics) {
+            if (m.conservation > mimetic::kConservationTolerance) {
+                std::cout << "  [FAIL] " << tf.name
+                          << " conservation residual = " << std::scientific << m.conservation
+                          << " exceeds " << mimetic::kConservationTolerance
+                          << " on " << domain_label << "\n";
+                all_ok = false;
+            }
+        }
+
         if (metrics.size() >= 3) {
             double avg_rate = 0.0;
             int rate_count = 0;
