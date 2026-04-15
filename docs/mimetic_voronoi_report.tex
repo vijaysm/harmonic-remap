@@ -10,7 +10,7 @@
 
 \emergencystretch=2em
 
-\title{A Conservative Mimetic Polygon Interpolant on Nonmatching Voronoi Patches}
+\title{A Conservative Mimetic Polygon Interpolant on Planar and Spherical Nonmatching Patches}
 \author{Mimetic-SphPoly implementation notes}
 \date{\today}
 
@@ -25,27 +25,30 @@
 
 \begin{abstract}
 This report documents the current C++14, MOAB, and Eigen3 prototype for conservative
-mimetic interpolation on planar polygon patches.  The implementation follows
+mimetic interpolation on planar polygon patches and unit-sphere great-circle
+polygon patches.  The implementation follows
 the level-2 truncated harmonic-polynomial reconstruction of Perot and Chartrand
 \cite{PerotChartrand2021}.  Source data are signed edge-normal flux integrals.
 For each source polygon, the code reconstructs a local vector field with
 constant divergence and a curl-free cell interior.  The conservative transfer
 property is verified by clipping nonmatching source and target polygon meshes
-and checking the divergence theorem on every source-target intersection
-polygon.  Current tests include a constant-field patch test, a nonmatching
-rectangular mesh test, and a deterministic Voronoi n-gon patch test with source
-and target cells having more than four sides.
+and checking both overlap conservation diagnostics and directed source-edge to
+target-edge transfer.  Current tests include a constant-field patch test, a
+nonmatching rectangular mesh test, deterministic planar Voronoi n-gon tests,
+spherical cubed-sphere identity/refinement/coarsening tests, and deterministic
+spherical n-sided Voronoi patch tests.
 \end{abstract}
 
 \section{Scope and Current Status}
 
-The implemented kernel is a planar prototype.  It is intended to be the
-cell-local and overlap-local foundation for a later spherical implementation
-using MOAB spherical mesh data and local tangent-plane or intrinsic spherical
-geometry.  The current code does not yet implement spherical polygon
-intersections, parallel ownership, or production spatial search.  Those are
-separable extensions once the local mimetic reconstruction and overlap
-conservation checks are stable.
+The implemented kernel now has two explicit geometry backends.  The planar
+backend is the reference implementation.  The spherical backend uses
+source-cell gnomonic charts on the unit sphere, treats cell edges as
+great-circle arcs, and uses a contravariant Piola map so that physical surface
+fluxes are represented as chart fluxes.  The current code does not implement
+MPI, distributed ownership, ghosting, parallel I/O, or production spatial
+search.  Those are separable extensions once the serial geometry and mimetic
+transfer invariants are stable.
 
 The current repository contains:
 \begin{itemize}
@@ -58,6 +61,14 @@ The current repository contains:
         rectangular nonmatching source-target overlap test.
   \item \texttt{tests/voronoi\_}\allowbreak\texttt{intersection\_test.cpp}:
         deterministic Voronoi source-target n-gon overlap test.
+  \item \texttt{tests/spherical\_}\allowbreak\texttt{geometry\_test.cpp}:
+        spherical area, gnomonic projection, great-circle, and KKT flux-matching
+        tests.
+  \item \texttt{tests/spherical\_}\allowbreak\texttt{quad\_test.cpp}:
+        cubed-sphere identity, refinement, coarsening, sparse-projection, and
+        convergence validation.
+  \item \texttt{tests/spherical\_}\allowbreak\texttt{voronoi\_test.cpp}:
+        deterministic n-sided spherical Voronoi patch transfer tests.
   \item \texttt{docs/make\_report\_figures.py}: deterministic figure generator
         for the manuscript visualizations.
   \item \texttt{docs/figures/}: generated PDF figures included in the manuscript.
@@ -244,6 +255,67 @@ source-cell edges.  This directed convention is important because normal flux
 orientation is cell-local; a shared undirected mesh edge needs a separate
 orientation map before edge DOFs are collapsed.
 
+\subsection{Spherical Gnomonic Backend}
+
+The spherical backend is a geometry-correct extension of the planar algorithm
+for unit-sphere great-circle polygons.  For each source cell \(K_s\), the code
+constructs an orthonormal frame
+\[
+  \{\mathbf{e}_1,\mathbf{e}_2,\mathbf{c}\},
+\]
+where \(\mathbf{c}\) is the normalized cell-center direction and
+\(\mathbf{e}_1,\mathbf{e}_2\) span the tangent plane.  A point
+\(\mathbf{r}\in S^2\) in the visible hemisphere is projected to chart
+coordinates by
+\begin{equation}
+  \xi(\mathbf{r}) =
+  \left(
+  \frac{\mathbf{r}\cdot\mathbf{e}_1}{\mathbf{r}\cdot\mathbf{c}},
+  \frac{\mathbf{r}\cdot\mathbf{e}_2}{\mathbf{r}\cdot\mathbf{c}}
+  \right).
+  \label{eq:gnomonic}
+\end{equation}
+The inverse chart is
+\begin{equation}
+  \mathbf{r}(\xi,\eta)
+  =
+  \frac{\mathbf{c}+\xi\mathbf{e}_1+\eta\mathbf{e}_2}
+       {\|\mathbf{c}+\xi\mathbf{e}_1+\eta\mathbf{e}_2\|}.
+  \label{eq:inverse_gnomonic}
+\end{equation}
+Gnomonic projection maps great circles to straight lines, so a directed target
+great-circle edge becomes a straight segment in every source-cell chart where it
+is visible.  The spherical transfer therefore clips that projected segment
+against the projected source polygon and evaluates the same line functional used
+in the planar algorithm.
+
+Let \(J=\partial\mathbf{r}/\partial(\xi,\eta)\) and let
+\(|J|=\|\partial_\xi\mathbf{r}\times\partial_\eta\mathbf{r}\|\).  The
+contravariant Piola lift from chart vector \(\mathbf{w}\) to surface tangent
+vector \(\mathbf{u}\) is
+\begin{equation}
+  \mathbf{u} = \frac{J\mathbf{w}}{|J|}.
+  \label{eq:piola_lift}
+\end{equation}
+The inverse map used by the manufactured-field tests is
+\begin{equation}
+  \mathbf{w} =
+  |J|\,(J^T J)^{-1}J^T\mathbf{u}.
+  \label{eq:piola_pullback}
+\end{equation}
+Equations~\eqref{eq:piola_lift}--\eqref{eq:piola_pullback} preserve normal
+fluxes across corresponding chart and surface curves.  Consequently, the KKT
+flux-matching reconstruction can be assembled in the source gnomonic chart
+without changing the algebraic reconstruction kernel.
+
+The spherical direct transfer and sparse projection use the identical clipped
+segment functional.  A target edge that lies exactly on a source edge can be
+accepted by two adjacent source cells under naive all-pairs clipping; the code
+resolves this deterministically by retaining the source cell on the
+target-cell-interior side of the directed target edge.  This tie break is
+essential for cubed-sphere \(N\to N\) identity tests and for reproducible sparse
+operator assembly.
+
 
 \subsection{KKT Saddle-Point Formulation and Tikhonov Regularization}
 Initial attempts to solve the local reconstruction problem relied on an unconstrained Moore-Penrose pseudo-inverse of the evaluation matrix $C$. While this preserved global geometric conservation, it effectively dropped the Galerkin moment right-hand side, forcing a minimum-norm interpolant that destroyed polynomial consistency and degraded the theoretical $O(h^2)$ convergence rates.
@@ -277,10 +349,13 @@ where $|A_K|$ is the area of the polygon $K$. The system is inverted robustly vi
 \subsection*{Algorithm 1: Source-Cell Reconstruction}
 \begin{enumerate}
   \item Extract ordered MOAB polygon connectivity.
-  \item Enforce counter-clockwise orientation and shift coordinates by the cell
-        centroid.
+  \item Select geometry backend.  In planar mode, enforce counter-clockwise
+        orientation and shift coordinates by the cell centroid.  In spherical
+        mode, construct the source-cell gnomonic chart and use projected
+        centroid-relative coordinates.
   \item Create ordered local edges and outward normals.
-  \item Read \(U_f\) from the \texttt{SOURCE\_FLUX} edge tag.
+  \item Read directed \(U_f\) from the cell-local edge map, falling back to the
+        \texttt{SOURCE\_FLUX} edge tag for planar compatibility.
   \item Compute \(d\) from Eq.~\eqref{eq:divergence}.
   \item Assemble \(V\) using Eq.~\eqref{eq:gram}.
   \item Assemble \(r\) using Eq.~\eqref{eq:rhs}.
@@ -326,6 +401,24 @@ where $|A_K|$ is the area of the polygon $K$. The system is inverted robustly vi
         and column DOFs.
 \end{enumerate}
 
+\subsection*{Algorithm 5: Spherical Source-Chart Edge Transfer}
+\begin{enumerate}
+  \item For each source cell, normalize MOAB vertices, construct a gnomonic
+        frame, and project the great-circle polygon into the source chart.
+  \item Pull manufactured source fields into the chart with
+        Eq.~\eqref{eq:piola_pullback}; for shared manufactured edges, assign one
+        conservative geometric flux and the opposite sign to the reversed
+        directed neighbor.
+  \item Reconstruct source chart coefficients with Algorithm 1.
+  \item For each directed target great-circle edge, project both endpoints into
+        each source chart.  Since great circles project to straight lines, clip
+        this segment against the projected source polygon.
+  \item Apply the direct segment functional for transfer, or apply the same
+        functional to the source reconstruction matrix for sparse projection.
+  \item Verify global conservation, target-cell KKT re-integration, and
+        direct-vs-sparse equality with absolute tolerance \(5\times10^{-13}\).
+\end{enumerate}
+
 \begin{center}
 \small
 \begin{tabular}{@{}L{0.24\linewidth}L{0.31\linewidth}L{0.35\linewidth}@{}}
@@ -368,6 +461,24 @@ Sparse projection &
 \texttt{assemble\_edge\_projection\_}\newline\texttt{operator()} and
 \texttt{write\_matrix\_market()} &
 Builds and writes the directed edge map in Eq.~\eqref{eq:sparse_projection}. \\
+Geometry options &
+\texttt{GeometryMode} and \texttt{GeometryOptions} in
+\texttt{mimetic.hpp} &
+Selects planar or spherical gnomonic geometry and stores conservation and
+geometry tolerances. \\
+Spherical chart geometry &
+\texttt{spherical\_polygon()}, \texttt{project\_gnomonic()},
+\texttt{inverse\_gnomonic()} &
+Implements Eqs.~\eqref{eq:gnomonic}--\eqref{eq:inverse_gnomonic}. \\
+Piola map &
+\texttt{lift\_contravariant\_piola()} and
+\texttt{pullback\_contravariant\_piola()} &
+Implements Eqs.~\eqref{eq:piola_lift}--\eqref{eq:piola_pullback}. \\
+Spherical validation &
+\texttt{spherical\_quad\_test.cpp} and
+\texttt{spherical\_voronoi\_test.cpp} &
+Validates structured and unstructured spherical edge transfer and sparse
+projection. \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -573,12 +684,50 @@ is covered by source overlaps to roundoff.  The aggregate checks are:
   \int_\Omega \nabla\cdot(x,y)\,dA = 2.
 \]
 The largest printed overlap or aggregate residual is \(4.44\times10^{-16}\),
-well below the \(5\times10^{-10}\) tolerance used for the summed Voronoi flux
-check.  
+well below the \(5\times10^{-13}\) conservation tolerance used throughout the
+current test suite.
 The edge-wise Voronoi transfer computes 71 directed target edge fluxes.  Every
 target edge agrees with the analytic global linear field integral to roundoff,
 and every target cell satisfies the same edge-flux divergence check
 \(\sum U^t_{e_t}=2|K_t|\).
+
+\subsection{Spherical Structured and Unstructured Tests}
+
+The spherical geometry unit test verifies the local chart primitives before any
+mesh transfer is attempted.  It checks a known octant-triangle area
+\(\pi/2\), an independent spherical-excess quadrilateral area, a
+gnomonic project/inverse round trip, the fact that a great-circle midpoint lies
+on the projected straight segment, and source-cell KKT re-integration of all
+input edge fluxes to \(5\times10^{-13}\).
+
+The structured spherical transfer test uses cubed-sphere meshes and the smooth
+surface field
+\[
+  f(x,y,z)=\frac{1}{2}(3z^2-1),\qquad
+  \mathbf{u}=\nabla_S f.
+\]
+The no-argument regression test runs four cases: \(4\to4\) identity,
+\(4\to6\) refinement, \(6\to4\) coarsening, and \(6\to8\) refinement.  The
+largest global conservation residual among these cases is
+\(1.01\times10^{-14}\), the largest direct-vs-sparse residual is
+\(2.78\times10^{-16}\), and the largest target-cell KKT edge re-integration
+residual is \(2.22\times10^{-16}\).  The identity case transfers all directed
+edge DOFs with maximum error \(3.33\times10^{-16}\).  The relative edge-flux
+error decreases from \(6.53\times10^{-2}\) on \(4\to6\) to
+\(3.06\times10^{-2}\) on \(6\to8\).
+
+The spherical unstructured test builds deterministic n-sided Voronoi patches in
+a common gnomonic chart and maps their edges to great-circle arcs on the unit
+sphere.  It exercises Voronoi-to-Voronoi, Voronoi-to-structured-patch, and
+structured-patch-to-Voronoi transfers.  The coarse Voronoi-to-Voronoi case has
+36 source cells and 45 target cells, with 30 source n-gons and 38 target
+n-gons.  The fine case has 100 source cells and 120 target cells, with 86
+source n-gons and 98 target n-gons.  The maximum global conservation residual
+over all unstructured spherical cases is \(2.66\times10^{-15}\), the maximum
+direct-vs-sparse residual is \(3.05\times10^{-13}\), and the maximum
+target-cell KKT re-integration residual is \(2.71\times10^{-16}\).  The
+Voronoi-to-Voronoi relative edge-flux error decreases from \(1.11\times10^{-2}\)
+to \(5.07\times10^{-3}\).
 
 
 
@@ -602,6 +751,15 @@ and every target cell satisfies the same edge-flux divergence check
   Nine source cells, 14 target cells, 36 overlaps, 23 n-gon to n-gon overlaps &
   Same overlap invariant plus 71 directed target edge fluxes &
   \(4.44\times10^{-16}\) \\
+  Spherical cubed-sphere &
+  \(4\to4\), \(4\to6\), \(6\to4\), and \(6\to8\) great-circle quad meshes &
+  Global conservation, target KKT re-integration, direct-vs-sparse equality,
+  and identity transfer &
+  \(1.01\times10^{-14}\) global, \(2.78\times10^{-16}\) sparse \\
+  Spherical Voronoi patch &
+  Deterministic n-sided source and target great-circle polygons &
+  Global conservation, direct-vs-sparse equality, and edge-error convergence &
+  \(2.66\times10^{-15}\) global, \(3.05\times10^{-13}\) sparse \\
   \bottomrule
   \end{tabular}
   \caption{Verification summary from the current CTest runs.  Residuals are
@@ -621,68 +779,76 @@ flux is \(2|O|\), and the target-cell edge flux sum is \(2|K_t|\).  The
 residuals in Table~\ref{tab:verification-summary} measure only floating-point
 and clipping-roundoff effects.
 
-The Voronoi test is the most informative current result.  It rules out a common
-false positive in polygon remapping prototypes: passing only quadrilateral or
-axis-aligned cases.  Here both source and target meshes contain five- and
-six-sided cells, and 23 nonempty intersections involve n-gons on both sides.
-The exact overlap identity holds on each of those intersections, which is the
-local condition needed before adding spatial acceleration, parallel ownership,
-or spherical geometry.  The new directed-edge checks additionally verify that
-the remapped edge data themselves, not only overlap-cell diagnostics, reproduce
-the analytic target edge integrals.
+The planar Voronoi test rules out a common false positive in polygon remapping
+prototypes: passing only quadrilateral or axis-aligned cases.  Here both source
+and target meshes contain five- and six-sided cells, and 23 nonempty
+intersections involve n-gons on both sides.  The exact overlap identity holds on
+each of those intersections, and the directed-edge checks verify that the
+remapped edge data themselves, not only overlap-cell diagnostics, reproduce the
+analytic target edge integrals.
 
-The visualizations also clarify what is not yet tested.  The clipping kernel is
-currently convex and planar; it does not cover nonconvex polygons, spherical
-great-circle arcs, or overlaps crossing a projection singularity.  Those
-extensions should preserve the same acceptance criterion,
-Eq.~\eqref{eq:overlap_conservation}, but they will need geometry-specific
-intersection and quadrature tests.
+The spherical results show that the same idea extends to curved manifolds when
+the geometry is handled in a source-cell chart and the Piola map is used for
+fluxes.  The cubed-sphere \(N\to N\) identity case is particularly important:
+it would fail if target edges coincident with source edges were double counted
+by adjacent source cells.  The unstructured spherical Voronoi test is the
+strongest current spherical result because it verifies conservation and sparse
+operator equivalence on n-sided great-circle polygons rather than on only
+quad-like cells.
+
+The visualizations also clarify what remains outside this phase.  The clipping
+kernel assumes convex cells that fit in the relevant source gnomonic hemisphere;
+it does not cover nonconvex polygons or target edges crossing a projection
+singularity.  Those extensions should preserve the same acceptance criteria:
+global conservation, target-cell KKT re-integration, and direct-vs-sparse
+agreement at \(5\times10^{-13}\).
 
 \section{Assumptions and Limitations}
 
 \begin{itemize}
-  \item The implementation is currently planar.  Spherical meshes require a
-        documented choice of geometry: local tangent-plane approximation,
-        gnomonic projection, or intrinsic spherical polygon integration.
+  \item Spherical v1 assumes unit-sphere, convex, great-circle cells that fit in
+        the source-cell gnomonic hemisphere.
   \item The reconstruction is level-2 only.  This is the practical stable choice
         emphasized by Perot and Chartrand for polygon meshes
         \cite{PerotChartrand2021}, but level-3 diagnostics may be useful for
         severe distortion or high valence.
-  \item Convex clipping is implemented in the Voronoi test only.  A production
-        source-target transfer should move this to the library and pair it with
-        MOAB spatial search.
-  \item Tests use manufactured analytic fields and exact planar overlap
-        geometry.  They verify local conservation and reconstruction
-        consistency, not global PDE accuracy.
-  \item The current source-target transfer routine for target edges assumes a
-        target polygon contained in one source cell.  General nonmatching meshes
-        should use \texttt{transfer\_source\_to\_}\allowbreak\texttt{target\_edges()}
-        or the sparse projection assembly path.
+  \item Candidate search is deterministic all-pairs.  A production
+        source-target transfer should pair the same local kernels with MOAB
+        spatial search or an advancing-front traversal.
+  \item Tests use manufactured analytic fields and deterministic serial meshes.
+        They verify local conservation, sparse operator equivalence, and
+        refinement behavior, not global PDE accuracy.
   \item The sparse projection currently uses directed cell-edge DOFs.  Shared
         mesh-edge collapse requires explicit orientation metadata.
+  \item MPI, distributed ownership, ghosting, and parallel I/O are intentionally
+        out of scope for this phase.
 \end{itemize}
 
 \section{Conclusions and Future Research Directions}
 
 The present implementation demonstrates that the level-2 harmonic-polynomial
 mimetic reconstruction can be expressed cleanly in MOAB/Eigen3 and verified on
-nonmatching polygon patches.  The strongest current result is the Voronoi n-gon
-test: it exercises genuine five- and six-sided source and target cells, clips
-all nonempty source-target intersections, verifies the conservative overlap
-identity on every region, and computes 71 directed target edge fluxes.  The
-rectangular test also assembles and writes an explicit sparse directed
-source-edge to target-edge projection matrix.  This validates the core local
-reconstruction, edge-wise remap, and local conservative integration kernels
-needed for a future spherical polygon mesh transfer tool.
+nonmatching planar and spherical polygon patches.  The planar tests validate
+the original overlap and directed-edge transfer invariants.  The spherical tests
+validate the gnomonic-chart extension, the contravariant Piola flux mapping,
+structured cubed-sphere identity/refinement/coarsening, unstructured n-sided
+spherical Voronoi patches, and sparse directed edge projection.  The strongest
+current result is that both direct edge transfer and the assembled sparse matrix
+produce the same directed target edge DOFs to the \(5\times10^{-13}\)
+conservation standard on planar, spherical structured, and spherical
+unstructured cases.
 
 \subsection*{Future Research Directions}
-Building on the rigorously verified 2D planar framework, the following logical paths are proposed for future research:
+Building on the verified serial planar and spherical framework, the following
+logical paths are proposed for future research:
 
 \begin{itemize}
-    \item \textbf{Spherical Meshes}: Extend the mimetic interpolation framework to handle meshes on a sphere (e.g., cubed-sphere or spherical Voronoi meshes). This requires mapping the 2D planar algorithms to curved manifolds, projecting the reconstruction and intersection algorithms while maintaining exact geometric mass conservation on spherical polygons.
+    \item \textbf{Spherical Robustness}: Extend beyond convex cells in one
+    gnomonic hemisphere, add projection-singularity handling, and validate
+    against larger realistic spherical meshes.
     \item \textbf{Performance Optimization}: Profile and optimize the KKT saddle-point solver. As the local patch sizes and polynomial degrees grow, swapping the current dense \texttt{Eigen::FullPivLU} solver for a more efficient sparse direct solver or a preconditioned iterative method will become critical for high-resolution and high-degree applications.
     \item \textbf{3D Polyhedral Support}: Begin extending the geometric intersection and interpolation logic to fully 3D polyhedrons (e.g., hexahedra, prisms, arbitrary Voronoi cells). This involves extending the boundary flux theorems to 3D surface integrals and defining basis functions over volumetric domains.
-    \item \textbf{Integration}: Package the library into a modular component for integration into larger simulation frameworks (such as global climate or weather models). This includes supporting distributed MOAB mesh loading, managing MPI parallel halo exchanges for cross-processor polygon intersections, and exposing a clean C/Fortran API.
+    \item \textbf{Integration}: Package the library into a modular component for integration into larger simulation frameworks (such as global climate or weather models). Later phases can add distributed MOAB mesh loading, MPI halo exchange, and C/Fortran APIs after the serial numerical invariants remain stable.
 \end{itemize}
 
 At that point the same overlap invariant, Eq.~\eqref{eq:overlap_conservation},
