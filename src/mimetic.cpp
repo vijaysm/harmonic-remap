@@ -90,7 +90,7 @@ Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly, const std
         }
         const double cell_basis_average = cell_basis_integral / poly.area;
         if (i >= 4) {
-            V(i, i) += 1.0e6 * poly.area;
+            V(i, i) += 1.0e2 * poly.area;
         }
         
         for (int e = 0; e < N; ++e) {
@@ -463,7 +463,7 @@ ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab:
         }
         const double cell_basis_average = cell_basis_integral / poly.area;
         if (i >= 4) {
-            V(i, i) += 1.0e6 * poly.area;
+            V(i, i) += 1.0e2 * poly.area;
         }
         
         for (int e = 0; e < N; ++e) {
