@@ -232,7 +232,10 @@ def make_voronoi_patch(figdir):
 
 def make_voronoi_overlap_detail(figdir):
     _, source_cells, _, target_cells = source_and_target_voronoi()
-    best = None
+    
+    # We want a few different elements in different parts of the domain.
+    # Let's collect all valid overlaps of n-gon to n-gon.
+    valid_overlaps = []
     for si, source in enumerate(source_cells):
         for ti, target in enumerate(target_cells):
             overlap = convex_intersection(source, target)
@@ -240,25 +243,53 @@ def make_voronoi_overlap_detail(figdir):
                 continue
             area = polygon_area(overlap)
             if len(source) > 4 and len(target) > 4 and area > 1.0e-12:
-                if best is None or area > best[0]:
-                    best = (area, si, ti, source, target, overlap)
-    if best is None:
+                valid_overlaps.append((area, si, ti, source, target, overlap))
+    
+    if not valid_overlaps:
         raise RuntimeError("No n-gon to n-gon overlap found")
-
-    area, si, ti, source, target, overlap = best
+        
+    # Sort by area to get a few good ones
+    valid_overlaps.sort(key=lambda x: x[0], reverse=True)
+    
+    # Pick top 3 that are somewhat spatially distinct if possible, 
+    # but just picking top 3 or specific ones will do. 
+    # Let's pick 3 distinct overlaps (e.g., top 1, and two others)
+    selected = [valid_overlaps[0]]
+    for cand in valid_overlaps[1:]:
+        # Ensure it's not the exact same source or target to get variety
+        if cand[1] not in [s[1] for s in selected] and cand[2] not in [s[2] for s in selected]:
+            selected.append(cand)
+            if len(selected) == 3:
+                break
+                
+    if len(selected) < 3:
+        # If we couldn't find 3 distinct ones, just take the top 3
+        selected = valid_overlaps[:3]
+        
     fig, ax = plt.subplots(figsize=(5.0, 4.4))
-    add_polygon(ax, source, BLUE, facecolor="#DCEBFA", alpha=0.55, lw=2.0, label="source n-gon", zorder=1)
-    add_polygon(ax, target, ORANGE, facecolor="#F6D6C8", alpha=0.38, lw=2.0, ls="--", label="target n-gon", zorder=2)
-    add_polygon(ax, overlap, GREEN, facecolor="#BDEBD9", alpha=0.85, lw=2.2, label="intersection", zorder=4)
-    for points, color in [(source, BLUE), (target, ORANGE), (overlap, GREEN)]:
-        ax.scatter([p[0] for p in points], [p[1] for p in points], s=18, color=color, zorder=5)
-    x, y = centroid(overlap)
-    ax.text(x, y, "$O$", fontsize=12, color=GRAY, ha="center", va="center", zorder=6)
-    ax.text(0.03, 0.97, f"source {si}: {len(source)} sides\n"
-                        f"target {ti}: {len(target)} sides\n"
-                        f"area={area:.5f}",
-            ha="left", va="top", fontsize=9,
-            bbox={"facecolor": "white", "edgecolor": LIGHT_GRAY, "alpha": 0.93, "pad": 3})
+    
+    # Draw all background cells faintly
+    for poly in source_cells:
+        add_polygon(ax, poly, "#B0D0ED", facecolor="none", alpha=0.3, lw=1.0, zorder=0)
+    for poly in target_cells:
+        add_polygon(ax, poly, "#E8A87C", facecolor="none", alpha=0.3, lw=1.0, ls="--", zorder=0)
+
+    # Highlight selected ones
+    for area, si, ti, source, target, overlap in selected:
+        add_polygon(ax, source, BLUE, facecolor="#DCEBFA", alpha=0.55, lw=2.0, zorder=1)
+        add_polygon(ax, target, ORANGE, facecolor="#F6D6C8", alpha=0.38, lw=2.0, ls="--", zorder=2)
+        add_polygon(ax, overlap, GREEN, facecolor="#BDEBD9", alpha=0.85, lw=2.2, zorder=4)
+        
+        # We don't want to plot dots for all points, it gets messy. Just the overlap maybe.
+        # ax.scatter([p[0] for p in overlap], [p[1] for p in overlap], s=18, color=GREEN, zorder=5)
+        x, y = centroid(overlap)
+        ax.text(x, y, "$O$", fontsize=12, color=GRAY, ha="center", va="center", zorder=6)
+        
+    # Add dummy lines for legend
+    ax.plot([], [], color=BLUE, lw=2.0, label="source n-gon")
+    ax.plot([], [], color=ORANGE, lw=2.0, ls="--", label="target n-gon")
+    ax.plot([], [], color=GREEN, lw=2.2, label="intersection")
+    
     finish_unit_square(ax)
     ax.legend(loc="lower right", frameon=True, framealpha=0.95, fontsize=8)
     fig.tight_layout()

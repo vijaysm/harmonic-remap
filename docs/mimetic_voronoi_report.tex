@@ -454,17 +454,17 @@ quadrilateral cells.
   \label{fig:voronoi-patch}
 \end{figure}
 
-Figure~\ref{fig:voronoi-overlap-detail} isolates one source-target pair in
-which both cells have more than four sides.  The green polygon is the clipped
-intersection \(O=K_s\cap K_t\).  In the test, the conservative flux check is
-performed on this clipped polygon and on every other nonempty overlap.
+Figure~\ref{fig:voronoi-overlap-detail} highlights selected source-target pairs in different
+parts of the domain where both intersecting cells are general n-gons ($n>4$). The green polygons
+represent the clipped intersections ($O=K_s\cap K_t$). In the test suite, the conservative flux
+check is rigorously performed on these and every other nonempty overlap.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=0.68\linewidth]{voronoi_overlap_detail.pdf}
-  \caption{Example n-gon to n-gon overlap.  The conservative diagnostic
-  integrates the reconstructed source field around the green intersection
-  boundary and compares it with \(d_s|O|\).}
+  \caption{Selected n-gon to n-gon overlaps.  The conservative diagnostic
+  integrates the reconstructed source field around each intersection boundary 
+  (highlighted in green) and compares it with \(d_s|O|\).}
   \label{fig:voronoi-overlap-detail}
 \end{figure}
 
@@ -574,21 +574,13 @@ is covered by source overlaps to roundoff.  The aggregate checks are:
 \]
 The largest printed overlap or aggregate residual is \(4.44\times10^{-16}\),
 well below the \(5\times10^{-10}\) tolerance used for the summed Voronoi flux
-check.  Figure~\ref{fig:results-summary} summarizes the Voronoi coverage counts
-and the conservation residual scale across the three tests.
+check.  
 The edge-wise Voronoi transfer computes 71 directed target edge fluxes.  Every
 target edge agrees with the analytic global linear field integral to roundoff,
 and every target cell satisfies the same edge-flux divergence check
 \(\sum U^t_{e_t}=2|K_t|\).
 
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=0.92\linewidth]{results_summary.pdf}
-  \caption{Summary of verification coverage and conservation residuals.  The
-  patch-test residual is plotted at \(10^{-16}\) to show it on the logarithmic
-  scale; the printed test output reports zero at displayed precision.}
-  \label{fig:results-summary}
-\end{figure}
+
 
 \begin{table}[t]
   \centering
