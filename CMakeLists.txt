@@ -54,11 +54,15 @@ target_link_libraries(convergence_validation_test PRIVATE mimetic)
 add_executable(spherical_quad_test tests/spherical_quad_test.cpp)
 target_link_libraries(spherical_quad_test PRIVATE mimetic)
 
+add_executable(spherical_geometry_test tests/spherical_geometry_test.cpp)
+target_link_libraries(spherical_geometry_test PRIVATE mimetic)
+
 enable_testing()
 add_test(NAME patch_test COMMAND patch_test)
 add_test(NAME conservative_intersection_test COMMAND conservative_intersection_test)
 add_test(NAME voronoi_intersection_test COMMAND voronoi_intersection_test)
 add_test(NAME convergence_validation_test COMMAND convergence_validation_test)
+add_test(NAME spherical_geometry_test COMMAND spherical_geometry_test)
 add_test(NAME spherical_quad_test COMMAND spherical_quad_test)
 
 add_executable(dump_visuals tests/dump_visuals.cpp)

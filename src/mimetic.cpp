@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <fstream>
 #include <stdexcept>
 
@@ -13,8 +14,6 @@ void check_moab(const moab::ErrorCode code, const std::string& message)
         throw std::runtime_error(message + " (MOAB error " + std::to_string(static_cast<int>(code)) + ")");
     }
 }
-
-#include <complex>
 
 void eval_harmonic_basis(int k, const Eigen::Vector2d& p,
                          double& P, double& Q,
@@ -30,6 +29,51 @@ void eval_harmonic_basis(int k, const Eigen::Vector2d& p,
 }
 
 namespace {
+
+double clamp_unit(const double value)
+{
+    return std::max(-1.0, std::min(1.0, value));
+}
+
+Eigen::Vector3d normalized_or_throw(const Eigen::Vector3d& v, const std::string& message)
+{
+    const double n = v.norm();
+    if (n < kTolerance) {
+        throw std::runtime_error(message);
+    }
+    return v / n;
+}
+
+GnomonicFrame make_gnomonic_frame(const std::vector<Eigen::Vector3d>& points, const double radius)
+{
+    Eigen::Vector3d center(0.0, 0.0, 0.0);
+    for (const Eigen::Vector3d& p : points) {
+        center += p.normalized();
+    }
+    center = normalized_or_throw(center, "Degenerate spherical polygon centroid");
+
+    Eigen::Vector3d reference(0.0, 0.0, 1.0);
+    if (std::abs(center.dot(reference)) > 0.9) {
+        reference = Eigen::Vector3d(1.0, 0.0, 0.0);
+    }
+
+    GnomonicFrame frame;
+    frame.center = center;
+    frame.e_y = normalized_or_throw(center.cross(reference), "Failed to build spherical tangent basis");
+    frame.e_x = normalized_or_throw(frame.e_y.cross(center), "Failed to build spherical tangent basis");
+    frame.radius = radius;
+    return frame;
+}
+
+double spherical_triangle_area(const Eigen::Vector3d& a, const Eigen::Vector3d& b, const Eigen::Vector3d& c)
+{
+    const Eigen::Vector3d au = a.normalized();
+    const Eigen::Vector3d bu = b.normalized();
+    const Eigen::Vector3d cu = c.normalized();
+    const double det = std::abs(au.dot(bu.cross(cu)));
+    const double denom = 1.0 + au.dot(bu) + bu.dot(cu) + cu.dot(au);
+    return 2.0 * std::atan2(det, denom);
+}
 
 std::vector<Eigen::Vector2d> absolute_points(const LocalPolygon& polygon)
 {
@@ -207,11 +251,156 @@ moab::EntityHandle find_or_create_edge(moab::Core& mb, const moab::EntityHandle 
     return edge;
 }
 
+Eigen::Vector2d project_gnomonic(const Eigen::Vector3d& point, const GnomonicFrame& frame)
+{
+    const Eigen::Vector3d unit = normalized_or_throw(point, "Cannot project zero vector onto gnomonic chart");
+    const double denom = unit.dot(frame.center);
+    if (denom <= kTolerance) {
+        throw std::runtime_error("Point lies outside the gnomonic chart hemisphere");
+    }
+    const Eigen::Vector3d projected = unit / denom;
+    return Eigen::Vector2d(projected.dot(frame.e_x), projected.dot(frame.e_y));
+}
+
+Eigen::Vector3d inverse_gnomonic(const Eigen::Vector2d& xi, const GnomonicFrame& frame)
+{
+    const Eigen::Vector3d ray = frame.center + xi.x() * frame.e_x + xi.y() * frame.e_y;
+    return frame.radius * normalized_or_throw(ray, "Cannot invert degenerate gnomonic coordinate");
+}
+
+Eigen::Matrix<double, 3, 2> gnomonic_jacobian(const Eigen::Vector2d& xi, const GnomonicFrame& frame)
+{
+    const Eigen::Vector3d ray = frame.center + xi.x() * frame.e_x + xi.y() * frame.e_y;
+    const double q = ray.norm();
+    if (q < kTolerance) {
+        throw std::runtime_error("Degenerate inverse gnomonic Jacobian");
+    }
+    const Eigen::Vector3d unit = ray / q;
+
+    Eigen::Matrix<double, 3, 2> jacobian;
+    jacobian.col(0) = frame.radius * (frame.e_x - xi.x() * unit) / q;
+    jacobian.col(1) = frame.radius * (frame.e_y - xi.y() * unit) / q;
+    return jacobian;
+}
+
+double gnomonic_area_scale(const Eigen::Vector2d& xi, const GnomonicFrame& frame)
+{
+    const Eigen::Matrix<double, 3, 2> jacobian = gnomonic_jacobian(xi, frame);
+    return jacobian.col(0).cross(jacobian.col(1)).norm();
+}
+
+Eigen::Vector3d lift_contravariant_piola(const Eigen::Vector2d& chart_vector,
+                                         const Eigen::Vector2d& xi,
+                                         const GnomonicFrame& frame)
+{
+    const Eigen::Matrix<double, 3, 2> jacobian = gnomonic_jacobian(xi, frame);
+    const double area_scale = jacobian.col(0).cross(jacobian.col(1)).norm();
+    if (area_scale < kTolerance) {
+        throw std::runtime_error("Degenerate Piola lift");
+    }
+    return (jacobian * chart_vector) / area_scale;
+}
+
+Eigen::Vector2d pullback_contravariant_piola(const Eigen::Vector3d& surface_vector,
+                                             const Eigen::Vector2d& xi,
+                                             const GnomonicFrame& frame)
+{
+    const Eigen::Matrix<double, 3, 2> jacobian = gnomonic_jacobian(xi, frame);
+    const double area_scale = jacobian.col(0).cross(jacobian.col(1)).norm();
+    if (area_scale < kTolerance) {
+        throw std::runtime_error("Degenerate Piola pullback");
+    }
+    const Eigen::Matrix2d metric = jacobian.transpose() * jacobian;
+    return area_scale * metric.ldlt().solve(jacobian.transpose() * surface_vector);
+}
+
+SphericalPolygon spherical_polygon(moab::Core& mb, const moab::EntityHandle polygon, const GeometryOptions& options)
+{
+    const moab::EntityHandle* conn = nullptr;
+    int num_vertices = 0;
+    check_moab(mb.get_connectivity(polygon, conn, num_vertices), "Failed to get spherical polygon connectivity");
+    if (num_vertices < 3) {
+        throw std::runtime_error("Spherical polygon must have at least three vertices");
+    }
+
+    SphericalPolygon poly;
+    poly.vertices.assign(conn, conn + num_vertices);
+    poly.points.reserve(poly.vertices.size());
+
+    for (const moab::EntityHandle vertex : poly.vertices) {
+        double xyz[3] = {0.0, 0.0, 0.0};
+        check_moab(mb.get_coords(&vertex, 1, xyz), "Failed to get spherical vertex coordinates");
+        Eigen::Vector3d p(xyz[0], xyz[1], xyz[2]);
+        poly.points.push_back(options.radius * normalized_or_throw(p, "Degenerate spherical vertex"));
+    }
+
+    poly.frame = make_gnomonic_frame(poly.points, options.radius);
+    poly.projected_points.reserve(poly.points.size());
+    for (const Eigen::Vector3d& p : poly.points) {
+        poly.projected_points.push_back(project_gnomonic(p, poly.frame));
+    }
+
+    if (signed_area(poly.projected_points) < 0.0) {
+        std::reverse(poly.vertices.begin(), poly.vertices.end());
+        std::reverse(poly.points.begin(), poly.points.end());
+        std::reverse(poly.projected_points.begin(), poly.projected_points.end());
+    }
+
+    poly.projected_centroid = polygon_centroid(poly.projected_points);
+    poly.local_points.reserve(poly.projected_points.size());
+    for (const Eigen::Vector2d& p : poly.projected_points) {
+        poly.local_points.push_back(p - poly.projected_centroid);
+    }
+
+    poly.chart_area = std::abs(signed_area(poly.projected_points));
+    poly.spherical_area = 0.0;
+    const Eigen::Vector3d c = poly.frame.radius * poly.frame.center;
+    for (std::size_t i = 0; i < poly.points.size(); ++i) {
+        poly.spherical_area += spherical_triangle_area(c, poly.points[i], poly.points[(i + 1) % poly.points.size()]);
+    }
+    poly.spherical_area *= options.radius * options.radius;
+    return poly;
+}
+
+std::vector<SphericalEdge> spherical_edges(moab::Core& mb, const SphericalPolygon& polygon)
+{
+    std::vector<SphericalEdge> edges;
+    edges.reserve(polygon.points.size());
+    for (std::size_t i = 0; i < polygon.points.size(); ++i) {
+        const std::size_t j = (i + 1) % polygon.points.size();
+        const double angle = std::acos(clamp_unit(polygon.points[i].normalized().dot(polygon.points[j].normalized())));
+        edges.push_back(SphericalEdge{
+            find_or_create_edge(mb, polygon.vertices[i], polygon.vertices[j]),
+            polygon.points[i],
+            polygon.points[j],
+            polygon.projected_points[i],
+            polygon.projected_points[j],
+            polygon.frame.radius * angle,
+        });
+    }
+    return edges;
+}
+
 // Extract MOAB connectivity into a local cell frame. The code enforces positive
 // orientation because all later outward-normal signs assume counter-clockwise
 // boundary order.
-LocalPolygon local_polygon(moab::Core& mb, const moab::EntityHandle polygon, bool is_spherical)
+LocalPolygon local_polygon(moab::Core& mb, const moab::EntityHandle polygon, const GeometryOptions& options)
 {
+    if (options.mode == GeometryMode::SphericalGnomonic) {
+        const SphericalPolygon sph = spherical_polygon(mb, polygon, options);
+        return LocalPolygon{
+            sph.vertices,
+            sph.local_points,
+            sph.projected_centroid,
+            sph.chart_area,
+            sph.points,
+            sph.frame.radius * sph.frame.center,
+            sph.frame.e_x,
+            sph.frame.e_y,
+            sph.frame.center,
+        };
+    }
+
     const moab::EntityHandle* conn = nullptr;
     int num_vertices = 0;
     check_moab(mb.get_connectivity(polygon, conn, num_vertices), "Failed to get polygon connectivity");
@@ -229,46 +418,16 @@ LocalPolygon local_polygon(moab::Core& mb, const moab::EntityHandle polygon, boo
     Eigen::Vector3d e_y(0, 1, 0);
     Eigen::Vector3d n(0, 0, 1);
 
-    if (is_spherical) {
-        points_3d.reserve(vertices.size());
-        for (const moab::EntityHandle vertex : vertices) {
-            double xyz[3] = {0.0, 0.0, 0.0};
-            check_moab(mb.get_coords(&vertex, 1, xyz), "Failed to get vertex coordinates");
-            Eigen::Vector3d p(xyz[0], xyz[1], xyz[2]);
-            points_3d.push_back(p);
-            centroid_3d += p;
-        }
-        centroid_3d /= vertices.size();
-        
-        n = centroid_3d.normalized();
-        
-        Eigen::Vector3d arbitrary(0, 0, 1);
-        if (std::abs(n.z()) > 0.9) {
-            arbitrary = Eigen::Vector3d(1, 0, 0);
-        }
-        e_y = n.cross(arbitrary).normalized();
-        e_x = e_y.cross(n).normalized();
-
-        for (const auto& p3d : points_3d) {
-            double dot_n = p3d.dot(n);
-            if (dot_n < 1e-10) {
-                throw std::runtime_error("Polygon spans more than a hemisphere, cannot gnomonic project");
-            }
-            Eigen::Vector3d p_gnom = p3d / dot_n;
-            absolute_points.emplace_back(p_gnom.dot(e_x), p_gnom.dot(e_y));
-        }
-    } else {
-        for (const moab::EntityHandle vertex : vertices) {
-            double xyz[3] = {0.0, 0.0, 0.0};
-            check_moab(mb.get_coords(&vertex, 1, xyz), "Failed to get vertex coordinates");
-            absolute_points.emplace_back(xyz[0], xyz[1]);
-            // Still populate 3D points for consistency, but z is ignored
-            Eigen::Vector3d p(xyz[0], xyz[1], xyz[2]);
-            points_3d.push_back(p);
-            centroid_3d += p;
-        }
-        centroid_3d /= vertices.size();
+    for (const moab::EntityHandle vertex : vertices) {
+        double xyz[3] = {0.0, 0.0, 0.0};
+        check_moab(mb.get_coords(&vertex, 1, xyz), "Failed to get vertex coordinates");
+        absolute_points.emplace_back(xyz[0], xyz[1]);
+        // Still populate 3D points for consistency, but z is ignored.
+        Eigen::Vector3d p(xyz[0], xyz[1], xyz[2]);
+        points_3d.push_back(p);
+        centroid_3d += p;
     }
+    centroid_3d /= vertices.size();
 
     if (signed_area(absolute_points) < 0.0) {
         std::reverse(vertices.begin(), vertices.end());
@@ -284,6 +443,13 @@ LocalPolygon local_polygon(moab::Core& mb, const moab::EntityHandle polygon, boo
     }
 
     return LocalPolygon{vertices, relative_points, centroid, std::abs(signed_area(absolute_points)), points_3d, centroid_3d, e_x, e_y, n};
+}
+
+LocalPolygon local_polygon(moab::Core& mb, const moab::EntityHandle polygon, const bool is_spherical)
+{
+    GeometryOptions options;
+    options.mode = is_spherical ? GeometryMode::SphericalGnomonic : GeometryMode::Planar;
+    return local_polygon(mb, polygon, options);
 }
 
 std::vector<LocalEdge> local_edges(moab::Core& mb, const LocalPolygon& polygon)
@@ -444,9 +610,79 @@ moab::Tag MimeticInterpolator::source_flux_tag() const { return tag_source_flux_
 moab::Tag MimeticInterpolator::target_flux_tag() const { return tag_target_flux_; }
 moab::Tag MimeticInterpolator::coeffs_tag() const { return tag_coeffs_; }
 
+void MimeticInterpolator::set_geometry_options(const GeometryOptions& options)
+{
+    if (options.radius <= 0.0) {
+        throw std::runtime_error("GeometryOptions::radius must be positive");
+    }
+    if (options.conservation_tolerance <= 0.0 || options.geometry_tolerance <= 0.0) {
+        throw std::runtime_error("Geometry tolerances must be positive");
+    }
+    options_ = options;
+}
+
+GeometryOptions MimeticInterpolator::geometry_options() const
+{
+    return options_;
+}
+
+void MimeticInterpolator::set_spherical(const bool is_spherical)
+{
+    options_.mode = is_spherical ? GeometryMode::SphericalGnomonic : GeometryMode::Planar;
+}
+
+bool MimeticInterpolator::is_spherical() const
+{
+    return options_.mode == GeometryMode::SphericalGnomonic;
+}
+
+void MimeticInterpolator::set_source_edge_flux(const moab::EntityHandle polygon,
+                                               const std::size_t local_edge_index,
+                                               const double flux)
+{
+    const LocalPolygon poly = local_polygon(mb_, polygon, options_);
+    const std::vector<LocalEdge> edges = local_edges(mb_, poly);
+    if (local_edge_index >= edges.size()) {
+        throw std::runtime_error("Source local edge index out of range");
+    }
+    directed_source_flux_[std::make_pair(polygon, local_edge_index)] = flux;
+    check_moab(mb_.tag_set_data(tag_source_flux_, &edges[local_edge_index].handle, 1, &flux),
+               "Failed to write directed source flux tag");
+}
+
+double MimeticInterpolator::source_edge_flux(const moab::EntityHandle polygon,
+                                             const std::size_t local_edge_index,
+                                             const moab::EntityHandle edge) const
+{
+    const auto key = std::make_pair(polygon, local_edge_index);
+    const auto it = directed_source_flux_.find(key);
+    if (it != directed_source_flux_.end()) {
+        return it->second;
+    }
+
+    double flux = 0.0;
+    check_moab(mb_.tag_get_data(tag_source_flux_, &edge, 1, &flux), "Failed to read source flux tag");
+    return flux;
+}
+
+double MimeticInterpolator::target_edge_flux(const moab::EntityHandle polygon,
+                                             const std::size_t local_edge_index,
+                                             const moab::EntityHandle edge) const
+{
+    const auto key = std::make_pair(polygon, local_edge_index);
+    const auto it = directed_target_flux_.find(key);
+    if (it != directed_target_flux_.end()) {
+        return it->second;
+    }
+
+    double flux = 0.0;
+    check_moab(mb_.tag_get_data(tag_target_flux_, &edge, 1, &flux), "Failed to read target flux tag");
+    return flux;
+}
+
 ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab::EntityHandle polygon)
 {
-    const LocalPolygon poly = local_polygon(mb_, polygon, is_spherical_);
+    const LocalPolygon poly = local_polygon(mb_, polygon, options_);
     const std::vector<LocalEdge> edges = local_edges(mb_, poly);
 
     const int N = static_cast<int>(edges.size());
@@ -456,9 +692,7 @@ ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab:
 
     Eigen::VectorXd source_flux(N);
     for (int i = 0; i < N; ++i) {
-        double flux = 0.0;
-        check_moab(mb_.tag_get_data(tag_source_flux_, &edges[i].handle, 1, &flux), "Failed to read source flux tag");
-        source_flux(i) = flux;
+        source_flux(i) = source_edge_flux(polygon, static_cast<std::size_t>(i), edges[i].handle);
     }
 
     const double divergence = source_flux.sum() / poly.area;
@@ -643,19 +877,15 @@ std::vector<double> MimeticInterpolator::transfer_to_target_polygon_edges(const 
     coeffs.d = dptr[0];
     coeffs.harmonic.assign(dptr + 1, dptr + size);
 
-    const LocalPolygon source = local_polygon(mb_, source_polygon, is_spherical_);
-    const LocalPolygon target_absolute = local_polygon(mb_, target_polygon, is_spherical_);
+    const LocalPolygon source = local_polygon(mb_, source_polygon, options_);
+    const LocalPolygon target_absolute = local_polygon(mb_, target_polygon, options_);
 
     std::vector<Eigen::Vector2d> target_points_in_source_frame;
     target_points_in_source_frame.reserve(target_absolute.points.size());
-    if (is_spherical_) {
+    if (is_spherical()) {
+        const GnomonicFrame frame{source.n, source.e_x, source.e_y, options_.radius};
         for (const Eigen::Vector3d& p3d : target_absolute.points_3d) {
-            double dot = p3d.dot(source.n);
-            if (dot < 1e-10) {
-                throw std::runtime_error("Target polygon cannot be projected onto source tangent plane");
-            }
-            Eigen::Vector3d p_gnom = p3d / dot;
-            target_points_in_source_frame.emplace_back(p_gnom.dot(source.e_x) - source.centroid.x(), p_gnom.dot(source.e_y) - source.centroid.y());
+            target_points_in_source_frame.push_back(project_gnomonic(p3d, frame) - source.centroid);
         }
     } else {
         for (const Eigen::Vector2d& target_relative : target_absolute.points) {
@@ -671,6 +901,7 @@ std::vector<double> MimeticInterpolator::transfer_to_target_polygon_edges(const 
         target_fluxes.push_back(flux);
 
         const moab::EntityHandle edge = find_or_create_edge(mb_, target_absolute.vertices[i], target_absolute.vertices[j]);
+        directed_target_flux_[std::make_pair(target_polygon, i)] = flux;
         check_moab(mb_.tag_set_data(tag_target_flux_, &edge, 1, &flux), "Failed to write target flux tag");
     }
     return target_fluxes;
@@ -698,14 +929,14 @@ EdgeTransferResult MimeticInterpolator::transfer_source_to_target_edges(
         ReconstructionCoeffs coeffs;
         coeffs.d = dptr[0];
         coeffs.harmonic.assign(dptr + 1, dptr + size);
-        const LocalPolygon local = local_polygon(mb_, source_polygon, is_spherical_);
+        const LocalPolygon local = local_polygon(mb_, source_polygon, options_);
         sources.push_back(SourceCache{source_polygon, local, absolute_points(local), coeffs});
     }
 
     EdgeTransferResult result;
 
     for (const moab::EntityHandle target_polygon : target_polygons) {
-        const LocalPolygon target = local_polygon(mb_, target_polygon, is_spherical_);
+        const LocalPolygon target = local_polygon(mb_, target_polygon, options_);
         const std::vector<LocalEdge> target_edges = local_edges(mb_, target);
 
         for (std::size_t edge_index = 0; edge_index < target_edges.size(); ++edge_index) {
@@ -721,16 +952,14 @@ EdgeTransferResult MimeticInterpolator::transfer_source_to_target_edges(
                 Eigen::Vector2d target_a;
                 Eigen::Vector2d target_b;
 
-                if (is_spherical_) {
-                    double dot1 = v_t1.dot(source.local.n);
-                    double dot2 = v_t2.dot(source.local.n);
-                    if (dot1 < 1e-10 || dot2 < 1e-10) {
+                if (is_spherical()) {
+                    const GnomonicFrame source_frame{source.local.n, source.local.e_x, source.local.e_y, options_.radius};
+                    try {
+                        target_a = project_gnomonic(v_t1, source_frame);
+                        target_b = project_gnomonic(v_t2, source_frame);
+                    } catch (const std::runtime_error&) {
                         continue;
                     }
-                    Eigen::Vector3d p1 = v_t1 / dot1;
-                    Eigen::Vector3d p2 = v_t2 / dot2;
-                    target_a = Eigen::Vector2d(p1.dot(source.local.e_x), p1.dot(source.local.e_y));
-                    target_b = Eigen::Vector2d(p2.dot(source.local.e_x), p2.dot(source.local.e_y));
                 } else {
                     target_a = target.centroid + target_edge.a;
                     target_b = target.centroid + target_edge.b;
@@ -755,6 +984,7 @@ EdgeTransferResult MimeticInterpolator::transfer_source_to_target_edges(
                 });
             }
 
+            directed_target_flux_[std::make_pair(target_polygon, edge_index)] = result.target_fluxes[target_dof];
             check_moab(mb_.tag_set_data(tag_target_flux_, &target_edge.handle, 1, &result.target_fluxes[target_dof]),
                        "Failed to write edge-wise target flux tag");
         }
@@ -781,7 +1011,7 @@ SparseEdgeProjection MimeticInterpolator::assemble_edge_projection_operator(
     SparseEdgeProjection projection;
 
     for (const moab::EntityHandle source_polygon : source_polygons) {
-        const LocalPolygon local = local_polygon(mb_, source_polygon, is_spherical_);
+        const LocalPolygon local = local_polygon(mb_, source_polygon, options_);
         const std::vector<LocalEdge> edges = local_edges(mb_, local);
         SourceCache cache{
             source_polygon,
@@ -801,17 +1031,33 @@ SparseEdgeProjection MimeticInterpolator::assemble_edge_projection_operator(
 
     std::vector<Eigen::Triplet<double>> triplets;
     for (const moab::EntityHandle target_polygon : target_polygons) {
-        const LocalPolygon target = local_polygon(mb_, target_polygon, is_spherical_);
+        const LocalPolygon target = local_polygon(mb_, target_polygon, options_);
         const std::vector<LocalEdge> target_edges = local_edges(mb_, target);
 
         for (std::size_t edge_index = 0; edge_index < target_edges.size(); ++edge_index) {
             const LocalEdge& target_edge = target_edges[edge_index];
-            const Eigen::Vector2d target_a = target.centroid + target_edge.a;
-            const Eigen::Vector2d target_b = target.centroid + target_edge.b;
+            const Eigen::Vector3d v_t1 = is_spherical() ? target.points_3d[edge_index] : Eigen::Vector3d::Zero();
+            const Eigen::Vector3d v_t2 = is_spherical() ? target.points_3d[(edge_index + 1) % target.points_3d.size()]
+                                                        : Eigen::Vector3d::Zero();
             const std::size_t target_dof = projection.target_edges.size();
             projection.target_edges.push_back(DirectedEdgeDof{target_polygon, target_edge.handle, edge_index});
 
             for (const SourceCache& source : sources) {
+                Eigen::Vector2d target_a;
+                Eigen::Vector2d target_b;
+                if (is_spherical()) {
+                    const GnomonicFrame source_frame{source.local.n, source.local.e_x, source.local.e_y, options_.radius};
+                    try {
+                        target_a = project_gnomonic(v_t1, source_frame);
+                        target_b = project_gnomonic(v_t2, source_frame);
+                    } catch (const std::runtime_error&) {
+                        continue;
+                    }
+                } else {
+                    target_a = target.centroid + target_edge.a;
+                    target_b = target.centroid + target_edge.b;
+                }
+
                 Eigen::Vector2d clipped_a;
                 Eigen::Vector2d clipped_b;
                 if (!clip_segment_to_convex_polygon(target_a, target_b, source.absolute_points, clipped_a, clipped_b)) {

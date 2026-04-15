@@ -8,6 +8,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -23,6 +24,19 @@ namespace mimetic {
  * problem-dependent tolerances into higher-level drivers.
  */
 constexpr double kTolerance = 1.0e-12;
+constexpr double kConservationTolerance = 5.0e-13;
+
+enum class GeometryMode {
+    Planar,
+    SphericalGnomonic,
+};
+
+struct GeometryOptions {
+    GeometryMode mode = GeometryMode::Planar;
+    double radius = 1.0;
+    double conservation_tolerance = kConservationTolerance;
+    double geometry_tolerance = 1.0e-13;
+};
 
 /**
  * Convert a MOAB return code into an exception with local context.
@@ -140,6 +154,33 @@ struct LocalEdge {
     double length;
 };
 
+struct GnomonicFrame {
+    Eigen::Vector3d center;
+    Eigen::Vector3d e_x;
+    Eigen::Vector3d e_y;
+    double radius = 1.0;
+};
+
+struct SphericalEdge {
+    moab::EntityHandle handle;
+    Eigen::Vector3d a;
+    Eigen::Vector3d b;
+    Eigen::Vector2d chart_a;
+    Eigen::Vector2d chart_b;
+    double arc_length;
+};
+
+struct SphericalPolygon {
+    std::vector<moab::EntityHandle> vertices;
+    std::vector<Eigen::Vector3d> points;
+    std::vector<Eigen::Vector2d> projected_points;
+    std::vector<Eigen::Vector2d> local_points;
+    Eigen::Vector2d projected_centroid;
+    double chart_area;
+    double spherical_area;
+    GnomonicFrame frame;
+};
+
 /**
  * Directed cell-edge degree of freedom.
  *
@@ -191,6 +232,30 @@ Eigen::Vector2d polygon_centroid(const std::vector<Eigen::Vector2d>& points);
 moab::EntityHandle find_or_create_edge(moab::Core& mb, moab::EntityHandle v0, moab::EntityHandle v1);
 /// Extract a MOAB polygon/quad into a centroid-relative LocalPolygon.
 LocalPolygon local_polygon(moab::Core& mb, moab::EntityHandle polygon, bool is_spherical = false);
+/// Extract a MOAB polygon/quad using explicit geometry options.
+LocalPolygon local_polygon(moab::Core& mb, moab::EntityHandle polygon, const GeometryOptions& options);
+/// Extract a MOAB polygon/quad into a spherical gnomonic chart.
+SphericalPolygon spherical_polygon(moab::Core& mb,
+                                   moab::EntityHandle polygon,
+                                   const GeometryOptions& options = GeometryOptions());
+/// Build ordered spherical edge records from a SphericalPolygon.
+std::vector<SphericalEdge> spherical_edges(moab::Core& mb, const SphericalPolygon& polygon);
+/// Gnomonic projection from the unit sphere to a local tangent chart.
+Eigen::Vector2d project_gnomonic(const Eigen::Vector3d& point, const GnomonicFrame& frame);
+/// Inverse gnomonic projection from a tangent chart to the sphere.
+Eigen::Vector3d inverse_gnomonic(const Eigen::Vector2d& xi, const GnomonicFrame& frame);
+/// Differential of inverse gnomonic projection. Columns are dr/dxi and dr/deta.
+Eigen::Matrix<double, 3, 2> gnomonic_jacobian(const Eigen::Vector2d& xi, const GnomonicFrame& frame);
+/// Area scale |dr/dxi x dr/deta| for the inverse gnomonic chart.
+double gnomonic_area_scale(const Eigen::Vector2d& xi, const GnomonicFrame& frame);
+/// Contravariant Piola lift from chart vector components to a surface tangent vector.
+Eigen::Vector3d lift_contravariant_piola(const Eigen::Vector2d& chart_vector,
+                                         const Eigen::Vector2d& xi,
+                                         const GnomonicFrame& frame);
+/// Inverse Piola map from a surface tangent vector to chart vector components.
+Eigen::Vector2d pullback_contravariant_piola(const Eigen::Vector3d& surface_vector,
+                                             const Eigen::Vector2d& xi,
+                                             const GnomonicFrame& frame);
 /// Build ordered LocalEdge records from a LocalPolygon.
 std::vector<LocalEdge> local_edges(moab::Core& mb, const LocalPolygon& polygon);
 /// Create a MOAB polygon, using MBQUAD for 4-sided cells and MBPOLYGON otherwise.
@@ -223,8 +288,14 @@ class MimeticInterpolator {
     /// Create SOURCE_FLUX, TARGET_FLUX, and COEFFS tags if needed.
     explicit MimeticInterpolator(moab::Core& moab_instance);
 
-    void set_spherical(bool is_spherical) { is_spherical_ = is_spherical; }
-    bool is_spherical() const { return is_spherical_; }
+    void set_geometry_options(const GeometryOptions& options);
+    GeometryOptions geometry_options() const;
+    void set_spherical(bool is_spherical);
+    bool is_spherical() const;
+
+    void set_source_edge_flux(moab::EntityHandle polygon, std::size_t local_edge_index, double flux);
+    double source_edge_flux(moab::EntityHandle polygon, std::size_t local_edge_index, moab::EntityHandle edge) const;
+    double target_edge_flux(moab::EntityHandle polygon, std::size_t local_edge_index, moab::EntityHandle edge) const;
 
     /// MOAB tag storing signed integrated normal flux on source edges.
     moab::Tag source_flux_tag() const;
@@ -263,10 +334,12 @@ class MimeticInterpolator {
 
   private:
     moab::Core& mb_;
-    bool is_spherical_ = false;
+    GeometryOptions options_;
     moab::Tag tag_source_flux_ = 0;
     moab::Tag tag_target_flux_ = 0;
     moab::Tag tag_coeffs_ = 0;
+    std::map<std::pair<moab::EntityHandle, std::size_t>, double> directed_source_flux_;
+    std::map<std::pair<moab::EntityHandle, std::size_t>, double> directed_target_flux_;
 };
 
 }  // namespace mimetic
