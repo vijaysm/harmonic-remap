@@ -48,7 +48,11 @@ target_link_libraries(conservative_intersection_test PRIVATE mimetic)
 add_executable(voronoi_intersection_test tests/voronoi_intersection_test.cpp)
 target_link_libraries(voronoi_intersection_test PRIVATE mimetic)
 
+add_executable(convergence_validation_test tests/convergence_validation_test.cpp)
+target_link_libraries(convergence_validation_test PRIVATE mimetic)
+
 enable_testing()
 add_test(NAME patch_test COMMAND patch_test)
 add_test(NAME conservative_intersection_test COMMAND conservative_intersection_test)
 add_test(NAME voronoi_intersection_test COMMAND voronoi_intersection_test)
+add_test(NAME convergence_validation_test COMMAND convergence_validation_test)
