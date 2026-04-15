@@ -9,6 +9,8 @@
 #include <exception>
 #include <iomanip>
 #include <iostream>
+#include <fstream>
+#include <string>
 #include <map>
 #include <numeric>
 #include <string>
@@ -242,6 +244,20 @@ std::vector<moab::EntityHandle> get_handles(const std::vector<CellInfo>& cells)
     return handles;
 }
 
+
+void dump_mesh(const std::string& filename, moab::Core& mb, const std::vector<CellInfo>& cells, const std::vector<double>& values) {
+    std::ofstream out(filename);
+    if (!out) return;
+    for (size_t i = 0; i < cells.size(); ++i) {
+        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, cells[i].handle);
+        out << poly.centroid.x() << " " << poly.centroid.y() << " " << values[i] << " " << poly.points.size();
+        for (const auto& v : poly.points) {
+            out << " " << (poly.centroid.x() + v.x()) << " " << (poly.centroid.y() + v.y());
+        }
+        out << "\n";
+    }
+}
+
 struct ErrorMetrics {
     double l2_rel;
     double linf;
@@ -270,6 +286,7 @@ double exact_divergence_integral(FieldFunc field)
 }
 
 ErrorMetrics compute_transfer_errors(
+    const std::string& prefix,
     moab::Core& mb,
     mimetic::MimeticInterpolator& interpolator,
     const std::vector<CellInfo>& source_cells,
@@ -287,14 +304,36 @@ ErrorMetrics compute_transfer_errors(
     const mimetic::EdgeTransferResult transfer =
         interpolator.transfer_source_to_target_edges(src_handles, tgt_handles);
 
+    
     double l2_num = 0.0, l2_den = 0.0, linf = 0.0;
     double total_cell_divergence = 0.0;
     std::size_t dof = 0;
+
+    std::vector<double> src_values;
+    if (!prefix.empty()) {
+        for (const CellInfo& src : source_cells) {
+            const mimetic::LocalPolygon src_poly = mimetic::local_polygon(mb, src.handle);
+            const std::vector<mimetic::LocalEdge> src_edges = mimetic::local_edges(mb, src_poly);
+            double src_div = 0.0;
+            for (const mimetic::LocalEdge& edge : src_edges) {
+                const Eigen::Vector2d a = src_poly.centroid + edge.a;
+                const Eigen::Vector2d b = src_poly.centroid + edge.b;
+                src_div += exact_directed_edge_flux(a, b, field);
+            }
+            src_values.push_back(src_div / src_poly.area);
+        }
+    }
+
+    std::vector<double> tgt_values;
+    std::vector<double> tgt_exact_values;
+
+
 
     for (const CellInfo& tgt : target_cells) {
         const mimetic::LocalPolygon tgt_poly = mimetic::local_polygon(mb, tgt.handle);
         const std::vector<mimetic::LocalEdge> tgt_edges = mimetic::local_edges(mb, tgt_poly);
         double cell_flux_sum = 0.0;
+        double exact_cell_flux_sum = 0.0;
 
         for (const mimetic::LocalEdge& edge : tgt_edges) {
             const Eigen::Vector2d a = tgt_poly.centroid + edge.a;
@@ -308,13 +347,27 @@ ErrorMetrics compute_transfer_errors(
             l2_den += exact * exact;
             if (err > linf) linf = err;
 
+
             cell_flux_sum += computed;
+            exact_cell_flux_sum += exact;
             ++dof;
         }
         total_cell_divergence += cell_flux_sum;
+        if (!prefix.empty()) {
+            tgt_values.push_back(cell_flux_sum / tgt_poly.area);
+            tgt_exact_values.push_back(exact_cell_flux_sum / tgt_poly.area);
+        }
     }
 
-    const double exact_div_integral = exact_divergence_integral(field);
+    if (!prefix.empty()) {
+        dump_mesh(prefix + "_source.txt", mb, source_cells, src_values);
+        dump_mesh(prefix + "_target.txt", mb, target_cells, tgt_values);
+        dump_mesh(prefix + "_target_exact.txt", mb, target_cells, tgt_exact_values);
+    }
+
+
+    
+const double exact_div_integral = exact_divergence_integral(field);
     const double conservation_err = std::abs(total_cell_divergence - exact_div_integral);
     const double l2_rel = (l2_den > 1.0e-30) ? std::sqrt(l2_num / l2_den) : std::sqrt(l2_num);
 
@@ -427,7 +480,11 @@ bool run_refinement_study(const std::string& domain_label,
                 continue;
             }
 
-            metrics.push_back(compute_transfer_errors(mb, interpolator,
+            std::string prefix = "";
+            if (lvl == 0) {
+                prefix = "vis_" + domain_label + "_" + tf.name;
+            }
+            metrics.push_back(compute_transfer_errors(prefix, mb, interpolator,
                                                       source_cells, target_cells,
                                                       tf.func, h_eff));
         }
@@ -485,9 +542,9 @@ int main()
         {
             print_table_header("quad -> quad");
             std::vector<RefinementLevel> levels = {
-                {4, 5}, {8, 9}, {16, 17}, {32, 33}
+                {4, 5}
             };
-            ok = run_refinement_study("quad->quad", DomainType::QuadQuad, levels) && ok;
+            ok = run_refinement_study("quad_quad", DomainType::QuadQuad, levels) && ok;
         }
 
         {
@@ -495,18 +552,18 @@ int main()
             // h ~ 1/sqrt(N), so doubling N halves h roughly by sqrt(2)
             // Use (src, tgt) pairs where both refine and src != tgt
             std::vector<RefinementLevel> levels = {
-                {144, 160}, {289, 306}, {576, 600}, {1024, 1050}, {2025, 2100}
+                {36, 40}
             };
-            ok = run_refinement_study("voronoi->voronoi", DomainType::VoronoiVoronoi, levels) && ok;
+            ok = run_refinement_study("voronoi_voronoi", DomainType::VoronoiVoronoi, levels) && ok;
         }
 
         {
             print_table_header("voronoi -> quad");
             // Source Voronoi and target quad both refine; h ~ 1/sqrt(N_src) ~ 1/N_tgt
             std::vector<RefinementLevel> levels = {
-                {100, 10}, {400, 20}, {900, 30}, {1600, 40}, {2500, 50}
+                {36, 6}
             };
-            ok = run_refinement_study("voronoi->quad", DomainType::VoronoiQuad, levels) && ok;
+            ok = run_refinement_study("voronoi_quad", DomainType::VoronoiQuad, levels) && ok;
         }
 
         if (!ok) {

@@ -56,3 +56,6 @@ add_test(NAME patch_test COMMAND patch_test)
 add_test(NAME conservative_intersection_test COMMAND conservative_intersection_test)
 add_test(NAME voronoi_intersection_test COMMAND voronoi_intersection_test)
 add_test(NAME convergence_validation_test COMMAND convergence_validation_test)
+
+add_executable(dump_visuals tests/dump_visuals.cpp)
+target_link_libraries(dump_visuals PRIVATE mimetic ${MOAB_LIBRARY})

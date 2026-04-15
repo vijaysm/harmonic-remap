@@ -49,6 +49,9 @@ Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly, const std
     const int S = N_h + N - 1;
 
     Eigen::MatrixXd V = Eigen::MatrixXd::Zero(N_h, N_h);
+    Eigen::MatrixXd M = Eigen::MatrixXd::Zero(N_h, N);
+    const Eigen::Vector2d origin(0.0, 0.0);
+
     for (int i = 0; i < N_h; ++i) {
         int ki = (i / 2) + 1;
         bool is_Q_i = (i % 2 == 1);
@@ -58,7 +61,7 @@ Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly, const std
 
             double val = 0.0;
             for (const LocalEdge& edge : edges) {
-                val += integrate_triangle_scalar(Eigen::Vector2d::Zero(), edge.a, edge.b, [&](const Eigen::Vector2d& p) {
+                val += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
                     double Pi, Qi, Pj, Qj;
                     Eigen::Vector2d gPi, gQi, gPj, gQj;
                     eval_harmonic_basis(ki, p, Pi, Qi, gPi, gQi);
@@ -69,7 +72,34 @@ Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly, const std
                 });
             }
             V(i, j) = val;
-
+        }
+        
+        double cell_basis_integral = 0.0;
+        double div_integral = 0.0;
+        for (const LocalEdge& edge : edges) {
+            cell_basis_integral += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
+                double P, Q; Eigen::Vector2d gP, gQ;
+                eval_harmonic_basis(ki, p, P, Q, gP, gQ);
+                return is_Q_i ? Q : P;
+            });
+            div_integral += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
+                double P, Q; Eigen::Vector2d gP, gQ;
+                eval_harmonic_basis(ki, p, P, Q, gP, gQ);
+                return p.dot(is_Q_i ? gQ : gP);
+            });
+        }
+        const double cell_basis_average = cell_basis_integral / poly.area;
+        if (i >= 4) {
+            V(i, i) += 1.0e6 * poly.area;
+        }
+        
+        for (int e = 0; e < N; ++e) {
+            const double edge_average = integrate_edge_scalar(edges[e].a, edges[e].b, [&](const Eigen::Vector2d& p) {
+                double P, Q; Eigen::Vector2d gP, gQ;
+                eval_harmonic_basis(ki, p, P, Q, gP, gQ);
+                return is_Q_i ? Q : P;
+            }) / edges[e].length;
+            M(i, e) = edge_average - cell_basis_average - 0.5 * div_integral / poly.area;
         }
     }
 
@@ -98,18 +128,17 @@ Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly, const std
         }
     }
 
-    for (int i = 4; i < N_h; ++i) {
-        V(i, i) += 1.0e2 * poly.area;
-    }
-    Eigen::LLT<Eigen::MatrixXd> llt(V);
-    Eigen::MatrixXd L = llt.matrixL();
-    Eigen::MatrixXd L_inv = L.inverse();
-    Eigen::MatrixXd A = C * L_inv.transpose();
-    
-    Eigen::CompleteOrthogonalDecomposition<Eigen::MatrixXd> cod(A);
-    Eigen::MatrixXd A_pinv = cod.pseudoInverse();
-    
-    Eigen::MatrixXd X = L_inv.transpose() * A_pinv * F;
+    Eigen::MatrixXd KKT = Eigen::MatrixXd::Zero(S, S);
+    KKT.block(0, 0, N_h, N_h) = V;
+    KKT.block(N_h, 0, N - 1, N_h) = C;
+    KKT.block(0, N_h, N_h, N - 1) = C.transpose();
+
+    Eigen::MatrixXd RHS = Eigen::MatrixXd::Zero(S, N);
+    RHS.block(0, 0, N_h, N) = M;
+    RHS.block(N_h, 0, N - 1, N) = F;
+
+    Eigen::FullPivLU<Eigen::MatrixXd> lu(KKT);
+    Eigen::MatrixXd X = lu.solve(RHS).block(0, 0, N_h, N);
 
     Eigen::MatrixXd reconstruction = Eigen::MatrixXd::Zero(1 + N_h, N);
     reconstruction.row(0).setConstant(1.0 / poly.area);
@@ -393,6 +422,9 @@ ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab:
     const double divergence = source_flux.sum() / poly.area;
 
     Eigen::MatrixXd V = Eigen::MatrixXd::Zero(N_h, N_h);
+    Eigen::VectorXd M = Eigen::VectorXd::Zero(N_h);
+    const Eigen::Vector2d origin(0.0, 0.0);
+
     for (int i = 0; i < N_h; ++i) {
         int ki = (i / 2) + 1;
         bool is_Q_i = (i % 2 == 1);
@@ -402,7 +434,7 @@ ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab:
 
             double val = 0.0;
             for (const LocalEdge& edge : edges) {
-                val += integrate_triangle_scalar(Eigen::Vector2d::Zero(), edge.a, edge.b, [&](const Eigen::Vector2d& p) {
+                val += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
                     double Pi, Qi, Pj, Qj;
                     Eigen::Vector2d gPi, gQi, gPj, gQj;
                     eval_harmonic_basis(ki, p, Pi, Qi, gPi, gQi);
@@ -413,7 +445,34 @@ ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab:
                 });
             }
             V(i, j) = val;
+        }
 
+        double cell_basis_integral = 0.0;
+        double div_integral = 0.0;
+        for (const LocalEdge& edge : edges) {
+            cell_basis_integral += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
+                double P, Q; Eigen::Vector2d gP, gQ;
+                eval_harmonic_basis(ki, p, P, Q, gP, gQ);
+                return is_Q_i ? Q : P;
+            });
+            div_integral += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
+                double P, Q; Eigen::Vector2d gP, gQ;
+                eval_harmonic_basis(ki, p, P, Q, gP, gQ);
+                return p.dot(is_Q_i ? gQ : gP);
+            });
+        }
+        const double cell_basis_average = cell_basis_integral / poly.area;
+        if (i >= 4) {
+            V(i, i) += 1.0e6 * poly.area;
+        }
+        
+        for (int e = 0; e < N; ++e) {
+            const double edge_average = integrate_edge_scalar(edges[e].a, edges[e].b, [&](const Eigen::Vector2d& p) {
+                double P, Q; Eigen::Vector2d gP, gQ;
+                eval_harmonic_basis(ki, p, P, Q, gP, gQ);
+                return is_Q_i ? Q : P;
+            }) / edges[e].length;
+            M(i) += (edge_average - cell_basis_average - 0.5 * div_integral / poly.area) * source_flux(e);
         }
     }
 
@@ -437,18 +496,18 @@ ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab:
         F_vec(e) = source_flux(e) - 0.5 * divergence * Ee;
     }
 
-    for (int i = 4; i < N_h; ++i) {
-        V(i, i) += 1.0e2 * poly.area;
-    }
-    Eigen::LLT<Eigen::MatrixXd> llt(V);
-    Eigen::MatrixXd L = llt.matrixL();
-    Eigen::MatrixXd L_inv = L.inverse();
-    Eigen::MatrixXd A = C * L_inv.transpose();
-    
-    Eigen::CompleteOrthogonalDecomposition<Eigen::MatrixXd> cod(A);
-    Eigen::MatrixXd A_pinv = cod.pseudoInverse();
-    
-    Eigen::VectorXd X = L_inv.transpose() * A_pinv * F_vec;
+    // Solve KKT system: [V C^T; C 0] [X; lambda] = [M; F_vec]
+    Eigen::MatrixXd KKT = Eigen::MatrixXd::Zero(S, S);
+    KKT.block(0, 0, N_h, N_h) = V;
+    KKT.block(N_h, 0, N - 1, N_h) = C;
+    KKT.block(0, N_h, N_h, N - 1) = C.transpose();
+
+    Eigen::VectorXd RHS = Eigen::VectorXd::Zero(S);
+    RHS.segment(0, N_h) = M;
+    RHS.segment(N_h, N - 1) = F_vec;
+
+    Eigen::FullPivLU<Eigen::MatrixXd> lu(KKT);
+    Eigen::VectorXd X = lu.solve(RHS).segment(0, N_h);
     
     ReconstructionCoeffs coeffs;
     coeffs.d = divergence;
