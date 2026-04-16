@@ -95,13 +95,13 @@ Mimetic discretizations preserve the structural identities of the continuous
 operators at the discrete level.  Bochev and Hyman \cite{BochevHyman2006}
 survey the mimetic design principles, while Mattiussi \cite{Mattiussi1997}
 connects finite volume, finite element, and finite difference methods through
-algebraic topology.  Finite element exterior calculus gives a closely related
+algebraic topology.  Finite element exterior calculus (FEEC) gives a closely related
 framework in which discrete spaces form a de Rham complex
 \cite{ArnoldFalkWinther2006}.  In this view, fluxes belong naturally to
 H(div)-conforming spaces whose degrees of freedom are attached to codimension-one
 entities.
 
-The classical reference point for such spaces is the Raviart--Thomas family.
+The classical reference point for such spaces is the Raviart--Thomas (RT) family.
 The lowest-order RT space on a simplex has the form
 \(\mathbf{a}+b\x\), has constant divergence, and is determined by integrated
 normal fluxes on edges or faces \cite{RaviartThomas1977,BrezziFortin1991,
@@ -115,10 +115,10 @@ General polygonal cells motivate several related but distinct approaches.
 Mimetic finite difference and support-operator methods construct discrete inner
 products and divergence/gradient adjointness directly on polygonal and
 polyhedral meshes \cite{BrezziLipnikovSimoncini2005,LipnikovManziniShashkov2014}.
-Virtual element methods avoid explicit closed-form shape functions while
+Virtual element methods (VEM) avoid explicit closed-form shape functions while
 retaining polynomial consistency and stability on general polygons
 \cite{BeiraoDaVeiga2013}.  Mixed and H(div)-conforming VEM variants are
-particularly relevant because they generalize BDM/RT-like behavior to polygonal
+particularly relevant because they generalize Brezzi-Douglas-Marini (BDM) and RT-like behavior to polygonal
 meshes \cite{BrezziFalkMarini2014,BeiraoDaVeiga2016,BeiraoDaVeigaMixed2016}.
 The Perot--Chartrand construction used here belongs to this compatible
 polygonal family: it reconstructs a local vector field from edge fluxes using a
@@ -145,9 +145,10 @@ to compatible vector spaces.  Generalized Whitney-form constructions build
 H(curl), H(div), and scalar families from barycentric coordinates on convex
 polytopes and recover classical RT, BDM, and Nedelec behavior on simplices
 \cite{GilletteRandBajaj2016}.  This is the most promising Wachspress-adjacent
-future direction for the present problem.  It is not a componentwise
+future direction for the present problem.  It is not a component-wise
 Wachspress replacement; it is a different vector-valued finite element space
-with different degrees of freedom and a different assembly strategy.
+with degrees of freedom on topological edges instead of vertices that involves
+a completely new assembly and solver strategy.
 
 Conservative remapping between nonmatching grids has a separate mature
 literature.  Integral remapping for ALE methods goes back at least to
@@ -156,7 +157,7 @@ first- and second-order conservative remapping weights for spherical climate
 grids.  Ullrich and Taylor \cite{UllrichTaylor2015} and Ullrich, Devendran, and
 Johansen \cite{UllrichDevendranJohansen2016} developed arbitrary-order
 conservative and consistent linear maps, implemented in the TempestRemap
-ecosystem.  Those methods are closest in spirit to the sparse projection
+library (CITE).  Those methods are closest in spirit to the sparse projection
 operator assembled here, but the present method transfers directed edge fluxes
 rather than scalar cell averages.
 
@@ -832,9 +833,21 @@ largest global conservation residual among these cases is
 \(1.01\times10^{-14}\), the largest direct-vs-sparse residual is
 \(2.78\times10^{-16}\), and the largest target-cell KKT edge re-integration
 residual is \(2.22\times10^{-16}\).  The identity case transfers all directed
-edge DOFs with maximum error \(3.33\times10^{-16}\).  The relative edge-flux
-error decreases from \(6.53\times10^{-2}\) on \(4\to6\) to
-\(3.06\times10^{-2}\) on \(6\to8\).
+edge DOFs with maximum error \(3.33\times10^{-16}\).  After switching the
+cell-centered \(L^1\) diagnostic to physical spherical area and adding metric
+weights to the reconstruction Gram matrix and moment integrals, the relative
+edge-flux error decreases from \(6.40\times10^{-2}\) on \(4\to6\) to
+\(3.02\times10^{-2}\) on \(6\to8\), while preserving the same machine-precision
+conservation checks.
+
+To quantify refinement beyond the default acceptance cases, an additional sweep
+was run on \((3\to5), (4\to6), (6\to8), (8\to10), (12\to14), (16\to18)\)
+structured cubed-sphere transfers.  The measured relative edge-flux errors were
+\(1.02\times10^{-1}\), \(6.40\times10^{-2}\), \(3.02\times10^{-2}\),
+\(1.75\times10^{-2}\), \(7.96\times10^{-3}\), and \(4.52\times10^{-3}\),
+with observed convergence rates approaching two.  Thus the spherical extension
+is not merely conservative; on these smooth cubed-sphere tests it is also
+strongly convergent under refinement.
 
 The spherical unstructured test builds deterministic n-sided Voronoi patches in
 a common gnomonic chart and maps their edges to great-circle arcs on the unit
@@ -916,6 +929,29 @@ strongest current spherical result because it verifies conservation and sparse
 operator equivalence on n-sided great-circle polygons rather than on only
 quad-like cells.
 
+The additional convergence sweep changed the interpretation of the spherical
+backend in an important way.  The first review of the implementation focused on
+the comparatively large coarse-mesh errors and suggested that the Euclidean
+harmonic basis on a gnomonic chart might be fundamentally mismatched to the
+surface geometry.  The extended refinement data show that this concern was too
+strong: the method already converges at an observed rate close to second order
+on the smooth cubed-sphere regression sequence.  Metric weighting of the cell
+interior reconstruction norm is still beneficial, but only modestly so.  For
+example, the \(3\to5\) relative edge error drops from \(1.04\times10^{-1}\) to
+\(1.02\times10^{-1}\), and the \(4\to6\) error drops from \(6.53\times10^{-2}\)
+to \(6.40\times10^{-2}\).  This indicates that the missing metric weight is a
+secondary effect rather than the dominant source of error.
+
+A scalar control experiment was also added.  It performs a first-order
+conservative remap of cell averages for the same zonal spherical harmonic using
+projected polygon overlap areas.  That scalar remap converges under refinement,
+but it is not more accurate than the edge-flux vector remap.  The lesson is not
+that vector transfer is easier than scalar transfer; rather, the chosen scalar
+control is itself only a low-order overlap-area approximation and therefore is
+not a sharp upper bound for the edge-based method.  It remains useful as a
+geometry-only regression, but it should not be overinterpreted as a method
+comparison.
+
 The visualizations also clarify what remains outside this phase.  The clipping
 kernel assumes convex cells that fit in the relevant source gnomonic hemisphere;
 it does not cover nonconvex polygons or target edges crossing a projection
@@ -938,6 +974,10 @@ agreement at \(5\times10^{-13}\).
   \item Tests use manufactured analytic fields and deterministic serial meshes.
         They verify local conservation, sparse operator equivalence, and
         refinement behavior, not global PDE accuracy.
+  \item The scalar control test is intentionally low order: it uses overlap-area
+        weighting of source cell averages to isolate geometry and clipping.  Its
+        errors therefore should not be interpreted as an upper bound on the
+        edge-flux remap accuracy.
   \item The sparse projection currently uses directed cell-edge DOFs.  Shared
         mesh-edge collapse requires explicit orientation metadata.
   \item MPI, distributed ownership, ghosting, and parallel I/O are intentionally
@@ -956,7 +996,17 @@ spherical Voronoi patches, and sparse directed edge projection.  The strongest
 current result is that both direct edge transfer and the assembled sparse matrix
 produce the same directed target edge DOFs to the \(5\times10^{-13}\)
 conservation standard on planar, spherical structured, and spherical
-unstructured cases.
+unstructured cases, while the smooth cubed-sphere regression sequence shows
+near-second-order decay of the relative edge-flux error.
+
+The added spherical diagnostics sharpen the interpretation of the method.
+Switching the cell-centered \(L^1\) norm to physical spherical area is a
+necessary diagnostic correction.  Metric-weighting the reconstruction norm is a
+real but modest improvement.  It reduces the coarse structured-sphere edge error
+without changing the underlying convergence trend or the conservative invariants.
+Thus the current spherical backend is better characterized as a conservative and
+already strongly convergent low-order compatible transfer, not as a method whose
+accuracy is fundamentally blocked by the choice of gnomonic chart.
 
 The Wachspress comparison clarifies the method selection.  Scalar Wachspress
 coordinates remain valuable for conforming H1 polygonal discretizations, but a
@@ -991,6 +1041,10 @@ logical paths are proposed for future research:
     \cite{Jones1999,UllrichTaylor2015,UllrichDevendranJohansen2016}.  This
     would clarify when edge-flux transfer and scalar conservative remapping can
     share overlap geometry and sparse operator infrastructure.
+    \item \textbf{Higher-order spherical controls}: Replace the current
+    first-order scalar control with a higher-order conservative spherical
+    remapping baseline so that geometry-only and vector-space effects can be
+    separated more sharply.
     \item \textbf{Spherical Robustness}: Extend beyond convex cells in one
     gnomonic hemisphere, add projection-singularity handling, and validate
     against larger realistic spherical meshes.
