@@ -145,6 +145,8 @@ Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly, const std
     const int K_max = N / 2;
     const int N_h = 2 * K_max;
     const int S = N_h + N - 1;
+    const bool use_metric_weight = poly.spherical_area > 0.0 && std::abs(poly.spherical_area - poly.area) > 1.0e-14;
+    const GnomonicFrame frame{poly.n, poly.e_x, poly.e_y, poly.centroid_3d.norm()};
 
     Eigen::MatrixXd V = Eigen::MatrixXd::Zero(N_h, N_h);
     Eigen::MatrixXd M = Eigen::MatrixXd::Zero(N_h, N);
@@ -166,7 +168,8 @@ Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly, const std
                     eval_harmonic_basis(kj, p, Pj, Qj, gPj, gQj);
                     Eigen::Vector2d gi = is_Q_i ? gQi : gPi;
                     Eigen::Vector2d gj = is_Q_j ? gQj : gPj;
-                    return gi.dot(gj);
+                    const double weight = use_metric_weight ? gnomonic_area_scale(p + poly.centroid, frame) : 1.0;
+                    return gi.dot(gj) * weight;
                 });
             }
             V(i, j) = val;
@@ -178,12 +181,14 @@ Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly, const std
             cell_basis_integral += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
                 double P, Q; Eigen::Vector2d gP, gQ;
                 eval_harmonic_basis(ki, p, P, Q, gP, gQ);
-                return is_Q_i ? Q : P;
+                const double weight = use_metric_weight ? gnomonic_area_scale(p + poly.centroid, frame) : 1.0;
+                return (is_Q_i ? Q : P) * weight;
             });
             div_integral += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
                 double P, Q; Eigen::Vector2d gP, gQ;
                 eval_harmonic_basis(ki, p, P, Q, gP, gQ);
-                return p.dot(is_Q_i ? gQ : gP);
+                const double weight = use_metric_weight ? gnomonic_area_scale(p + poly.centroid, frame) : 1.0;
+                return p.dot(is_Q_i ? gQ : gP) * weight;
             });
         }
         const double cell_basis_average = cell_basis_integral / poly.area;
@@ -447,6 +452,7 @@ LocalPolygon local_polygon(moab::Core& mb, const moab::EntityHandle polygon, con
             sph.local_points,
             sph.projected_centroid,
             sph.chart_area,
+            sph.spherical_area,
             sph.points,
             sph.frame.radius * sph.frame.center,
             sph.frame.e_x,
@@ -496,7 +502,7 @@ LocalPolygon local_polygon(moab::Core& mb, const moab::EntityHandle polygon, con
         relative_points.push_back(p - centroid);
     }
 
-    return LocalPolygon{vertices, relative_points, centroid, std::abs(signed_area(absolute_points)), points_3d, centroid_3d, e_x, e_y, n};
+    return LocalPolygon{vertices, relative_points, centroid, std::abs(signed_area(absolute_points)), std::abs(signed_area(absolute_points)), points_3d, centroid_3d, e_x, e_y, n};
 }
 
 LocalPolygon local_polygon(moab::Core& mb, const moab::EntityHandle polygon, const bool is_spherical)
@@ -743,6 +749,8 @@ ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab:
     const int K_max = N / 2;
     const int N_h = 2 * K_max;
     const int S = N_h + N - 1;
+    const bool use_metric_weight = options_.metric_weighted && is_spherical();
+    const GnomonicFrame frame{poly.n, poly.e_x, poly.e_y, poly.centroid_3d.norm()};
 
     Eigen::VectorXd source_flux(N);
     for (int i = 0; i < N; ++i) {
@@ -771,7 +779,8 @@ ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab:
                     eval_harmonic_basis(kj, p, Pj, Qj, gPj, gQj);
                     Eigen::Vector2d gi = is_Q_i ? gQi : gPi;
                     Eigen::Vector2d gj = is_Q_j ? gQj : gPj;
-                    return gi.dot(gj);
+                    const double weight = use_metric_weight ? gnomonic_area_scale(p + poly.centroid, frame) : 1.0;
+                    return gi.dot(gj) * weight;
                 });
             }
             V(i, j) = val;
@@ -783,12 +792,14 @@ ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab:
             cell_basis_integral += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
                 double P, Q; Eigen::Vector2d gP, gQ;
                 eval_harmonic_basis(ki, p, P, Q, gP, gQ);
-                return is_Q_i ? Q : P;
+                const double weight = use_metric_weight ? gnomonic_area_scale(p + poly.centroid, frame) : 1.0;
+                return (is_Q_i ? Q : P) * weight;
             });
             div_integral += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
                 double P, Q; Eigen::Vector2d gP, gQ;
                 eval_harmonic_basis(ki, p, P, Q, gP, gQ);
-                return p.dot(is_Q_i ? gQ : gP);
+                const double weight = use_metric_weight ? gnomonic_area_scale(p + poly.centroid, frame) : 1.0;
+                return p.dot(is_Q_i ? gQ : gP) * weight;
             });
         }
         const double cell_basis_average = cell_basis_integral / poly.area;

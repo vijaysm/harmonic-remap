@@ -36,6 +36,7 @@ struct GeometryOptions {
     double radius = 1.0;
     double conservation_tolerance = kConservationTolerance;
     double geometry_tolerance = 1.0e-13;
+    bool metric_weighted = false;
 };
 
 /**
@@ -131,6 +132,7 @@ struct LocalPolygon {
     std::vector<Eigen::Vector2d> points;
     Eigen::Vector2d centroid;
     double area;
+    double spherical_area;
 
     // Spherical geometry data
     std::vector<Eigen::Vector3d> points_3d;

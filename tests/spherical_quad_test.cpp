@@ -84,6 +84,7 @@ CaseMetrics run_case(const int source_n,
     mimetic::GeometryOptions options;
     options.mode = mimetic::GeometryMode::SphericalGnomonic;
     options.conservation_tolerance = mimetic::kConservationTolerance;
+    options.metric_weighted = true;
     interpolator.set_geometry_options(options);
 
     const std::vector<moab::EntityHandle> source_mesh =
@@ -167,7 +168,8 @@ CaseMetrics run_case(const int source_n,
             mimetic::test_sphere::spherical_harmonic_gradient(poly.centroid_3d.normalized());
         const Eigen::Vector3d field_error = field_recon - field_exact;
         const double field_error_norm = field_error.norm();
-        cell_field_l1_error += poly.area * field_error_norm;
+        const double area_weight = poly.spherical_area > 0.0 ? poly.spherical_area : poly.area;
+        cell_field_l1_error += area_weight * field_error_norm;
         cell_field_linf_error = std::max(cell_field_linf_error, field_error_norm);
 
         const double recon_data[3] = {field_recon.x(), field_recon.y(), field_recon.z()};

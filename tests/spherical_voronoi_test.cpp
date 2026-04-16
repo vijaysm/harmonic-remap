@@ -189,6 +189,7 @@ Metrics run_transfer_case(const std::string& label,
     mimetic::GeometryOptions options;
     options.mode = mimetic::GeometryMode::SphericalGnomonic;
     options.conservation_tolerance = mimetic::kConservationTolerance;
+    options.metric_weighted = true;
     interpolator.set_geometry_options(options);
 
     double total_source_divergence = 0.0;
