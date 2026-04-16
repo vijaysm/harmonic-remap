@@ -1,7 +1,7 @@
 \documentclass[11pt]{article}
 
 \usepackage[margin=1in]{geometry}
-\usepackage{amsmath,amssymb}
+\usepackage{amsmath,amssymb,amsthm}
 \usepackage{booktabs}
 \usepackage{graphicx}
 \usepackage{hyperref}
@@ -11,7 +11,7 @@
 \emergencystretch=2em
 
 \title{A Conservative Mimetic Polygon Interpolant on Planar and Spherical Nonmatching Patches}
-\author{Mimetic-SphPoly implementation notes}
+\author{Mimetic-SphPoly study}
 \date{\today}
 
 \newcommand{\uh}{\mathbf{u}_h}
@@ -19,99 +19,154 @@
 \newcommand{\n}{\mathbf{n}}
 \newcommand{\R}{\mathbb{R}}
 \graphicspath{{docs/figures/}{figures/}}
+\newtheorem{proposition}{Proposition}
+\newtheorem{remark}{Remark}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-This report documents the current C++14, MOAB, and Eigen3 prototype for conservative
-mimetic interpolation on planar polygon patches and unit-sphere great-circle
-polygon patches.  The implementation follows
-the level-2 truncated harmonic-polynomial reconstruction of Perot and Chartrand
-\cite{PerotChartrand2021}.  Source data are signed edge-normal flux integrals.
-For each source polygon, the code reconstructs a local vector field with
-constant divergence and a curl-free cell interior.  The conservative transfer
-property is verified by clipping nonmatching source and target polygon meshes
-and checking both overlap conservation diagnostics and directed source-edge to
-target-edge transfer.  Current tests include a constant-field patch test, a
-nonmatching rectangular mesh test, deterministic planar Voronoi n-gon tests,
-spherical cubed-sphere identity/refinement/coarsening tests, and deterministic
-spherical n-sided Voronoi patch tests.
+This manuscript studies conservative transfer of edge-normal flux degrees of
+freedom between nonmatching polygonal meshes in the plane and on the unit
+sphere.  The method follows the mimetic polygon reconstruction of Perot and
+Chartrand \cite{PerotChartrand2021}: in each source cell, signed edge fluxes
+determine a local Raviart--Thomas-like vector field with constant cell
+divergence and a harmonic gradient component.  Target edge fluxes are then
+obtained by clipping each target edge against source cells and integrating the
+source reconstruction on the clipped subsegments.  The manuscript also analyzes
+an alternative based on scalar Wachspress coordinates.  We show that a
+componentwise vertex-based Wachspress interpolant is not a direct substitute for
+the harmonic mimetic reconstruction because its divergence and edge-normal trace
+are generically nonconstant on \(n\)-gons.  Generalized barycentric and virtual
+element H(div) constructions remain plausible future research directions, but
+they require a different vector-valued space and validation program rather than
+a basis swap.  Numerical evidence from deterministic planar and spherical
+structured and unstructured tests verifies conservation, direct edge transfer,
+and sparse projection equivalence to a \(5\times 10^{-13}\) absolute tolerance.
 \end{abstract}
 
-\section{Scope and Current Status}
+\section{Introduction}
 
-The implemented kernel now has two explicit geometry backends.  The planar
-backend is the reference implementation.  The spherical backend uses
-source-cell gnomonic charts on the unit sphere, treats cell edges as
-great-circle arcs, and uses a contravariant Piola map so that physical surface
-fluxes are represented as chart fluxes.  The current code does not implement
-MPI, distributed ownership, ghosting, parallel I/O, or production spatial
-search.  Those are separable extensions once the serial geometry and mimetic
-transfer invariants are stable.
+Conservative interpolation between nonmatching polygon meshes is normally
+formulated for cell averages.  In that setting, a source-target overlap mesh
+defines weights that preserve the integral of a scalar conserved quantity
+\cite{DukowiczKodis1987,Jones1999,UllrichTaylor2015}.  The problem considered
+here is different: the data are signed normal flux integrals on source-cell
+edges, and the desired output is the corresponding signed normal flux integral
+on each directed target-cell edge.  This is an H(div)-type transfer problem.
+It must preserve flux balance around every target cell, but it must also give
+edge-wise degrees of freedom suitable for compatible finite volume or mixed
+finite element discretizations.
 
-The current repository contains:
+The central design requirement is therefore local conservation on arbitrary
+source-target intersections.  If \(O\) is a clipped subregion of a source cell
+\(K\), the reconstructed source field must satisfy
+\[
+  \int_{\partial O}\uh\cdot\n\,ds
+  =
+  \int_O \nabla\cdot\uh\,dA
+\]
+with the right-hand side represented consistently from the source edge fluxes.
+The lowest-order compatible case is especially attractive because
+\(\nabla\cdot\uh=d_K\) is constant in each source cell.  The overlap invariant
+then reduces to \(d_K |O|\), which is independent of the detailed shape of the
+clipped polygon.  This constant-divergence structure is the mathematical reason
+the harmonic mimetic reconstruction is a good fit for conservative edge-flux
+transfer.
+
+The contributions of this prototype study are:
 \begin{itemize}
-  \item \texttt{include/mimetic/mimetic.hpp}: public geometry, reconstruction,
-        and reduction API.
-  \item \texttt{src/mimetic.cpp}: implementation of the level-2 reconstruction,
-        MOAB tag handling, line integrals, and polygon boundary fluxes.
-  \item \texttt{tests/patch\_test.cpp}: constant-field patch test.
-  \item \texttt{tests/conservative\_}\allowbreak\texttt{intersection\_test.cpp}:
-        rectangular nonmatching source-target overlap test.
-  \item \texttt{tests/voronoi\_}\allowbreak\texttt{intersection\_test.cpp}:
-        deterministic Voronoi source-target n-gon overlap test.
-  \item \texttt{tests/spherical\_}\allowbreak\texttt{geometry\_test.cpp}:
-        spherical area, gnomonic projection, great-circle, and KKT flux-matching
-        tests.
-  \item \texttt{tests/spherical\_}\allowbreak\texttt{quad\_test.cpp}:
-        cubed-sphere identity, refinement, coarsening, sparse-projection, and
-        convergence validation.
-  \item \texttt{tests/spherical\_}\allowbreak\texttt{voronoi\_test.cpp}:
-        deterministic n-sided spherical Voronoi patch transfer tests.
-  \item \texttt{docs/make\_report\_figures.py}: deterministic figure generator
-        for the manuscript visualizations.
-  \item \texttt{docs/figures/}: generated PDF figures included in the manuscript.
+  \item a planar polygon transfer algorithm based on source-cell mimetic
+        reconstruction and directed target-edge clipping;
+  \item a spherical extension using source-cell gnomonic charts, great-circle
+        edge clipping, and a contravariant Piola flux map;
+  \item a sparse directed edge projection operator that reproduces direct
+        source-to-target transfer;
+  \item verification on rectangular, planar Voronoi, cubed-sphere, and
+        spherical Voronoi nonmatching patches; and
+  \item a comparison with Wachspress and related polygonal bases, including the
+        proof obstruction that prevents a scalar vertex-based Wachspress basis
+        from replacing the RT-like harmonic reconstruction in this setting.
 \end{itemize}
 
 \section{Literature Survey}
 
-Mimetic methods are built to preserve differential identities and physically
-meaningful integral quantities at the discrete level.  The general philosophy is
-reviewed by Bochev and Hyman \cite{BochevHyman2006}; a related finite element
-viewpoint is finite element exterior calculus, where fields are associated with
-geometric entities and de Rham complex structure is preserved
-\cite{ArnoldFalkWinther2006}.  Mattiussi \cite{Mattiussi1997} provides an
-algebraic-topological interpretation connecting finite volume, finite element,
-and finite difference discretizations.
+Mimetic discretizations preserve the structural identities of the continuous
+operators at the discrete level.  Bochev and Hyman \cite{BochevHyman2006}
+survey the mimetic design principles, while Mattiussi \cite{Mattiussi1997}
+connects finite volume, finite element, and finite difference methods through
+algebraic topology.  Finite element exterior calculus gives a closely related
+framework in which discrete spaces form a de Rham complex
+\cite{ArnoldFalkWinther2006}.  In this view, fluxes belong naturally to
+H(div)-conforming spaces whose degrees of freedom are attached to codimension-one
+entities.
 
-The local vector reconstruction used here is descended from low-order
-H(div)-conforming mixed finite elements.  Raviart and Thomas introduced the
-classical mixed element family for second-order elliptic problems
-\cite{RaviartThomas1977}; Nedelec generalized compatible vector finite elements
-for three-dimensional electromagnetic applications \cite{Nedelec1980}.  These
-methods motivate storing normal flux degrees of freedom on faces or edges,
-rather than storing Cartesian vector components at points.
+The classical reference point for such spaces is the Raviart--Thomas family.
+The lowest-order RT space on a simplex has the form
+\(\mathbf{a}+b\x\), has constant divergence, and is determined by integrated
+normal fluxes on edges or faces \cite{RaviartThomas1977,BrezziFortin1991,
+BoffiBrezziFortin2013}.  Nedelec's compatible H(curl) elements
+\cite{Nedelec1980} and the FEEC literature make the same geometric message:
+the location and type of degree of freedom should match the differential
+operator being approximated.  For the present transfer problem, edge-normal
+fluxes are primary; vertex values are not.
 
-Polygonal and polyhedral meshes require additional care because the number of
-sides is not fixed.  Mimetic finite difference and support-operator methods
-address this by designing discrete inner products directly
-\cite{BrezziLipnikovSimoncini2005,LipnikovManziniShashkov2014}.  Virtual element
-methods extend finite element ideas to polygonal cells by avoiding explicit
-closed-form basis functions while preserving polynomial consistency and
-stability \cite{BeiraoDaVeiga2013,BeiraoDaVeiga2016}.  The Perot-Chartrand
-method can be interpreted in this family: it defines a computable local
-reconstruction and a corresponding Hodge-like inner product from edge-normal
-data \cite{PerotChartrand2021}.
+General polygonal cells motivate several related but distinct approaches.
+Mimetic finite difference and support-operator methods construct discrete inner
+products and divergence/gradient adjointness directly on polygonal and
+polyhedral meshes \cite{BrezziLipnikovSimoncini2005,LipnikovManziniShashkov2014}.
+Virtual element methods avoid explicit closed-form shape functions while
+retaining polynomial consistency and stability on general polygons
+\cite{BeiraoDaVeiga2013}.  Mixed and H(div)-conforming VEM variants are
+particularly relevant because they generalize BDM/RT-like behavior to polygonal
+meshes \cite{BrezziFalkMarini2014,BeiraoDaVeiga2016,BeiraoDaVeigaMixed2016}.
+The Perot--Chartrand construction used here belongs to this compatible
+polygonal family: it reconstructs a local vector field from edge fluxes using a
+constant-divergence term and harmonic gradients \cite{PerotChartrand2021}.
 
-The present tests use bounded Voronoi cells as realistic n-sided convex
-polygons.  Voronoi diagrams are a standard way to create irregular polygonal
-meshes \cite{Aurenhammer1991}.  The source-target intersection kernel in the
-test uses repeated half-plane clipping, a direct specialization of the
-Sutherland-Hodgman polygon clipping algorithm to convex polygons
+Wachspress coordinates entered numerical analysis as rational finite element
+basis functions for polygons \cite{Wachspress1975}.  They are part of the wider
+family of generalized barycentric coordinates, along with mean-value, harmonic,
+Sibson, and maximum-entropy coordinates
+\cite{FloaterHormannKos2006,WarrenSchaeferHiraniDesbrun2007,Sibson1981,
+HormannSukumar2008}.  Sukumar and Tabarraei
+\cite{SukumarTabarraei2004} demonstrated their usefulness for conforming
+polygonal finite elements, and Gillette, Rand, and Bajaj
+\cite{GilletteRandBajaj2012} established interpolation estimates for several
+generalized barycentric choices.  Rand, Gillette, and Bajaj
+\cite{RandGilletteBajaj2013} also showed a practical conditioning distinction:
+mean-value coordinate gradients remain better behaved than Wachspress gradients
+as polygon angles approach \(\pi\).  These works support scalar H1
+interpolation on polygonal cells; they do not by themselves produce an
+edge-flux-conservative H(div) transfer.
+
+There is, however, an important bridge from generalized barycentric coordinates
+to compatible vector spaces.  Generalized Whitney-form constructions build
+H(curl), H(div), and scalar families from barycentric coordinates on convex
+polytopes and recover classical RT, BDM, and Nedelec behavior on simplices
+\cite{GilletteRandBajaj2016}.  This is the most promising Wachspress-adjacent
+future direction for the present problem.  It is not a componentwise
+Wachspress replacement; it is a different vector-valued finite element space
+with different degrees of freedom and a different assembly strategy.
+
+Conservative remapping between nonmatching grids has a separate mature
+literature.  Integral remapping for ALE methods goes back at least to
+Dukowicz and Kodis \cite{DukowiczKodis1987}.  Jones \cite{Jones1999} described
+first- and second-order conservative remapping weights for spherical climate
+grids.  Ullrich and Taylor \cite{UllrichTaylor2015} and Ullrich, Devendran, and
+Johansen \cite{UllrichDevendranJohansen2016} developed arbitrary-order
+conservative and consistent linear maps, implemented in the TempestRemap
+ecosystem.  Those methods are closest in spirit to the sparse projection
+operator assembled here, but the present method transfers directed edge fluxes
+rather than scalar cell averages.
+
+The geometric ingredients in the verification tests are standard.  Voronoi
+diagrams provide deterministic irregular n-sided convex cells
+\cite{Aurenhammer1991}.  Repeated half-plane clipping is a specialization of
+the Sutherland--Hodgman polygon clipping algorithm to convex cells
 \cite{SutherlandHodgman1974}.  MOAB supplies the mesh database abstraction and
-tagged entity model used by the prototype \cite{Tautges2004}; Eigen3 supplies
-the local dense linear algebra \cite{Eigen3}.
+tagged entity model \cite{Tautges2004}; Eigen3 supplies local dense linear
+algebra \cite{Eigen3}.
 
 \section{Mathematical Method}
 
@@ -150,7 +205,7 @@ so that
       + a_2\nabla P_2 + b_2\nabla Q_2.
   \label{eq:level2}
 \end{equation}
-All coordinates in the code are expressed in a centroid-relative local planar
+All coordinates are expressed in a centroid-relative local planar
 frame.  This reduces low-order moment coupling and matches the assumptions used
 in the paper's construction.
 
@@ -168,8 +223,8 @@ For any scalar test function \(H\), Gauss' theorem gives
   \label{eq:moment}
 \end{equation}
 under the lowest-order assumption that the edge-normal data are constant per
-edge.  In the code we subtract the known divergence contribution
-\(\frac{d}{2}\x\) and solve the small harmonic system
+edge.  The known divergence contribution \(\frac{d}{2}\x\) is subtracted before
+solving the small harmonic system
 \begin{equation}
   V\alpha = r,\qquad
   \alpha = (a_1,b_1,a_2,b_2)^T,
@@ -188,10 +243,8 @@ and
     - \frac{d}{2}\int_K \x\cdot\nabla H_i\,dA.
   \label{eq:rhs}
 \end{equation}
-Here \(H_i\in\{P_1,Q_1,P_2,Q_2\}\).  Equation
-\eqref{eq:local_system} is solved with Eigen's dense LDLT solver.  Since the
-current truncation has four harmonic unknowns, the solve cost is constant per
-cell.
+Here \(H_i\in\{P_1,Q_1,P_2,Q_2\}\).  Since the current truncation has four
+harmonic unknowns, the local solve cost is constant per cell.
 
 \subsection{Reduction and Conservative Overlap Integrals}
 
@@ -258,7 +311,7 @@ orientation map before edge DOFs are collapsed.
 \subsection{Spherical Gnomonic Backend}
 
 The spherical backend is a geometry-correct extension of the planar algorithm
-for unit-sphere great-circle polygons.  For each source cell \(K_s\), the code
+for unit-sphere great-circle polygons.  For each source cell \(K_s\), the method
 constructs an orthonormal frame
 \[
   \{\mathbf{e}_1,\mathbf{e}_2,\mathbf{c}\},
@@ -310,17 +363,20 @@ without changing the algebraic reconstruction kernel.
 
 The spherical direct transfer and sparse projection use the identical clipped
 segment functional.  A target edge that lies exactly on a source edge can be
-accepted by two adjacent source cells under naive all-pairs clipping; the code
+accepted by two adjacent source cells under naive all-pairs clipping; the method
 resolves this deterministically by retaining the source cell on the
 target-cell-interior side of the directed target edge.  This tie break is
 essential for cubed-sphere \(N\to N\) identity tests and for reproducible sparse
 operator assembly.
 
 
-\subsection{KKT Saddle-Point Formulation and Tikhonov Regularization}
-Initial attempts to solve the local reconstruction problem relied on an unconstrained Moore-Penrose pseudo-inverse of the evaluation matrix $C$. While this preserved global geometric conservation, it effectively dropped the Galerkin moment right-hand side, forcing a minimum-norm interpolant that destroyed polynomial consistency and degraded the theoretical $O(h^2)$ convergence rates.
-
-To rigorously enforce the geometric constraints (i.e. exact recovery of edge fluxes) while simultaneously minimizing the $L_2$ error of the reconstruction, we formulated a Karush-Kuhn-Tucker (KKT) saddle-point block system:
+\subsection{Constrained Reconstruction Solve}
+The reconstruction is computed as a constrained local least-squares problem:
+edge fluxes are enforced as hard constraints, while the remaining degrees of
+freedom are selected by the mimetic energy inner product.  This avoids the
+failure mode of an unconstrained minimum-norm fit, which can preserve global
+balance while losing the moment consistency needed for convergence.  The
+resulting Karush--Kuhn--Tucker (KKT) system is
 \begin{equation}
 \begin{bmatrix}
 V & C^T \\
@@ -336,15 +392,136 @@ M \\
 F
 \end{bmatrix}
 \end{equation}
-Here, $V$ is the mass matrix of the harmonic polynomial basis, $C$ represents the edge-integral constraint evaluation matrix, $M$ is the Galerkin right-hand side moment vector, $F$ contains the target edge fluxes, $X$ are the unknown polynomial coefficients, and $L$ are the Lagrange multipliers enforcing exact conservation.
+Here, \(V\) is the harmonic-basis mass matrix, \(C\) is the edge-integral
+constraint matrix, \(M\) is the Galerkin moment vector, \(F\) is the vector of
+input edge fluxes, \(X\) contains the reconstruction coefficients, and \(L\) are
+the Lagrange multipliers enforcing exact flux recovery.
 
-For highly irregular planar elements like general Voronoi cells, the evaluation matrix $C$ can become ill-conditioned for high-degree modes ($i \ge 4$). To stabilize the solver without breaking the hard constraints $CX = F$, we apply a Tikhonov regularization penalty directly to the high-degree basis diagonal entries of $V$:
+For highly irregular polygons, high-degree modes can be poorly conditioned.  A
+Tikhonov penalty can be applied to selected high-mode diagonal entries of \(V\)
+without weakening the hard constraints \(CX=F\):
 \begin{equation}
 V_{ii} \leftarrow V_{ii} + 1.0 \times 10^2 |A_K| \quad \text{for } i \ge 4
 \end{equation}
-where $|A_K|$ is the area of the polygon $K$. The system is inverted robustly via an \texttt{Eigen::FullPivLU} dense solver.
+where \(|A_K|\) is the polygon area.  The penalty is not part of the
+conservation proof; it is a conditioning safeguard for higher modes.
 
-\section{Algorithms and Code Traceability}
+\section{Why Wachspress Coordinates Are Not a Drop-In Replacement}
+
+One of the original alternatives considered for polygonal patches was to use a
+Wachspress basis.  This is natural: Wachspress coordinates are rational
+generalized barycentric coordinates on convex polygons, reproduce affine
+functions, form a partition of unity, and have been used successfully in
+conforming polygonal finite elements \cite{Wachspress1975,SukumarTabarraei2004,
+GilletteRandBajaj2012}.  The difficulty is not that Wachspress coordinates are
+inaccurate.  The difficulty is that the native scalar basis has the wrong
+degrees of freedom and the wrong differential structure for this edge-flux
+transfer problem.
+
+\subsection{Compatible Flux Transfer Requires an RT-like Structure}
+
+The lowest-order RT analogy has two separate ingredients:
+\begin{enumerate}
+  \item the cell divergence is constant, \(\nabla\cdot\uh=d_K\), and
+  \item the normal trace on each cell edge is represented by one edge flux
+        degree of freedom.
+\end{enumerate}
+On triangles these properties are built into RT0 \cite{RaviartThomas1977,
+BoffiBrezziFortin2013}; the RT0 normal component is constant on each edge.
+The harmonic mimetic reconstruction uses a slightly different polygonal
+realization: the \(\frac{d}{2}\x\) term supplies constant divergence, while
+the harmonic gradient part is divergence-free and is fitted to the integrated
+edge fluxes through the KKT constraints.  The pointwise edge-normal trace may
+vary when higher harmonic modes are present, but the edge flux degree of
+freedom is enforced exactly.  Thus, for every clipped subregion \(O\subset K\),
+\begin{equation}
+  \int_{\partial O}\uh\cdot\n\,ds
+  =
+  d_K |O|.
+  \label{eq:rt_like_overlap}
+\end{equation}
+Equation~\eqref{eq:rt_like_overlap} is the invariant used by the conservative
+overlap and target-cell balance tests.
+
+\begin{proposition}[Obstruction for componentwise Wachspress flux transfer]
+Let \(K\) be a convex polygon with at least one non-affine Wachspress coordinate
+\(\lambda_i\).  A componentwise vector interpolant
+\[
+  \mathbf{v}_W(\x)=\sum_{i=1}^{n}\mathbf{c}_i\lambda_i(\x),
+  \qquad \mathbf{c}_i\in\R^2,
+\]
+does not define an RT0-like edge-flux space: its divergence is generically
+nonconstant in \(K\), and its normal trace is generically nonconstant along an
+edge.
+\end{proposition}
+
+\begin{proof}
+The divergence is
+\[
+  \nabla\cdot\mathbf{v}_W
+  =
+  \sum_{i=1}^{n}\mathbf{c}_i\cdot\nabla\lambda_i .
+\]
+If \(\mathbf{v}_W\) had constant divergence for every choice of vector
+coefficients, then each directional derivative of each coordinate function
+would have to lie in the constants.  That would make every \(\lambda_i\)
+affine.  Wachspress coordinates are affine only in the simplex case and in
+special degenerate affine cases; for general \(n>3\) polygons they are rational
+and non-affine \cite{Wachspress1975,FloaterHormannKos2006}.  Choosing all
+coefficients zero except, for example, \(\mathbf{c}_i=(1,0)^T\) gives
+\(\nabla\cdot\mathbf{v}_W=\partial_x\lambda_i\), which is nonconstant whenever
+\(\lambda_i\) is non-affine.
+
+On an edge \(e=[x_j,x_{j+1}]\), the only nonzero scalar Wachspress coordinates
+are \(\lambda_j\) and \(\lambda_{j+1}\), and they vary linearly along the edge.
+The normal trace is therefore
+\[
+  \mathbf{v}_W\cdot\n_e
+  =
+  (\mathbf{c}_j\cdot\n_e)\lambda_j
+  +
+  (\mathbf{c}_{j+1}\cdot\n_e)\lambda_{j+1},
+\]
+which is constant only if the two endpoint normal components are equal.  A
+single integrated edge flux does not enforce that pointwise equality.  Thus the
+componentwise scalar Wachspress interpolant does not have the constant
+edge-normal trace associated with lowest-order RT flux degrees of freedom.
+\end{proof}
+
+\begin{remark}
+The statement above is about the direct componentwise use of scalar Wachspress
+coordinates.  It does not rule out vector-valued generalized barycentric
+constructions.  In particular, generalized Whitney forms can produce H(div)
+spaces on convex polytopes \cite{GilletteRandBajaj2016}.  Such a method should
+be studied as a new compatible finite element discretization with its own
+normal-trace basis, mass matrix, Piola map, and quadrature rules.
+\end{remark}
+
+\subsection{Consequences for This Transfer Problem}
+
+For conservative edge transfer, matching only the total flux on a source edge is
+not enough.  A target edge can cut through a source cell and can use only a
+subsegment of the source boundary or interior.  The line functional applied to
+that clipped segment must be consistent with the same source-cell divergence
+used by the surrounding overlap balance.  The harmonic mimetic form gives this
+consistency analytically through Eq.~\eqref{eq:line_integral} and
+Eq.~\eqref{eq:rt_like_overlap}.  A componentwise Wachspress vector fit would
+require additional constraints or quadrature to control the nonconstant
+divergence and edge-normal trace.  Even then, the reconstruction would no
+longer be determined naturally by edge flux degrees of freedom alone.
+
+The practical conclusion is therefore:
+\begin{itemize}
+  \item scalar Wachspress coordinates are appropriate for scalar H1 polygonal
+        interpolation and displacement-like unknowns;
+  \item componentwise Wachspress vector interpolation is not a better
+        replacement for the current conservative edge-flux transfer; and
+  \item Wachspress-adjacent H(div) spaces, especially generalized Whitney-form
+        or mixed virtual element constructions, are credible future work but
+        should be evaluated as a separate method.
+\end{itemize}
+
+\section{Solver Algorithms and Implementation Notes}
 
 \subsection*{Algorithm 1: Source-Cell Reconstruction}
 \begin{enumerate}
@@ -419,69 +596,16 @@ where $|A_K|$ is the area of the polygon $K$. The system is inverted robustly vi
         direct-vs-sparse equality with absolute tolerance \(5\times10^{-13}\).
 \end{enumerate}
 
-\begin{center}
-\small
-\begin{tabular}{@{}L{0.24\linewidth}L{0.31\linewidth}L{0.35\linewidth}@{}}
-\toprule
-Manuscript object & Code location & Purpose \\
-\midrule
-\(P_1,Q_1,P_2,Q_2\) and gradients &
-\texttt{p1}, \texttt{q1}, \texttt{p2}, \texttt{q2}, \texttt{grad\_*} in
-\texttt{mimetic.hpp/cpp} &
-Implements Eq.~\eqref{eq:basis}. \\
-\(U_f\) &
-\texttt{SOURCE\_FLUX} tag exposed by
-\texttt{MimeticInterpolator::}\newline\texttt{source\_flux\_tag()} &
-Signed source-edge integrated normal flux. \\
-\(d\) &
-\texttt{ReconstructionCoeffs::d} &
-Constant divergence from Eq.~\eqref{eq:divergence}. \\
-\(V\alpha=r\) &
-\texttt{MimeticInterpolator::}\newline\texttt{reconstruct\_source\_polygon()} &
-Builds Eqs.~\eqref{eq:gram}--\eqref{eq:rhs} and solves Eq.~\eqref{eq:local_system}. \\
-\(\int_A^B\uh\cdot d\x\) &
-\texttt{MimeticInterpolator::}\newline\texttt{line\_integral()} &
-Implements Eq.~\eqref{eq:line_integral}. \\
-\(\int_{\partial O}\uh\cdot\n ds\) &
-\texttt{MimeticInterpolator::}\newline\texttt{polygon\_boundary\_flux()} &
-Overlap conservation diagnostic in Eq.~\eqref{eq:overlap_conservation}. \\
-Voronoi cells &
-\texttt{voronoi\_cell\_polygon()} in
-\texttt{voronoi\_intersection\_}\newline\texttt{test.cpp} &
-Creates n-sided bounded Voronoi cells by half-plane clipping. \\
-Source-target overlap &
-\texttt{convex\_intersection()} in
-\texttt{voronoi\_intersection\_}\newline\texttt{test.cpp} &
-Computes \(K_s\cap K_t\) for convex polygon pairs. \\
-Target edge transfer &
-\texttt{transfer\_source\_to\_}\newline\texttt{target\_edges()} &
-Implements Eq.~\eqref{eq:edge_transfer} by clipping each target edge by source
-cells. \\
-Sparse projection &
-\texttt{assemble\_edge\_projection\_}\newline\texttt{operator()} and
-\texttt{write\_matrix\_market()} &
-Builds and writes the directed edge map in Eq.~\eqref{eq:sparse_projection}. \\
-Geometry options &
-\texttt{GeometryMode} and \texttt{GeometryOptions} in
-\texttt{mimetic.hpp} &
-Selects planar or spherical gnomonic geometry and stores conservation and
-geometry tolerances. \\
-Spherical chart geometry &
-\texttt{spherical\_polygon()}, \texttt{project\_gnomonic()},
-\texttt{inverse\_gnomonic()} &
-Implements Eqs.~\eqref{eq:gnomonic}--\eqref{eq:inverse_gnomonic}. \\
-Piola map &
-\texttt{lift\_contravariant\_piola()} and
-\texttt{pullback\_contravariant\_piola()} &
-Implements Eqs.~\eqref{eq:piola_lift}--\eqref{eq:piola_pullback}. \\
-Spherical validation &
-\texttt{spherical\_quad\_test.cpp} and
-\texttt{spherical\_voronoi\_test.cpp} &
-Validates structured and unstructured spherical edge transfer and sparse
-projection. \\
-\bottomrule
-\end{tabular}
-\end{center}
+\subsection*{Brief implementation notes}
+The implementation is intentionally small and serial.  MOAB is used for mesh
+entities and flux/coefficient tags, Eigen is used for dense local KKT systems
+and sparse projection matrices, and MatrixMarket output is used for the
+directed edge transfer operator.  The numerical kernels are organized around
+three mathematical objects: source-cell reconstruction
+\((U_f\mapsto d,\alpha)\), clipped segment evaluation, and sparse assembly of
+the same segment functional.  This organization keeps the implementation close
+to Eqs.~\eqref{eq:local_reconstruction_matrix}--\eqref{eq:sparse_projection}
+while keeping implementation details secondary to the method and validation.
 
 \section{Algorithmic Analysis}
 
@@ -523,13 +647,11 @@ directed source and target edge maps plus compressed sparse matrix arrays.
 
 \section{Results and Discussion}
 
-All results below were produced by:
-\begin{verbatim}
-cmake -S . -B /tmp/mimetic-sphpoly-build
-cmake --build /tmp/mimetic-sphpoly-build --parallel
-ctest --test-dir /tmp/mimetic-sphpoly-build --output-on-failure
-env MPLCONFIGDIR=/tmp/mimetic-sphpoly-mpl python3 docs/make_report_figures.py
-\end{verbatim}
+All numerical values reported below come from deterministic serial regression
+tests and generated figures in the repository.  The conservation tolerance for
+the planar and spherical invariants is \(5\times10^{-13}\).  The tests separate
+three quantities: exact conservation identities, directed target-edge flux
+errors against manufactured fields, and direct-vs-sparse projection agreement.
 
 \subsection{Visualization of the Overlap Geometry}
 
@@ -617,51 +739,6 @@ reproduces the direct edge-transfer result to roundoff, and the matrix is
 written to MatrixMarket format with source and target edge-map CSV files.
 
 \subsection{Voronoi n-gon Patch Test}
-
-\subsection{Convergence and Error Visualization}
-Recent development introduced a comprehensive grid visualization pipeline to qualitatively confirm the $O(h^2)$ reconstruction accuracy. The script exports full polygon geometries, the analytic exact solution, and the mimetic reconstructed solution, calculating cell-wise divergence errors on the target grid.
-
-
-\subsubsection*{Distinction Between Error Metrics and Visualizations}
-It is important to precisely distinguish between the quantitative error metrics reported in the convergence tables and the qualitative fields displayed in the visual plots. 
-
-The quantitative error norms ($L_2$ and $L_\infty$) are evaluated directly on the \textbf{edges} of the target grid. For every target edge $e$, the method computes the discrete error between the true analytical line integral of the normal flux ($\int_e \mathbf{u}_{\text{exact}} \cdot \mathbf{n} \, ds$) and the mimetic reconstructed flux transferred onto that edge from the source grid. Evaluating the edge fluxes directly rigorously proves that the local vector field reconstruction is highly accurate and consistent (achieving expected $O(h^2)$ convergence rates) in $H(\text{div})$ space.
-
-In contrast, the multi-panel visualizations evaluate the \textbf{cell-averaged divergence}, a macroscopic scalar field. For each target polygon $K$, the visualization sums the reconstructed fluxes of all edges forming its boundary and divides by the cell area ($\frac{1}{|K|} \sum_{e \in \partial K} \int_e \mathbf{u}_h \cdot \mathbf{n} \, ds$). The three visualization panels display:
-\begin{enumerate}
-    \item \textbf{Source Grid \& Solution:} The exact analytical cell-averaged divergence on the source mesh.
-    \item \textbf{Target Grid \& Reconstructed Solution:} The reconstructed cell-averaged divergence on the target mesh derived from the transferred edge fluxes.
-    \item \textbf{Target Grid \& Error Profile:} The difference between the exact and reconstructed target cell divergences.
-\end{enumerate}
-
-This dual evaluation approach is intentional. The edge metrics prove the $H(\text{div})$ consistency of the local vector field, while the cell-averaged divergence visually confirms macroscopic scalar quantities (such as mass conservation) without numerical artifacts. Because the mimetic method enforces strict geometric conservation, a smooth reconstructed divergence field visually guarantees that the underlying fluxes are behaving perfectly in aggregate.
-
- 
-
-Figure \ref{fig:error_quad} demonstrates the remapping of a harmonic field from a source quad mesh to a refined target quad mesh. The maximum error profile stays bounded exactly as predicted by the $O(h^2)$ theory. Figures \ref{fig:error_vq} and \ref{fig:error_vv} showcase the corresponding results for Voronoi-to-Quad and Voronoi-to-Voronoi configurations.
-
-\begin{figure}[htbp]
-    \centering
-    \includegraphics[width=\textwidth]{vis_quad_quad_A__harmonic_exact.png}
-    \caption{Quad-to-Quad Domain: Left panel displays the exact source field. The middle panel shows the reconstructed field on the target geometry, and the right panel plots the exact cell-wise reconstruction error.}
-    \label{fig:error_quad}
-\end{figure}
-
-\begin{figure}[htbp]
-    \centering
-    \includegraphics[width=\textwidth]{vis_voronoi_quad_C__quad_vardiv.png}
-    \caption{Voronoi-to-Quad Domain: Visualization of a variable divergence field transfer.}
-    \label{fig:error_vq}
-\end{figure}
-
-\begin{figure}[htbp]
-    \centering
-    \includegraphics[width=\textwidth]{vis_voronoi_voronoi_B__sincos_divfree.png}
-    \caption{Voronoi-to-Voronoi Domain: Sin-cos divergence-free field remapped between two independent random seed configurations.}
-    \label{fig:error_vv}
-\end{figure}
-
-
 The Voronoi test uses two different bounded Voronoi meshes over the unit square.
 The source mesh side-count histogram is
 \[
@@ -690,6 +767,49 @@ The edge-wise Voronoi transfer computes 71 directed target edge fluxes.  Every
 target edge agrees with the analytic global linear field integral to roundoff,
 and every target cell satisfies the same edge-flux divergence check
 \(\sum U^t_{e_t}=2|K_t|\).
+
+\subsection{Edge Error and Divergence Visualizations}
+
+The quantitative convergence diagnostics are edge-based: for each directed
+target edge \(e\), the transferred flux is compared with the manufactured
+integral \(\int_e \mathbf{u}_{\mathrm{exact}}\cdot\n\,ds\).  The visual
+diagnostics show a complementary cell quantity, the target-cell averaged
+divergence
+\[
+  \frac{1}{|K|}\sum_{e\subset\partial K} U^t_e .
+\]
+This distinction matters.  Edge errors assess the transferred H(div) degrees of
+freedom, while divergence plots show how the conservative edge fluxes assemble
+into macroscopic cell balances.
+
+Figure~\ref{fig:error_quad} shows a harmonic field transferred from a source
+quad mesh to a refined target quad mesh.  Figures~\ref{fig:error_vq} and
+\ref{fig:error_vv} show the same diagnostic idea for Voronoi-to-quad and
+Voronoi-to-Voronoi configurations.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{vis_quad_quad_A__harmonic_exact.png}
+    \caption{Quad-to-quad transfer.  Panels show the source divergence, target
+    reconstructed divergence, and target-cell divergence error.}
+    \label{fig:error_quad}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{vis_voronoi_quad_C__quad_vardiv.png}
+    \caption{Voronoi-to-quad transfer for a variable-divergence manufactured
+    field.}
+    \label{fig:error_vq}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{vis_voronoi_voronoi_B__sincos_divfree.png}
+    \caption{Voronoi-to-Voronoi transfer for a smooth divergence-free
+    manufactured field on independent seed configurations.}
+    \label{fig:error_vv}
+\end{figure}
 
 \subsection{Spherical Structured and Unstructured Tests}
 
@@ -838,17 +958,55 @@ produce the same directed target edge DOFs to the \(5\times10^{-13}\)
 conservation standard on planar, spherical structured, and spherical
 unstructured cases.
 
+The Wachspress comparison clarifies the method selection.  Scalar Wachspress
+coordinates remain valuable for conforming H1 polygonal discretizations, but a
+componentwise vertex-based Wachspress vector interpolant does not reproduce the
+constant cell divergence or native edge-flux degree-of-freedom structure needed
+by this transfer.  For this edge-wise conservative transfer, the harmonic
+mimetic basis is therefore the better primary method.  Wachspress-based
+compatible vector constructions should be kept as future work only when
+formulated as genuine H(div) spaces, such as generalized Whitney forms or mixed
+virtual elements.
+
 \subsection*{Future Research Directions}
 Building on the verified serial planar and spherical framework, the following
 logical paths are proposed for future research:
 
 \begin{itemize}
+    \item \textbf{Compatible barycentric H(div) spaces}: Study generalized
+    Whitney-form bases built from Wachspress, mean-value, or harmonic
+    coordinates \cite{GilletteRandBajaj2016}.  The acceptance criteria should
+    be the same as in this manuscript: exact source-edge flux recovery,
+    target-cell balance at \(5\times10^{-13}\), and sparse/direct transfer
+    equivalence.  This is the mathematically appropriate way to revisit
+    Wachspress ideas.
+    \item \textbf{Mixed virtual element transfer}: Evaluate H(div)-conforming
+    VEM and mixed VEM spaces on the same source-target transfer tests
+    \cite{BrezziFalkMarini2014,BeiraoDaVeiga2016,BeiraoDaVeigaMixed2016}.
+    VEM may reduce explicit rational basis evaluation while retaining
+    polynomial consistency and flux DOFs.
+    \item \textbf{High-order conservative remapping links}: Compare the
+    directed edge-flux operator with high-order cell-average conservative
+    remapping frameworks such as SCRIP-style remapping and TempestRemap
+    \cite{Jones1999,UllrichTaylor2015,UllrichDevendranJohansen2016}.  This
+    would clarify when edge-flux transfer and scalar conservative remapping can
+    share overlap geometry and sparse operator infrastructure.
     \item \textbf{Spherical Robustness}: Extend beyond convex cells in one
     gnomonic hemisphere, add projection-singularity handling, and validate
     against larger realistic spherical meshes.
-    \item \textbf{Performance Optimization}: Profile and optimize the KKT saddle-point solver. As the local patch sizes and polynomial degrees grow, swapping the current dense \texttt{Eigen::FullPivLU} solver for a more efficient sparse direct solver or a preconditioned iterative method will become critical for high-resolution and high-degree applications.
-    \item \textbf{3D Polyhedral Support}: Begin extending the geometric intersection and interpolation logic to fully 3D polyhedrons (e.g., hexahedra, prisms, arbitrary Voronoi cells). This involves extending the boundary flux theorems to 3D surface integrals and defining basis functions over volumetric domains.
-    \item \textbf{Integration}: Package the library into a modular component for integration into larger simulation frameworks (such as global climate or weather models). Later phases can add distributed MOAB mesh loading, MPI halo exchange, and C/Fortran APIs after the serial numerical invariants remain stable.
+    \item \textbf{Higher order and conditioning}: Extend the dynamic KKT
+    reconstruction to higher polynomial levels and quantify conditioning on
+    distorted n-gons.  This should be compared with the known sensitivity of
+    Wachspress gradients near large polygon angles
+    \cite{RandGilletteBajaj2013}.
+    \item \textbf{3D Polyhedral Support}: Extend the geometric intersection and
+    interpolation logic to fully three-dimensional polyhedra.  This would
+    require volumetric H(div) reconstruction, surface clipping, and flux
+    balance over polyhedral intersection boundaries.
+    \item \textbf{Integration}: Package the library into a modular component
+    for larger simulation frameworks.  Distributed MOAB loading, MPI halo
+    exchange, and language bindings should remain downstream of the serial
+    numerical invariants.
 \end{itemize}
 
 At that point the same overlap invariant, Eq.~\eqref{eq:overlap_conservation},
