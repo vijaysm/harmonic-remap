@@ -60,6 +60,9 @@ target_link_libraries(spherical_geometry_test PRIVATE mimetic)
 add_executable(spherical_voronoi_test tests/spherical_voronoi_test.cpp)
 target_link_libraries(spherical_voronoi_test PRIVATE mimetic)
 
+add_executable(spherical_scalar_test tests/spherical_scalar_test.cpp)
+target_link_libraries(spherical_scalar_test PRIVATE mimetic)
+
 enable_testing()
 add_test(NAME patch_test COMMAND patch_test)
 add_test(NAME conservative_intersection_test COMMAND conservative_intersection_test)
@@ -68,6 +71,7 @@ add_test(NAME convergence_validation_test COMMAND convergence_validation_test)
 add_test(NAME spherical_geometry_test COMMAND spherical_geometry_test)
 add_test(NAME spherical_quad_test COMMAND spherical_quad_test)
 add_test(NAME spherical_voronoi_test COMMAND spherical_voronoi_test)
+add_test(NAME spherical_scalar_test COMMAND spherical_scalar_test)
 
 add_executable(dump_visuals tests/dump_visuals.cpp)
 target_link_libraries(dump_visuals PRIVATE mimetic ${MOAB_LIBRARY})
