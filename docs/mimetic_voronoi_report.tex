@@ -74,7 +74,7 @@ clipped polygon.  This constant-divergence structure is the mathematical reason
 the harmonic mimetic reconstruction is a good fit for conservative edge-flux
 transfer.
 
-The contributions of this prototype study are:
+The contributions of this study are:
 \begin{itemize}
   \item a planar polygon transfer algorithm based on source-cell mimetic
         reconstruction and directed target-edge clipping;
@@ -156,18 +156,16 @@ Dukowicz and Kodis \cite{DukowiczKodis1987}.  Jones \cite{Jones1999} described
 first- and second-order conservative remapping weights for spherical climate
 grids.  Ullrich and Taylor \cite{UllrichTaylor2015} and Ullrich, Devendran, and
 Johansen \cite{UllrichDevendranJohansen2016} developed arbitrary-order
-conservative and consistent linear maps, implemented in the TempestRemap
-library (CITE).  Those methods are closest in spirit to the sparse projection
+conservative and consistent linear maps, implemented in TempestRemap.  Those
+methods are closest in spirit to the sparse projection
 operator assembled here, but the present method transfers directed edge fluxes
 rather than scalar cell averages.
 
-The geometric ingredients in the verification tests are standard.  Voronoi
+The geometric ingredients in the verification studies are standard.  Voronoi
 diagrams provide deterministic irregular n-sided convex cells
 \cite{Aurenhammer1991}.  Repeated half-plane clipping is a specialization of
 the Sutherland--Hodgman polygon clipping algorithm to convex cells
-\cite{SutherlandHodgman1974}.  MOAB supplies the mesh database abstraction and
-tagged entity model \cite{Tautges2004}; Eigen3 supplies local dense linear
-algebra \cite{Eigen3}.
+\cite{SutherlandHodgman1974}.
 
 \section{Mathematical Method}
 
@@ -191,8 +189,8 @@ In two dimensions the Perot-Chartrand reconstruction writes the cell field as
   \uh(\x) = \nabla\phi(\x) + \frac{d}{2}\x,
   \label{eq:pc_reconstruction}
 \end{equation}
-where \(d\) is constant in the cell and \(\phi\) is harmonic.  The implementation
-uses a level-2 truncated harmonic polynomial basis,
+where \(d\) is constant in the cell and \(\phi\) is harmonic.  We use a level-2
+truncated harmonic polynomial basis,
 \begin{align}
   P_1 &= x, & Q_1 &= y,\\
   P_2 &= x^2-y^2, & Q_2 &= 2xy,
@@ -522,23 +520,20 @@ The practical conclusion is therefore:
         should be evaluated as a separate method.
 \end{itemize}
 
-\section{Solver Algorithms and Implementation Notes}
+\section{Discrete Algorithms}
 
 \subsection*{Algorithm 1: Source-Cell Reconstruction}
 \begin{enumerate}
-  \item Extract ordered MOAB polygon connectivity.
-  \item Select geometry backend.  In planar mode, enforce counter-clockwise
-        orientation and shift coordinates by the cell centroid.  In spherical
-        mode, construct the source-cell gnomonic chart and use projected
-        centroid-relative coordinates.
-  \item Create ordered local edges and outward normals.
-  \item Read directed \(U_f\) from the cell-local edge map, falling back to the
-        \texttt{SOURCE\_FLUX} edge tag for planar compatibility.
+  \item Orient the source polygon counter-clockwise in its local chart.
+  \item Construct local edge coordinates and outward normals.  In spherical
+        mode, first build the source-cell gnomonic chart and project the
+        great-circle vertices into that chart.
+  \item Read the directed source edge flux vector \(U_f\).
   \item Compute \(d\) from Eq.~\eqref{eq:divergence}.
   \item Assemble \(V\) using Eq.~\eqref{eq:gram}.
   \item Assemble \(r\) using Eq.~\eqref{eq:rhs}.
-  \item Solve \(V\alpha=r\) and store \((c,d,a_1,b_1,a_2,b_2)\) in
-        \texttt{COEFFS}.
+  \item Solve the constrained local system and retain the coefficients
+        \((d,a_1,b_1,a_2,b_2)\).
 \end{enumerate}
 
 \subsection*{Algorithm 2: Conservative Evaluation on a Target or Overlap Edge}
@@ -554,7 +549,7 @@ The practical conclusion is therefore:
 \begin{enumerate}
   \item Generate source and target bounded Voronoi cells by clipping the unit
         square with perpendicular bisectors.
-  \item Create MOAB polygons for all nondegenerate cells.
+  \item Retain all nondegenerate convex cells.
   \item Set analytic source edge fluxes from \(\mathbf{u}(x,y)=(x,y)\).
   \item Reconstruct every source cell using Algorithm 1.
   \item Clip each source-target pair using convex polygon clipping.
@@ -572,16 +567,16 @@ The practical conclusion is therefore:
   \item For each directed target edge, clip the target segment against every
         source polygon.
   \item For direct transfer, evaluate Eq.~\eqref{eq:edge_transfer} on each
-        clipped segment and sum into the target edge flux tag.
+        clipped segment and sum into the target edge flux.
   \item For matrix assembly, apply the segment functional to \(B_{K_s}\) and add
         triplets to the global sparse matrix \(P\) in Eq.~\eqref{eq:sparse_projection}.
-  \item Store \(P\) in MatrixMarket coordinate format and write CSV maps for row
-        and column DOFs.
+  \item Verify that applying \(P\) to the source edge-flux vector reproduces the
+        direct transfer.
 \end{enumerate}
 
 \subsection*{Algorithm 5: Spherical Source-Chart Edge Transfer}
 \begin{enumerate}
-  \item For each source cell, normalize MOAB vertices, construct a gnomonic
+  \item For each source cell, normalize mesh vertices, construct a gnomonic
         frame, and project the great-circle polygon into the source chart.
   \item Pull manufactured source fields into the chart with
         Eq.~\eqref{eq:piola_pullback}; for shared manufactured edges, assign one
@@ -596,17 +591,6 @@ The practical conclusion is therefore:
   \item Verify global conservation, target-cell KKT re-integration, and
         direct-vs-sparse equality with absolute tolerance \(5\times10^{-13}\).
 \end{enumerate}
-
-\subsection*{Brief implementation notes}
-The implementation is intentionally small and serial.  MOAB is used for mesh
-entities and flux/coefficient tags, Eigen is used for dense local KKT systems
-and sparse projection matrices, and MatrixMarket output is used for the
-directed edge transfer operator.  The numerical kernels are organized around
-three mathematical objects: source-cell reconstruction
-\((U_f\mapsto d,\alpha)\), clipped segment evaluation, and sparse assembly of
-the same segment functional.  This organization keeps the implementation close
-to Eqs.~\eqref{eq:local_reconstruction_matrix}--\eqref{eq:sparse_projection}
-while keeping implementation details secondary to the method and validation.
 
 \section{Algorithmic Analysis}
 
@@ -624,16 +608,16 @@ reconstruction cost is effectively linear in the number of polygon sides:
 
 \paragraph{Overlap evaluation.}
 For convex source and target polygons with \(n_s\) and \(n_t\) sides, repeated
-half-plane clipping costs \(O(n_s n_t)\) in the simple implementation used by
-the test.  Once an overlap polygon \(O\) with \(n_O\) sides is known, the
-boundary-flux check is \(O(n_O)\).  In production, the all-pairs source-target
-loop should be replaced by a spatial index or advancing-front intersection
-algorithm; the current test intentionally uses direct all-pairs clipping for
-clarity and reproducibility.
+half-plane clipping costs \(O(n_s n_t)\).  Once an overlap polygon \(O\) with
+\(n_O\) sides is known, the boundary-flux check is \(O(n_O)\).  The reference
+algorithm uses deterministic all-pairs candidate enumeration for clarity.  A
+production-scale implementation should replace that enumeration with a spatial
+index or advancing-front traversal without changing the local clipped-segment
+functional.
 
 \paragraph{Edge transfer and projection assembly.}
 Let \(E_t\) be the number of directed target edges and \(N_s\) the number of
-source cells.  The current all-pairs implementation clips each target edge
+source cells.  The reference all-pairs algorithm clips each target edge
 against each source polygon, so its cost is \(O(E_t N_s \bar n_s)\) for average
 source side count \(\bar n_s\).  Sparse matrix assembly has the same geometric
 cost plus local coefficient-row multiplication.  The number of nonzeros is
@@ -641,15 +625,15 @@ proportional to the number of source-edge basis functions that influence each
 clipped target-edge segment.
 
 \paragraph{Memory.}
-Each source cell stores six doubles in \texttt{COEFFS}.  Each source or target
-edge stores one double flux tag.  Temporary dense matrices are \(4\times4\) and
-are allocated per reconstructed source cell.  The sparse projection stores
-directed source and target edge maps plus compressed sparse matrix arrays.
+Each source cell stores \(O(q)\) reconstruction coefficients and each directed
+edge stores one flux value.  The local dense matrices are \(q\times q\), and the
+sparse projection stores one nonzero block contribution for each source-cell
+segment that intersects a directed target edge.
 
 \section{Results and Discussion}
 
 All numerical values reported below come from deterministic serial regression
-tests and generated figures in the repository.  The conservation tolerance for
+studies.  The conservation tolerance for
 the planar and spherical invariants is \(5\times10^{-13}\).  The tests separate
 three quantities: exact conservation identities, directed target-edge flux
 errors against manufactured fields, and direct-vs-sparse projection agreement.
@@ -690,8 +674,8 @@ quadrilateral cells.
 
 Figure~\ref{fig:voronoi-overlap-detail} highlights selected source-target pairs in different
 parts of the domain where both intersecting cells are general n-gons ($n>4$). The green polygons
-represent the clipped intersections ($O=K_s\cap K_t$). In the test suite, the conservative flux
-check is rigorously performed on these and every other nonempty overlap.
+represent the clipped intersections ($O=K_s\cap K_t$). The conservative flux
+check is performed on these and every other nonempty overlap.
 
 \begin{figure}[t]
   \centering
@@ -736,8 +720,7 @@ roundoff, and each target cell satisfies
 \]
 The assembled sparse projection for this case has 36 rows, 16 columns, and 80
 nonzeros.  Applying this matrix to the directed source edge flux vector
-reproduces the direct edge-transfer result to roundoff, and the matrix is
-written to MatrixMarket format with source and target edge-map CSV files.
+reproduces the direct edge-transfer result to roundoff.
 
 \subsection{Voronoi n-gon Patch Test}
 The Voronoi test uses two different bounded Voronoi meshes over the unit square.
@@ -763,7 +746,7 @@ is covered by source overlaps to roundoff.  The aggregate checks are:
 \]
 The largest printed overlap or aggregate residual is \(4.44\times10^{-16}\),
 well below the \(5\times10^{-13}\) conservation tolerance used throughout the
-current test suite.
+validation study.
 The edge-wise Voronoi transfer computes 71 directed target edge fluxes.  Every
 target edge agrees with the analytic global linear field integral to roundoff,
 and every target cell satisfies the same edge-flux divergence check
@@ -895,8 +878,8 @@ to \(5.07\times10^{-3}\).
   \(2.66\times10^{-15}\) global, \(3.05\times10^{-13}\) sparse \\
   \bottomrule
   \end{tabular}
-  \caption{Verification summary from the current CTest runs.  Residuals are
-  absolute errors reported by the deterministic regression tests.}
+  \caption{Verification summary from the deterministic regression studies.
+  Residuals are absolute errors from the reported validation cases.}
   \label{tab:verification-summary}
 \end{table}
 
@@ -912,8 +895,8 @@ flux is \(2|O|\), and the target-cell edge flux sum is \(2|K_t|\).  The
 residuals in Table~\ref{tab:verification-summary} measure only floating-point
 and clipping-roundoff effects.
 
-The planar Voronoi test rules out a common false positive in polygon remapping
-prototypes: passing only quadrilateral or axis-aligned cases.  Here both source
+The planar Voronoi test rules out a common false positive in polygon remapping:
+passing only quadrilateral or axis-aligned cases.  Here both source
 and target meshes contain five- and six-sided cells, and 23 nonempty
 intersections involve n-gons on both sides.  The exact overlap identity holds on
 each of those intersections, and the directed-edge checks verify that the
@@ -930,7 +913,7 @@ operator equivalence on n-sided great-circle polygons rather than on only
 quad-like cells.
 
 The additional convergence sweep changed the interpretation of the spherical
-backend in an important way.  The first review of the implementation focused on
+backend in an important way.  The initial interpretation focused on
 the comparatively large coarse-mesh errors and suggested that the Euclidean
 harmonic basis on a gnomonic chart might be fundamentally mismatched to the
 surface geometry.  The extended refinement data show that this concern was too
@@ -969,8 +952,8 @@ agreement at \(5\times10^{-13}\).
         \cite{PerotChartrand2021}, but level-3 diagnostics may be useful for
         severe distortion or high valence.
   \item Candidate search is deterministic all-pairs.  A production
-        source-target transfer should pair the same local kernels with MOAB
-        spatial search or an advancing-front traversal.
+        source-target transfer should pair the same local kernels with spatial
+        search or an advancing-front traversal.
   \item Tests use manufactured analytic fields and deterministic serial meshes.
         They verify local conservation, sparse operator equivalence, and
         refinement behavior, not global PDE accuracy.
@@ -986,9 +969,9 @@ agreement at \(5\times10^{-13}\).
 
 \section{Conclusions and Future Research Directions}
 
-The present implementation demonstrates that the level-2 harmonic-polynomial
-mimetic reconstruction can be expressed cleanly in MOAB/Eigen3 and verified on
-nonmatching planar and spherical polygon patches.  The planar tests validate
+The present study demonstrates that the level-2 harmonic-polynomial mimetic
+reconstruction can be verified on nonmatching planar and spherical polygon
+patches.  The planar tests validate
 the original overlap and directed-edge transfer invariants.  The spherical tests
 validate the gnomonic-chart extension, the contravariant Piola flux mapping,
 structured cubed-sphere identity/refinement/coarsening, unstructured n-sided
@@ -1058,7 +1041,7 @@ logical paths are proposed for future research:
     require volumetric H(div) reconstruction, surface clipping, and flux
     balance over polyhedral intersection boundaries.
     \item \textbf{Integration}: Package the library into a modular component
-    for larger simulation frameworks.  Distributed MOAB loading, MPI halo
+    for larger simulation frameworks.  Distributed mesh loading, MPI halo
     exchange, and language bindings should remain downstream of the serial
     numerical invariants.
 \end{itemize}
