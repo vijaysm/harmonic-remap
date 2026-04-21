@@ -151,6 +151,31 @@ int main()
         }
 
         {
+            const mimetic::GnomonicFrame frame{
+                Eigen::Vector3d(0.0, 0.0, 1.0),
+                Eigen::Vector3d(1.0, 0.0, 0.0),
+                Eigen::Vector3d(0.0, 1.0, 0.0),
+                1.0,
+            };
+            const Eigen::Vector2d xi(0.28, -0.19);
+            const Eigen::Vector2d chart_a(0.42, -0.17);
+            const Eigen::Vector2d chart_b(-0.23, 0.31);
+            const Eigen::Vector3d surface_a = mimetic::lift_contravariant_piola(chart_a, xi, frame);
+            const Eigen::Vector3d surface_b = mimetic::lift_contravariant_piola(chart_b, xi, frame);
+            const Eigen::Vector2d round_trip = mimetic::pullback_contravariant_piola(surface_a, xi, frame);
+            const Eigen::Matrix<double, 3, 2> jacobian = mimetic::gnomonic_jacobian(xi, frame);
+            const Eigen::Matrix2d metric = jacobian.transpose() * jacobian;
+            const double area_scale = jacobian.col(0).cross(jacobian.col(1)).norm();
+            const double surface_inner = area_scale * surface_a.dot(surface_b);
+            const double chart_hodge_inner = chart_a.dot((metric / area_scale) * chart_b);
+            ok = mimetic::test::near((round_trip - chart_a).norm(), 0.0, 1.0e-14,
+                                     "Piola pullback/lift round trip") &&
+                 mimetic::test::near(surface_inner, chart_hodge_inner, 1.0e-14,
+                                     "Piola Hodge inner product") &&
+                 ok;
+        }
+
+        {
             const moab::EntityHandle pentagon = create_chart_polygon(mb, {
                 Eigen::Vector2d(-0.30, -0.14),
                 Eigen::Vector2d( 0.05, -0.28),

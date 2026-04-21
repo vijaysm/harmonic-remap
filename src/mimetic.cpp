@@ -297,6 +297,16 @@ Eigen::Vector3d reconstruction_integral(const GeometryOptions& options,
     });
 }
 
+Eigen::Matrix2d gnomonic_hodge_metric(const Eigen::Vector2d& xi, const GnomonicFrame& frame)
+{
+    const Eigen::Matrix<double, 3, 2> jacobian = gnomonic_jacobian(xi, frame);
+    const double area_scale = jacobian.col(0).cross(jacobian.col(1)).norm();
+    if (area_scale < kTolerance) {
+        throw std::runtime_error("Degenerate Hodge metric in gnomonic chart");
+    }
+    return (jacobian.transpose() * jacobian) / area_scale;
+}
+
 Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly,
                                              const std::vector<LocalEdge>& edges,
                                              const GeometryOptions& options)
@@ -305,8 +315,10 @@ Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly,
     const int K_max = N / 2;
     const int N_h = 2 * K_max;
     const int S = N_h + N - 1;
-    const bool use_metric_weight = options.metric_weighted && options.mode == GeometryMode::SphericalGnomonic;
+    const bool use_surface_metric = options.metric_weighted && options.mode == GeometryMode::SphericalGnomonic;
     const GnomonicFrame frame{poly.n, poly.e_x, poly.e_y, options.radius};
+    const double stabilization_area =
+        (use_surface_metric && poly.spherical_area > options.geometry_tolerance) ? poly.spherical_area : poly.area;
 
     Eigen::MatrixXd V = Eigen::MatrixXd::Zero(N_h, N_h);
     Eigen::MatrixXd M = Eigen::MatrixXd::Zero(N_h, N);
@@ -328,8 +340,11 @@ Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly,
                     eval_harmonic_basis(kj, p, Pj, Qj, gPj, gQj);
                     Eigen::Vector2d gi = is_Q_i ? gQi : gPi;
                     Eigen::Vector2d gj = is_Q_j ? gQj : gPj;
-                    const double weight = use_metric_weight ? gnomonic_area_scale(p + poly.centroid, frame) : 1.0;
-                    return gi.dot(gj) * weight;
+                    if (!use_surface_metric) {
+                        return gi.dot(gj);
+                    }
+                    const Eigen::Matrix2d hodge = gnomonic_hodge_metric(p + poly.centroid, frame);
+                    return gi.dot(hodge * gj);
                 });
             }
             V(i, j) = val;
@@ -341,19 +356,17 @@ Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly,
             cell_basis_integral += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
                 double P, Q; Eigen::Vector2d gP, gQ;
                 eval_harmonic_basis(ki, p, P, Q, gP, gQ);
-                const double weight = use_metric_weight ? gnomonic_area_scale(p + poly.centroid, frame) : 1.0;
-                return (is_Q_i ? Q : P) * weight;
+                return is_Q_i ? Q : P;
             });
             div_integral += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
                 double P, Q; Eigen::Vector2d gP, gQ;
                 eval_harmonic_basis(ki, p, P, Q, gP, gQ);
-                const double weight = use_metric_weight ? gnomonic_area_scale(p + poly.centroid, frame) : 1.0;
-                return p.dot(is_Q_i ? gQ : gP) * weight;
+                return p.dot(is_Q_i ? gQ : gP);
             });
         }
         const double cell_basis_average = cell_basis_integral / poly.area;
         if (i >= 4) {
-            V(i, i) += 1.0e2 * poly.area;
+            V(i, i) += 1.0e2 * stabilization_area;
         }
         
         for (int e = 0; e < N; ++e) {
@@ -909,8 +922,10 @@ ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab:
     const int K_max = N / 2;
     const int N_h = 2 * K_max;
     const int S = N_h + N - 1;
-    const bool use_metric_weight = options_.metric_weighted && is_spherical();
+    const bool use_surface_metric = options_.metric_weighted && is_spherical();
     const GnomonicFrame frame{poly.n, poly.e_x, poly.e_y, poly.centroid_3d.norm()};
+    const double stabilization_area =
+        (use_surface_metric && poly.spherical_area > options_.geometry_tolerance) ? poly.spherical_area : poly.area;
 
     Eigen::VectorXd source_flux(N);
     for (int i = 0; i < N; ++i) {
@@ -939,8 +954,11 @@ ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab:
                     eval_harmonic_basis(kj, p, Pj, Qj, gPj, gQj);
                     Eigen::Vector2d gi = is_Q_i ? gQi : gPi;
                     Eigen::Vector2d gj = is_Q_j ? gQj : gPj;
-                    const double weight = use_metric_weight ? gnomonic_area_scale(p + poly.centroid, frame) : 1.0;
-                    return gi.dot(gj) * weight;
+                    if (!use_surface_metric) {
+                        return gi.dot(gj);
+                    }
+                    const Eigen::Matrix2d hodge = gnomonic_hodge_metric(p + poly.centroid, frame);
+                    return gi.dot(hodge * gj);
                 });
             }
             V(i, j) = val;
@@ -952,19 +970,17 @@ ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab:
             cell_basis_integral += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
                 double P, Q; Eigen::Vector2d gP, gQ;
                 eval_harmonic_basis(ki, p, P, Q, gP, gQ);
-                const double weight = use_metric_weight ? gnomonic_area_scale(p + poly.centroid, frame) : 1.0;
-                return (is_Q_i ? Q : P) * weight;
+                return is_Q_i ? Q : P;
             });
             div_integral += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
                 double P, Q; Eigen::Vector2d gP, gQ;
                 eval_harmonic_basis(ki, p, P, Q, gP, gQ);
-                const double weight = use_metric_weight ? gnomonic_area_scale(p + poly.centroid, frame) : 1.0;
-                return p.dot(is_Q_i ? gQ : gP) * weight;
+                return p.dot(is_Q_i ? gQ : gP);
             });
         }
         const double cell_basis_average = cell_basis_integral / poly.area;
         if (i >= 4) {
-            V(i, i) += 1.0e2 * poly.area;
+            V(i, i) += 1.0e2 * stabilization_area;
         }
         
         for (int e = 0; e < N; ++e) {
