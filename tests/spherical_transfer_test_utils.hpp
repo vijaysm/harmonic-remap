@@ -319,6 +319,36 @@ inline Eigen::Vector3d reconstructed_surface_vector(const MimeticInterpolator& i
                                     frame);
 }
 
+template <typename Field>
+Eigen::Vector3d exact_surface_cell_average(moab::Core& mb,
+                                           const moab::EntityHandle cell,
+                                           const Field& field)
+{
+    GeometryOptions spherical;
+    spherical.mode = GeometryMode::SphericalGnomonic;
+    const SphericalPolygon poly = spherical_polygon(mb, cell, spherical);
+    const Eigen::Vector2d center = poly.projected_centroid;
+
+    Eigen::Vector3d integral = Eigen::Vector3d::Zero();
+    for (std::size_t i = 0; i < poly.local_points.size(); ++i) {
+        const Eigen::Vector2d a = poly.local_points[i];
+        const Eigen::Vector2d b = poly.local_points[(i + 1) % poly.local_points.size()];
+        integral.x() += integrate_triangle_scalar(Eigen::Vector2d::Zero(), a, b, [&](const Eigen::Vector2d& local_point) {
+            const Eigen::Vector2d xi = local_point + center;
+            return field(inverse_gnomonic(xi, poly.frame)).x() * gnomonic_area_scale(xi, poly.frame);
+        });
+        integral.y() += integrate_triangle_scalar(Eigen::Vector2d::Zero(), a, b, [&](const Eigen::Vector2d& local_point) {
+            const Eigen::Vector2d xi = local_point + center;
+            return field(inverse_gnomonic(xi, poly.frame)).y() * gnomonic_area_scale(xi, poly.frame);
+        });
+        integral.z() += integrate_triangle_scalar(Eigen::Vector2d::Zero(), a, b, [&](const Eigen::Vector2d& local_point) {
+            const Eigen::Vector2d xi = local_point + center;
+            return field(inverse_gnomonic(xi, poly.frame)).z() * gnomonic_area_scale(xi, poly.frame);
+        });
+    }
+    return integral / poly.spherical_area;
+}
+
 inline double max_direct_sparse_delta(const MimeticInterpolator& interpolator,
                                       const SparseEdgeProjection& projection,
                                       const EdgeTransferResult& transfer)

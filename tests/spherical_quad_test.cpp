@@ -30,8 +30,10 @@ struct CaseMetrics {
     double max_direct_sparse_delta;
     double l2_relative_flux_error;
     double max_flux_error;
-    double cell_field_l1_error;
-    double cell_field_linf_error;
+    double direct_cell_average_l1_error;
+    double direct_cell_average_linf_error;
+    double reconstructed_cell_average_l1_error;
+    double reconstructed_cell_average_linf_error;
 };
 
 int parse_positive_int(const char* text, const char* name)
@@ -96,7 +98,9 @@ CaseMetrics run_case(const int source_n,
     const moab::Tag target_div_tag = scalar_tag(mb, "TARGET_DIV_RECON");
     const moab::Tag target_flux_error_tag = scalar_tag(mb, "TARGET_FLUX_ERROR");
     const moab::Tag target_field_error_norm_tag = scalar_tag(mb, "TARGET_FIELD_ERROR_NORM");
+    const moab::Tag target_field_direct_error_norm_tag = scalar_tag(mb, "TARGET_FIELD_DIRECT_ERROR_NORM");
     const moab::Tag target_field_recon_tag = vector_tag(mb, "TARGET_FIELD_RECON");
+    const moab::Tag target_field_direct_tag = vector_tag(mb, "TARGET_FIELD_DIRECT");
     const moab::Tag target_field_exact_tag = vector_tag(mb, "TARGET_FIELD_EXACT");
 
     double total_source_divergence = 0.0;
@@ -118,6 +122,9 @@ CaseMetrics run_case(const int source_n,
 
     const mimetic::EdgeTransferResult transfer =
         interpolator.transfer_source_to_target_edges(source_mesh, target_mesh);
+    const mimetic::CellAverageTransferResult direct_cell =
+        interpolator.transfer_source_to_target_cell_averages(
+            source_mesh, target_mesh, mimetic::CellAverageReductionMode::Harmonic);
     const mimetic::SparseEdgeProjection projection =
         interpolator.assemble_edge_projection_operator(source_mesh, target_mesh);
     const double direct_sparse_delta =
@@ -131,11 +138,14 @@ CaseMetrics run_case(const int source_n,
     double l2_den = 0.0;
     double max_flux_error = 0.0;
     double max_reintegration_residual = 0.0;
-    double cell_field_l1_error = 0.0;
-    double cell_field_linf_error = 0.0;
+    double direct_cell_average_l1_error = 0.0;
+    double direct_cell_average_linf_error = 0.0;
+    double reconstructed_cell_average_l1_error = 0.0;
+    double reconstructed_cell_average_linf_error = 0.0;
     std::size_t dof = 0;
 
-    for (const moab::EntityHandle cell : target_mesh) {
+    for (std::size_t cell_index = 0; cell_index < target_mesh.size(); ++cell_index) {
+        const moab::EntityHandle cell = target_mesh[cell_index];
         const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, cell, options);
         const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb, poly);
         double cell_divergence = 0.0;
@@ -154,7 +164,8 @@ CaseMetrics run_case(const int source_n,
         }
 
         total_target_divergence += cell_divergence;
-        const mimetic::ReconstructionCoeffs target_coeffs = interpolator.reconstruct_source_polygon(cell);
+        interpolator.reconstruct_source_polygon(cell);
+        const mimetic::ReconstructionCoeffs target_coeffs = mimetic::test_sphere::read_coeffs(mb, interpolator, cell);
         for (std::size_t i = 0; i < edges.size(); ++i) {
             const double reintegrated = interpolator.edge_flux(target_coeffs, edges[i].a, edges[i].b);
             const double transferred = interpolator.source_edge_flux(cell, i, edges[i].handle);
@@ -162,26 +173,37 @@ CaseMetrics run_case(const int source_n,
                 std::max(max_reintegration_residual, std::abs(reintegrated - transferred));
         }
 
-        const Eigen::Vector3d field_recon =
-            mimetic::test_sphere::reconstructed_surface_vector(interpolator, target_coeffs, poly, Eigen::Vector2d::Zero());
+        const Eigen::Vector3d field_direct = direct_cell.target_averages[cell_index];
+        const Eigen::Vector3d field_recon = interpolator.cell_average(cell);
         const Eigen::Vector3d field_exact =
-            mimetic::test_sphere::spherical_harmonic_gradient(poly.centroid_3d.normalized());
+            mimetic::test_sphere::exact_surface_cell_average(
+                mb, cell, mimetic::test_sphere::spherical_harmonic_gradient);
         const Eigen::Vector3d field_error = field_recon - field_exact;
+        const Eigen::Vector3d direct_field_error = field_direct - field_exact;
         const double field_error_norm = field_error.norm();
+        const double direct_field_error_norm = direct_field_error.norm();
         const double area_weight = poly.spherical_area > 0.0 ? poly.spherical_area : poly.area;
-        cell_field_l1_error += area_weight * field_error_norm;
-        cell_field_linf_error = std::max(cell_field_linf_error, field_error_norm);
+        reconstructed_cell_average_l1_error += area_weight * field_error_norm;
+        reconstructed_cell_average_linf_error =
+            std::max(reconstructed_cell_average_linf_error, field_error_norm);
+        direct_cell_average_l1_error += area_weight * direct_field_error_norm;
+        direct_cell_average_linf_error = std::max(direct_cell_average_linf_error, direct_field_error_norm);
 
+        const double direct_data[3] = {field_direct.x(), field_direct.y(), field_direct.z()};
         const double recon_data[3] = {field_recon.x(), field_recon.y(), field_recon.z()};
         const double exact_data[3] = {field_exact.x(), field_exact.y(), field_exact.z()};
         mimetic::check_moab(mb.tag_set_data(target_div_tag, &cell, 1, &cell_divergence),
                             "Failed to write target divergence diagnostic");
+        mimetic::check_moab(mb.tag_set_data(target_field_direct_tag, &cell, 1, direct_data),
+                            "Failed to write direct field diagnostic");
         mimetic::check_moab(mb.tag_set_data(target_field_recon_tag, &cell, 1, recon_data),
                             "Failed to write reconstructed field diagnostic");
         mimetic::check_moab(mb.tag_set_data(target_field_exact_tag, &cell, 1, exact_data),
                             "Failed to write exact field diagnostic");
         mimetic::check_moab(mb.tag_set_data(target_field_error_norm_tag, &cell, 1, &field_error_norm),
                             "Failed to write field error norm diagnostic");
+        mimetic::check_moab(mb.tag_set_data(target_field_direct_error_norm_tag, &cell, 1, &direct_field_error_norm),
+                            "Failed to write direct field error norm diagnostic");
         mimetic::check_moab(mb.tag_set_data(target_flux_error_tag, &cell, 1, &cell_max_flux_error),
                             "Failed to write target flux error diagnostic");
     }
@@ -218,8 +240,10 @@ CaseMetrics run_case(const int source_n,
     metrics.l2_relative_flux_error =
         (l2_den > std::numeric_limits<double>::epsilon()) ? std::sqrt(l2_num / l2_den) : std::sqrt(l2_num);
     metrics.max_flux_error = max_flux_error;
-    metrics.cell_field_l1_error = cell_field_l1_error;
-    metrics.cell_field_linf_error = cell_field_linf_error;
+    metrics.direct_cell_average_l1_error = direct_cell_average_l1_error;
+    metrics.direct_cell_average_linf_error = direct_cell_average_linf_error;
+    metrics.reconstructed_cell_average_l1_error = reconstructed_cell_average_l1_error;
+    metrics.reconstructed_cell_average_linf_error = reconstructed_cell_average_linf_error;
     return metrics;
 }
 
@@ -237,8 +261,10 @@ void print_case_metrics(const CaseMetrics& m)
               << " target_reintegration=" << m.max_target_cell_reintegration_residual << "\n"
               << "  edge_flux_l2_rel=" << m.l2_relative_flux_error
               << " edge_flux_linf=" << m.max_flux_error << "\n"
-              << "  cell_field_l1=" << m.cell_field_l1_error
-              << " cell_field_linf=" << m.cell_field_linf_error << "\n";
+              << "  direct_cell_avg_l1=" << m.direct_cell_average_l1_error
+              << " direct_cell_avg_linf=" << m.direct_cell_average_linf_error << "\n"
+              << "  recon_cell_avg_l1=" << m.reconstructed_cell_average_l1_error
+              << " recon_cell_avg_linf=" << m.reconstructed_cell_average_linf_error << "\n";
 }
 
 bool invariants_pass(const CaseMetrics& m)
@@ -270,10 +296,10 @@ int main(int argc, char** argv)
             const int target_n = parse_positive_int(argv[2], "target_n");
             const CaseMetrics metrics = run_case(source_n, target_n, argv[3], true);
             print_case_metrics(metrics);
-            bool ok = invariants_pass(metrics);
-            if (source_n == target_n) {
-                ok = (metrics.max_flux_error <= mimetic::kConservationTolerance) && ok;
-            }
+        bool ok = invariants_pass(metrics);
+        if (source_n == target_n) {
+            ok = (metrics.max_flux_error <= mimetic::kConservationTolerance) && ok;
+        }
             if (!ok) {
                 std::cout << "\n[FAILED] Spherical cubed-sphere case failed acceptance checks.\n";
                 return 1;
@@ -301,6 +327,8 @@ int main(int argc, char** argv)
         ok = (identity.max_flux_error <= mimetic::kConservationTolerance) && ok;
         ok = (fine.l2_relative_flux_error < refine.l2_relative_flux_error) && ok;
         ok = (fine.max_flux_error < refine.max_flux_error) && ok;
+        ok = (fine.direct_cell_average_l1_error < refine.direct_cell_average_l1_error) && ok;
+        ok = (fine.reconstructed_cell_average_l1_error < refine.reconstructed_cell_average_l1_error) && ok;
 
         if (!ok) {
             std::cout << "\n[FAILED] Spherical cubed-sphere transfer did not meet acceptance checks.\n";

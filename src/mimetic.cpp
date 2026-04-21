@@ -139,14 +139,174 @@ bool target_interior_side_intersects_source(const Eigen::Vector2d& clipped_a,
     return point_in_convex_polygon(probe, source_polygon, 0.0);
 }
 
-Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly, const std::vector<LocalEdge>& edges)
+std::vector<Eigen::Vector2d> clip_by_halfplane(const std::vector<Eigen::Vector2d>& polygon,
+                                               const Eigen::Vector2d& normal,
+                                               const double offset,
+                                               const double tolerance)
+{
+    std::vector<Eigen::Vector2d> output;
+    if (polygon.empty()) {
+        return output;
+    }
+
+    auto inside = [&](const Eigen::Vector2d& p) { return normal.dot(p) <= offset + tolerance; };
+    auto intersect = [&](const Eigen::Vector2d& a, const Eigen::Vector2d& b) -> Eigen::Vector2d {
+        const double da = normal.dot(a) - offset;
+        const double db = normal.dot(b) - offset;
+        const double denom = da - db;
+        if (std::abs(denom) <= tolerance) {
+            return a;
+        }
+        return a + (da / denom) * (b - a);
+    };
+
+    Eigen::Vector2d previous = polygon.back();
+    bool previous_inside = inside(previous);
+    for (const Eigen::Vector2d& current : polygon) {
+        const bool current_inside = inside(current);
+        if (current_inside) {
+            if (!previous_inside) {
+                output.push_back(intersect(previous, current));
+            }
+            output.push_back(current);
+        } else if (previous_inside) {
+            output.push_back(intersect(previous, current));
+        }
+        previous = current;
+        previous_inside = current_inside;
+    }
+    return output;
+}
+
+std::vector<Eigen::Vector2d> convex_polygon_intersection(std::vector<Eigen::Vector2d> subject,
+                                                         std::vector<Eigen::Vector2d> clipper,
+                                                         const double tolerance)
+{
+    if (subject.size() < 3 || clipper.size() < 3) {
+        return {};
+    }
+
+    if (signed_area(subject) < 0.0) {
+        std::reverse(subject.begin(), subject.end());
+    }
+    if (signed_area(clipper) < 0.0) {
+        std::reverse(clipper.begin(), clipper.end());
+    }
+
+    for (std::size_t i = 0; i < clipper.size(); ++i) {
+        const Eigen::Vector2d a = clipper[i];
+        const Eigen::Vector2d b = clipper[(i + 1) % clipper.size()];
+        const Eigen::Vector2d edge = b - a;
+        const Eigen::Vector2d outward(edge.y(), -edge.x());
+        subject = clip_by_halfplane(subject, outward, outward.dot(a), tolerance);
+        if (subject.size() < 3 || std::abs(signed_area(subject)) <= tolerance) {
+            return {};
+        }
+    }
+
+    return subject;
+}
+
+template <typename Func>
+Eigen::Vector3d integrate_triangle_vector(const Eigen::Vector2d& a,
+                                          const Eigen::Vector2d& b,
+                                          const Eigen::Vector2d& c,
+                                          const Func& func)
+{
+    return Eigen::Vector3d(
+        integrate_triangle_scalar(a, b, c, [&](const Eigen::Vector2d& p) { return func(p).x(); }),
+        integrate_triangle_scalar(a, b, c, [&](const Eigen::Vector2d& p) { return func(p).y(); }),
+        integrate_triangle_scalar(a, b, c, [&](const Eigen::Vector2d& p) { return func(p).z(); }));
+}
+
+template <typename Func>
+Eigen::Vector3d integrate_polygon_vector(std::vector<Eigen::Vector2d> polygon, const Func& func)
+{
+    if (polygon.size() < 3) {
+        return Eigen::Vector3d::Zero();
+    }
+
+    if (signed_area(polygon) < 0.0) {
+        std::reverse(polygon.begin(), polygon.end());
+    }
+
+    const Eigen::Vector2d center = polygon_centroid(polygon);
+    Eigen::Vector3d integral = Eigen::Vector3d::Zero();
+    for (std::size_t i = 0; i < polygon.size(); ++i) {
+        integral += integrate_triangle_vector(center, polygon[i], polygon[(i + 1) % polygon.size()], func);
+    }
+    return integral;
+}
+
+double polygon_area_abs(const std::vector<Eigen::Vector2d>& polygon)
+{
+    return polygon.size() < 3 ? 0.0 : std::abs(signed_area(polygon));
+}
+
+Eigen::Vector2d harmonic_velocity_value(const ReconstructionCoeffs& coeffs, const Eigen::Vector2d& p)
+{
+    Eigen::Vector2d v = 0.5 * coeffs.d * p;
+    const int n_h = static_cast<int>(coeffs.harmonic.size());
+    for (int i = 0; i < n_h; ++i) {
+        const int k = (i / 2) + 1;
+        const bool is_q = (i % 2 == 1);
+        double P, Q;
+        Eigen::Vector2d gP, gQ;
+        eval_harmonic_basis(k, p, P, Q, gP, gQ);
+        v += coeffs.harmonic[i] * (is_q ? gQ : gP);
+    }
+    return v;
+}
+
+ReconstructionCoeffs read_coefficients(moab::Core& mb,
+                                       const moab::Tag coeff_tag,
+                                       const moab::EntityHandle polygon)
+{
+    const void* ptr = nullptr;
+    int size = 0;
+    check_moab(mb.tag_get_by_ptr(coeff_tag, &polygon, 1, &ptr, &size),
+               "Failed to read reconstruction coefficients");
+    const double* data = static_cast<const double*>(ptr);
+    ReconstructionCoeffs coeffs;
+    coeffs.d = data[0];
+    coeffs.harmonic.assign(data + 1, data + size);
+    return coeffs;
+}
+
+Eigen::Vector3d reconstruction_integral(const GeometryOptions& options,
+                                        const LocalPolygon& source,
+                                        const ReconstructionCoeffs& coeffs,
+                                        const std::vector<Eigen::Vector2d>& polygon_abs)
+{
+    if (polygon_abs.size() < 3 || polygon_area_abs(polygon_abs) <= options.geometry_tolerance) {
+        return Eigen::Vector3d::Zero();
+    }
+
+    if (options.mode == GeometryMode::SphericalGnomonic) {
+        const GnomonicFrame frame{source.n, source.e_x, source.e_y, options.radius};
+        return integrate_polygon_vector(polygon_abs, [&](const Eigen::Vector2d& xi) {
+            const Eigen::Vector2d chart_velocity = harmonic_velocity_value(coeffs, xi - source.centroid);
+            const Eigen::Vector3d surface_velocity = lift_contravariant_piola(chart_velocity, xi, frame);
+            return gnomonic_area_scale(xi, frame) * surface_velocity;
+        });
+    }
+
+    return integrate_polygon_vector(polygon_abs, [&](const Eigen::Vector2d& p) {
+        const Eigen::Vector2d planar_velocity = harmonic_velocity_value(coeffs, p - source.centroid);
+        return Eigen::Vector3d(planar_velocity.x(), planar_velocity.y(), 0.0);
+    });
+}
+
+Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly,
+                                             const std::vector<LocalEdge>& edges,
+                                             const GeometryOptions& options)
 {
     const int N = static_cast<int>(edges.size());
     const int K_max = N / 2;
     const int N_h = 2 * K_max;
     const int S = N_h + N - 1;
-    const bool use_metric_weight = poly.spherical_area > 0.0 && std::abs(poly.spherical_area - poly.area) > 1.0e-14;
-    const GnomonicFrame frame{poly.n, poly.e_x, poly.e_y, poly.centroid_3d.norm()};
+    const bool use_metric_weight = options.metric_weighted && options.mode == GeometryMode::SphericalGnomonic;
+    const GnomonicFrame frame{poly.n, poly.e_x, poly.e_y, options.radius};
 
     Eigen::MatrixXd V = Eigen::MatrixXd::Zero(N_h, N_h);
     Eigen::MatrixXd M = Eigen::MatrixXd::Zero(N_h, N);
@@ -867,38 +1027,25 @@ ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab:
 
 Eigen::Vector2d MimeticInterpolator::velocity(const ReconstructionCoeffs& coeffs, const Eigen::Vector2d& p) const
 {
-    Eigen::Vector2d v = 0.5 * coeffs.d * p;
-    const int N_h = static_cast<int>(coeffs.harmonic.size());
-    for (int i = 0; i < N_h; ++i) {
-        int k = (i / 2) + 1;
-        bool is_Q = (i % 2 == 1);
-        double P, Q;
-        Eigen::Vector2d gP, gQ;
-        eval_harmonic_basis(k, p, P, Q, gP, gQ);
-        v += coeffs.harmonic[i] * (is_Q ? gQ : gP);
-    }
-    return v;
+    return harmonic_velocity_value(coeffs, p);
 }
 
 double MimeticInterpolator::line_integral(const moab::EntityHandle source_polygon,
                                           const Eigen::Vector2d& a,
                                           const Eigen::Vector2d& b) const
 {
-    const void* ptr = nullptr;
-    int size = 0;
-    check_moab(mb_.tag_get_by_ptr(tag_coeffs_, &source_polygon, 1, &ptr, &size), "Failed to read reconstruction coefficients");
-    const double* dptr = static_cast<const double*>(ptr);
-    const double d = dptr[0];
+    const ReconstructionCoeffs coeffs = read_coefficients(mb_, tag_coeffs_, source_polygon);
+    const double d = coeffs.d;
 
     double val = 0.25 * d * (b.squaredNorm() - a.squaredNorm());
-    for (int i = 0; i < size - 1; ++i) {
+    for (std::size_t i = 0; i < coeffs.harmonic.size(); ++i) {
         int k = (i / 2) + 1;
         bool is_Q = (i % 2 == 1);
         double Pa, Qa, Pb, Qb;
         Eigen::Vector2d gPa, gQa, gPb, gQb;
         eval_harmonic_basis(k, a, Pa, Qa, gPa, gQa);
         eval_harmonic_basis(k, b, Pb, Qb, gPb, gQb);
-        val += dptr[1 + i] * (is_Q ? (Qb - Qa) : (Pb - Pa));
+        val += coeffs.harmonic[i] * (is_Q ? (Qb - Qa) : (Pb - Pa));
     }
     return val;
 }
@@ -928,19 +1075,30 @@ double MimeticInterpolator::polygon_boundary_flux(const ReconstructionCoeffs& co
     return flux;
 }
 
+Eigen::Vector3d MimeticInterpolator::cell_integral(const moab::EntityHandle polygon) const
+{
+    const LocalPolygon poly = local_polygon(mb_, polygon, options_);
+    const ReconstructionCoeffs coeffs = read_coefficients(mb_, tag_coeffs_, polygon);
+    return reconstruction_integral(options_, poly, coeffs, absolute_points(poly));
+}
+
+Eigen::Vector3d MimeticInterpolator::cell_average(const moab::EntityHandle polygon) const
+{
+    const LocalPolygon poly = local_polygon(mb_, polygon, options_);
+    const Eigen::Vector3d integral = cell_integral(polygon);
+    const double area = is_spherical() ? poly.spherical_area : poly.area;
+    if (area <= options_.geometry_tolerance) {
+        throw std::runtime_error("Degenerate polygon area in cell_average");
+    }
+    return integral / area;
+}
+
 std::vector<double> MimeticInterpolator::transfer_to_target_polygon_edges(const moab::EntityHandle source_polygon,
                                                                           const moab::EntityHandle target_polygon)
 {
     // Single-source-cell target-edge transfer used by the patch test. General
     // nonmatching meshes use clipped overlap polygons in the tests instead.
-    const void* ptr = nullptr;
-    int size = 0;
-    check_moab(mb_.tag_get_by_ptr(tag_coeffs_, &source_polygon, 1, &ptr, &size),
-               "Failed to read source reconstruction coefficients");
-    const double* dptr = static_cast<const double*>(ptr);
-    ReconstructionCoeffs coeffs;
-    coeffs.d = dptr[0];
-    coeffs.harmonic.assign(dptr + 1, dptr + size);
+    const ReconstructionCoeffs coeffs = read_coefficients(mb_, tag_coeffs_, source_polygon);
 
     const LocalPolygon source = local_polygon(mb_, source_polygon, options_);
     const LocalPolygon target_absolute = local_polygon(mb_, target_polygon, options_);
@@ -986,16 +1144,13 @@ EdgeTransferResult MimeticInterpolator::transfer_source_to_target_edges(
     std::vector<SourceCache> sources;
     sources.reserve(source_polygons.size());
     for (const moab::EntityHandle source_polygon : source_polygons) {
-        const void* ptr = nullptr;
-        int size = 0;
-        check_moab(mb_.tag_get_by_ptr(tag_coeffs_, &source_polygon, 1, &ptr, &size),
-                   "Failed to read source reconstruction coefficients");
-        const double* dptr = static_cast<const double*>(ptr);
-        ReconstructionCoeffs coeffs;
-        coeffs.d = dptr[0];
-        coeffs.harmonic.assign(dptr + 1, dptr + size);
         const LocalPolygon local = local_polygon(mb_, source_polygon, options_);
-        sources.push_back(SourceCache{source_polygon, local, absolute_points(local), coeffs});
+        sources.push_back(SourceCache{
+            source_polygon,
+            local,
+            absolute_points(local),
+            read_coefficients(mb_, tag_coeffs_, source_polygon),
+        });
     }
 
     EdgeTransferResult result;
@@ -1063,6 +1218,101 @@ EdgeTransferResult MimeticInterpolator::transfer_source_to_target_edges(
     return result;
 }
 
+CellAverageTransferResult MimeticInterpolator::transfer_source_to_target_cell_averages(
+    const std::vector<moab::EntityHandle>& source_polygons,
+    const std::vector<moab::EntityHandle>& target_polygons,
+    const CellAverageReductionMode mode)
+{
+    if (mode != CellAverageReductionMode::Harmonic) {
+        throw std::runtime_error("Unsupported cell-average reduction mode");
+    }
+
+    struct SourceCache {
+        moab::EntityHandle polygon;
+        LocalPolygon local;
+        std::vector<Eigen::Vector2d> absolute_points;
+        ReconstructionCoeffs coeffs;
+    };
+
+    std::vector<SourceCache> sources;
+    sources.reserve(source_polygons.size());
+    for (const moab::EntityHandle source_polygon : source_polygons) {
+        const LocalPolygon local = local_polygon(mb_, source_polygon, options_);
+        sources.push_back(SourceCache{
+            source_polygon,
+            local,
+            absolute_points(local),
+            read_coefficients(mb_, tag_coeffs_, source_polygon),
+        });
+    }
+
+    CellAverageTransferResult result;
+    result.target_cells = target_polygons;
+    result.target_areas.reserve(target_polygons.size());
+    result.target_integrals.assign(target_polygons.size(), Eigen::Vector3d::Zero());
+    result.target_averages.assign(target_polygons.size(), Eigen::Vector3d::Zero());
+
+    for (std::size_t target_index = 0; target_index < target_polygons.size(); ++target_index) {
+        const moab::EntityHandle target_polygon = target_polygons[target_index];
+        const LocalPolygon target = local_polygon(mb_, target_polygon, options_);
+        const double target_area = is_spherical() ? target.spherical_area : target.area;
+        if (target_area <= options_.geometry_tolerance) {
+            throw std::runtime_error("Degenerate target area in transfer_source_to_target_cell_averages");
+        }
+        result.target_areas.push_back(target_area);
+
+        for (const SourceCache& source : sources) {
+            std::vector<Eigen::Vector2d> target_in_source;
+            if (is_spherical()) {
+                const GnomonicFrame source_frame{source.local.n, source.local.e_x, source.local.e_y, options_.radius};
+                target_in_source.reserve(target.points_3d.size());
+                bool valid_projection = true;
+                for (const Eigen::Vector3d& p3d : target.points_3d) {
+                    try {
+                        target_in_source.push_back(project_gnomonic(p3d, source_frame));
+                    } catch (const std::runtime_error&) {
+                        valid_projection = false;
+                        break;
+                    }
+                }
+                if (!valid_projection) {
+                    continue;
+                }
+            } else {
+                target_in_source = absolute_points(target);
+            }
+
+            const std::vector<Eigen::Vector2d> overlap =
+                convex_polygon_intersection(target_in_source, source.absolute_points, options_.geometry_tolerance);
+            const double overlap_chart_area = polygon_area_abs(overlap);
+            if (overlap_chart_area <= options_.geometry_tolerance) {
+                continue;
+            }
+
+            const Eigen::Vector3d overlap_integral = reconstruction_integral(options_, source.local, source.coeffs, overlap);
+            double overlap_area = overlap_chart_area;
+            if (is_spherical()) {
+                const GnomonicFrame source_frame{source.local.n, source.local.e_x, source.local.e_y, options_.radius};
+                overlap_area = integrate_polygon_vector(overlap, [&](const Eigen::Vector2d& xi) {
+                    return Eigen::Vector3d(gnomonic_area_scale(xi, source_frame), 0.0, 0.0);
+                }).x();
+            }
+
+            result.target_integrals[target_index] += overlap_integral;
+            result.contributions.push_back(CellAverageContribution{
+                target_index,
+                source.polygon,
+                overlap_area,
+                overlap_integral,
+            });
+        }
+
+        result.target_averages[target_index] = result.target_integrals[target_index] / target_area;
+    }
+
+    return result;
+}
+
 SparseEdgeProjection MimeticInterpolator::assemble_edge_projection_operator(
     const std::vector<moab::EntityHandle>& source_polygons,
     const std::vector<moab::EntityHandle>& target_polygons)
@@ -1088,7 +1338,7 @@ SparseEdgeProjection MimeticInterpolator::assemble_edge_projection_operator(
             local,
             edges,
             absolute_points(local),
-            source_reconstruction_matrix(local, edges),
+            source_reconstruction_matrix(local, edges, options_),
             std::vector<std::size_t>(),
         };
         cache.columns.reserve(edges.size());

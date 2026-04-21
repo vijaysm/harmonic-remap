@@ -213,6 +213,25 @@ struct EdgeTransferResult {
     std::vector<EdgeTransferContribution> contributions;
 };
 
+enum class CellAverageReductionMode {
+    Harmonic,
+};
+
+struct CellAverageContribution {
+    std::size_t target_cell_index;
+    moab::EntityHandle source_polygon;
+    double overlap_area;
+    Eigen::Vector3d integral;
+};
+
+struct CellAverageTransferResult {
+    std::vector<moab::EntityHandle> target_cells;
+    std::vector<double> target_areas;
+    std::vector<Eigen::Vector3d> target_integrals;
+    std::vector<Eigen::Vector3d> target_averages;
+    std::vector<CellAverageContribution> contributions;
+};
+
 /**
  * Sparse source-edge to target-edge projection.
  *
@@ -325,11 +344,20 @@ class MimeticInterpolator {
     double edge_flux(const ReconstructionCoeffs& coeffs, const Eigen::Vector2d& a, const Eigen::Vector2d& b) const;
     /// Sum outward-normal flux over a clipped intersection polygon.
     double polygon_boundary_flux(const ReconstructionCoeffs& coeffs, const std::vector<Eigen::Vector2d>& points) const;
+    /// Area integral of the stored reconstruction on one polygon in ambient Cartesian coordinates.
+    Eigen::Vector3d cell_integral(moab::EntityHandle polygon) const;
+    /// Area average of the stored reconstruction on one polygon in ambient Cartesian coordinates.
+    Eigen::Vector3d cell_average(moab::EntityHandle polygon) const;
     /// Compute target edge fluxes for a target polygon contained in one source cell.
     std::vector<double> transfer_to_target_polygon_edges(moab::EntityHandle source_polygon, moab::EntityHandle target_polygon);
     /// Compute edge-wise source-to-target transfer on nonmatching convex meshes.
     EdgeTransferResult transfer_source_to_target_edges(const std::vector<moab::EntityHandle>& source_polygons,
                                                        const std::vector<moab::EntityHandle>& target_polygons);
+    /// Compute direct source-edge to target-cell-average transfer using the harmonic reconstruction.
+    CellAverageTransferResult transfer_source_to_target_cell_averages(
+        const std::vector<moab::EntityHandle>& source_polygons,
+        const std::vector<moab::EntityHandle>& target_polygons,
+        CellAverageReductionMode mode = CellAverageReductionMode::Harmonic);
     /// Assemble the linear sparse operator U_t = P U_s for directed edge DOFs.
     SparseEdgeProjection assemble_edge_projection_operator(const std::vector<moab::EntityHandle>& source_polygons,
                                                            const std::vector<moab::EntityHandle>& target_polygons);

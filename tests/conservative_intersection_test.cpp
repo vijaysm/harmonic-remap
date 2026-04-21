@@ -151,6 +151,10 @@ int main()
         ok = mimetic::test::near(static_cast<double>(edge_transfer.target_edges.size()), 36.0, mimetic::kTolerance,
                                  "directed target edge DOFs") &&
              ok;
+        std::vector<double> coverage(edge_transfer.target_edges.size(), 0.0);
+        for (const mimetic::EdgeTransferContribution& contrib : edge_transfer.contributions) {
+            coverage[contrib.target_dof_index] += (contrib.segment_b - contrib.segment_a).norm();
+        }
 
         std::size_t target_dof = 0;
         for (const Rect& target_rect : target_cells) {
@@ -173,6 +177,9 @@ int main()
                                     "Failed to read target flux tag");
                 ok = mimetic::test::near(tagged_flux, exact_flux, mimetic::kConservationTolerance,
                                          "target flux tag " + std::to_string(target_dof)) &&
+                     ok;
+                ok = mimetic::test::near(coverage[target_dof], edge.length, mimetic::kConservationTolerance,
+                                         "target edge coverage " + std::to_string(target_dof)) &&
                      ok;
                 ++target_dof;
             }

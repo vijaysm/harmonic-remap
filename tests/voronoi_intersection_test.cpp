@@ -307,6 +307,10 @@ int main()
                                  static_cast<double>(directed_edge_count(target_cells)), mimetic::kTolerance,
                                  "directed target Voronoi edge DOFs") &&
              ok;
+        std::vector<double> coverage(edge_transfer.target_edges.size(), 0.0);
+        for (const mimetic::EdgeTransferContribution& contrib : edge_transfer.contributions) {
+            coverage[contrib.target_dof_index] += (contrib.segment_b - contrib.segment_a).norm();
+        }
 
         std::size_t target_dof = 0;
         for (const VoronoiCell& target : target_cells) {
@@ -322,6 +326,9 @@ int main()
                 ok = mimetic::test::near(edge_transfer.target_fluxes[target_dof], exact_flux,
                                          mimetic::kConservationTolerance,
                                          "Voronoi target directed edge " + std::to_string(target_dof)) &&
+                     ok;
+                ok = mimetic::test::near(coverage[target_dof], edge.length, mimetic::kConservationTolerance,
+                                         "Voronoi target edge coverage " + std::to_string(target_dof)) &&
                      ok;
                 ++target_dof;
             }
