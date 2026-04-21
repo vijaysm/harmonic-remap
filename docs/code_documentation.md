@@ -28,8 +28,8 @@ dominating the manuscript.
 | Gnomonic map and inverse | `project_gnomonic(...)`, `inverse_gnomonic(...)` | Implements the chart map used for spherical clipping. |
 | Piola lift and pullback | `lift_contravariant_piola(...)`, `pullback_contravariant_piola(...)` | Preserves normal fluxes between chart and surface curves. |
 | Harmonic basis | `eval_harmonic_basis(...)` and gradient helpers in `src/mimetic.cpp` | Evaluates \(P_k,Q_k\) and gradients used in the local reconstruction. |
-| Source-cell reconstruction | `MimeticInterpolator::reconstruct_source_polygon(...)` | Builds local moment matrices, KKT constraints, and reconstruction coefficients from directed edge fluxes. |
-| Source reconstruction matrix | `source_reconstruction_matrix(...)` in `src/mimetic.cpp` | Builds the local linear map from source edge fluxes to reconstruction coefficients for sparse projection assembly. |
+| Source-cell reconstruction | `MimeticInterpolator::reconstruct_source_polygon(...)` | Builds local moment matrices, KKT constraints, and reconstruction coefficients from directed edge fluxes; in spherical mode the Gram matrix uses the Hodge/Piola tensor \(J^T J / |J|\). |
+| Source reconstruction matrix | `source_reconstruction_matrix(...)` in `src/mimetic.cpp` | Builds the local linear map from source edge fluxes to reconstruction coefficients for sparse projection assembly, using the same option-controlled spherical metric as the direct reconstruction path. |
 | Direct edge transfer | `MimeticInterpolator::transfer_source_to_target_edges(...)` | Clips each directed target edge against candidate source cells and evaluates the source reconstruction on clipped segments. |
 | Sparse edge projection | `MimeticInterpolator::assemble_edge_projection_operator(...)` | Applies the same clipped-segment functional to local reconstruction matrices and assembles \(U_t = P U_s\). |
 | Matrix output | `write_matrix_market(...)`, `write_edge_map_csv(...)` | Writes the sparse directed edge operator and row/column maps. |
@@ -97,35 +97,26 @@ edge-flux vector reproduces direct transfer to the conservation tolerance.
 - `TARGET_DIV_RECON`: sum of transferred directed edge fluxes around a target
   cell.
 - `TARGET_FLUX_ERROR`: maximum directed edge-flux error on that target cell.
-- `TARGET_FIELD_RECON`: centroid-sampled reconstructed surface vector.
-- `TARGET_FIELD_EXACT`: centroid-sampled manufactured surface vector.
-- `TARGET_FIELD_ERROR_NORM`: norm of the difference between the two sampled
-  vectors.
+- `TARGET_FIELD_DIRECT`: target-cell average obtained directly from overlap
+  reduction of source reconstructions.
+- `TARGET_FIELD_RECON`: target-cell average obtained by reconstructing the
+  transferred target edge fluxes.
+- `TARGET_FIELD_EXACT`: exact manufactured target-cell average.
+- `TARGET_FIELD_ERROR_NORM`: norm of `TARGET_FIELD_RECON - TARGET_FIELD_EXACT`.
+- `TARGET_FIELD_DIRECT_ERROR_NORM`: norm of
+  `TARGET_FIELD_DIRECT - TARGET_FIELD_EXACT`.
 
 The edge-flux norms printed by the test are edge-integral norms, not vector
 field norms.  Therefore a small `edge_flux_l2_rel` does not imply identical
-global bounds for `TARGET_FIELD_RECON` and `TARGET_FIELD_EXACT`.
-
-Current diagnostic caveat: `TARGET_FIELD_RECON` is sampled at the projected
-chart centroid, while `TARGET_FIELD_EXACT` is sampled at the gnomonic frame
-center.  Those should be made the same physical point before interpreting the
-VTK vector fields quantitatively.  A future diagnostic should also write
-`TARGET_FIELD_ERROR` as a 3-vector and `TARGET_FIELD_SAMPLE_POINT`.
+global bounds for `TARGET_FIELD_RECON` and `TARGET_FIELD_EXACT`, even though
+they are now evaluated as the same physical quantity.
 
 ## Current Numerical Caveats
 
-The current implementation passes the conservation and direct-vs-sparse tests,
-but the following issues should be resolved before treating the spherical
-accuracy diagnostics as final:
+The current implementation passes the conservation and direct-vs-sparse tests.
+The main remaining numerical caveat is:
 
-1. The metric-weighted reconstruction currently multiplies some interior
-   integrands by the gnomonic area scale but still divides averages by chart
-   area.  If the intended norm is physical area weighted, the normalization and
-   vector Hodge/Piola metric should be made consistent.
-2. `source_reconstruction_matrix(...)` currently infers metric weighting from
-   geometry, while direct reconstruction uses `GeometryOptions::metric_weighted`.
-   These should share one option-controlled reconstruction operator.
-3. The scalar control test estimates spherical overlap area with a centroid
+1. The scalar control test estimates spherical overlap area with a centroid
    area-scale approximation.  For a strict conservative scalar baseline, the
    overlap area should be integrated over the clipped polygon or computed as a
    spherical polygon area, and global scalar conservation should be asserted.
@@ -142,7 +133,7 @@ Structured spherical convergence sweep:
 
 ```bash
 bash scripts/convergence_study.sh build > /tmp/mimetic_convergence.csv
-python3 scripts/plot_convergence.py /tmp/mimetic_convergence.csv
+conda run -n climate-vis python scripts/plot_convergence.py /tmp/mimetic_convergence.csv docs/figures/spherical_convergence.png
 ```
 
 The convergence script currently invokes the VTK-writing driver path for each

@@ -356,9 +356,33 @@ The inverse map used by the manufactured-field tests is
   \label{eq:piola_pullback}
 \end{equation}
 Equations~\eqref{eq:piola_lift}--\eqref{eq:piola_pullback} preserve normal
-fluxes across corresponding chart and surface curves.  Consequently, the KKT
-flux-matching reconstruction can be assembled in the source gnomonic chart
-without changing the algebraic reconstruction kernel.
+fluxes across corresponding chart and surface curves.  They also imply the
+surface-chart identity
+\begin{equation}
+  \int_{\Gamma_K} \nabla_\Gamma \psi \cdot \mathbf{u}\, dA
+  =
+  \int_{\widehat K} \nabla_{\xi}\widehat\psi \cdot \mathbf{w}\, d\xi,
+  \qquad
+  \widehat\psi = \psi \circ \mathbf{r},
+  \label{eq:piola_moment_identity}
+\end{equation}
+so the flux moments and the divergence relation remain chart-based.  The
+surface \(L^2\) inner product of two lifted chart fields
+\(\mathbf{u}_i = J\mathbf{w}_i/|J|\) and \(\mathbf{u}_j = J\mathbf{w}_j/|J|\)
+is, however,
+\begin{equation}
+  \int_{\Gamma_K} \mathbf{u}_i \cdot \mathbf{u}_j\, dA
+  =
+  \int_{\widehat K} \mathbf{w}_i^T
+  \left(\frac{J^T J}{|J|}\right)
+  \mathbf{w}_j\, d\xi.
+  \label{eq:piola_hodge}
+\end{equation}
+Consequently, the spherical reconstruction keeps the right-hand side moments
+from Eq.~\eqref{eq:rhs} in chart measure, but replaces the planar Gram matrix
+with the Hodge/Piola-consistent tensor \(J^T J / |J|\).  A scalar area-scale
+factor alone is not sufficient for this vector inner product because the metric
+couples chart components through \(J^T J\).
 
 The spherical direct transfer and sparse projection use the identical clipped
 segment functional.  A target edge that lies exactly on a source edge can be
@@ -530,7 +554,9 @@ The practical conclusion is therefore:
         great-circle vertices into that chart.
   \item Read the directed source edge flux vector \(U_f\).
   \item Compute \(d\) from Eq.~\eqref{eq:divergence}.
-  \item Assemble \(V\) using Eq.~\eqref{eq:gram}.
+  \item Assemble \(V\) using Eq.~\eqref{eq:gram}; in spherical mode, replace
+        \(\nabla H_i\cdot\nabla H_j\) with the Hodge-weighted form from
+        Eq.~\eqref{eq:piola_hodge}.
   \item Assemble \(r\) using Eq.~\eqref{eq:rhs}.
   \item Solve the constrained local system and retain the coefficients
         \((d,a_1,b_1,a_2,b_2)\).
@@ -774,8 +800,9 @@ Voronoi-to-Voronoi configurations.
 \begin{figure}[htbp]
     \centering
     \includegraphics[width=\textwidth]{vis_quad_quad_A__harmonic_exact.png}
-    \caption{Quad-to-quad transfer.  Panels show the source divergence, target
-    reconstructed divergence, and target-cell divergence error.}
+    \caption{Quad-to-quad transfer for a manufactured harmonic field.  Panels
+    show the source analytical projection, the exact target-cell projection, the
+    harmonic target projection, and the target-cell error profile.}
     \label{fig:error_quad}
 \end{figure}
 
@@ -783,7 +810,8 @@ Voronoi-to-Voronoi configurations.
     \centering
     \includegraphics[width=\textwidth]{vis_voronoi_quad_C__quad_vardiv.png}
     \caption{Voronoi-to-quad transfer for a variable-divergence manufactured
-    field.}
+    field, with exact target projection and target error profile shown
+    explicitly.}
     \label{fig:error_vq}
 \end{figure}
 
@@ -791,7 +819,9 @@ Voronoi-to-Voronoi configurations.
     \centering
     \includegraphics[width=\textwidth]{vis_voronoi_voronoi_B__sincos_divfree.png}
     \caption{Voronoi-to-Voronoi transfer for a smooth divergence-free
-    manufactured field on independent seed configurations.}
+    manufactured field on independent seed configurations.  The error panel
+    confirms that the visual discrepancy tracks the same small residuals
+    reported by the edge-based norms.}
     \label{fig:error_vv}
 \end{figure}
 
@@ -813,24 +843,37 @@ surface field
 The no-argument regression test runs four cases: \(4\to4\) identity,
 \(4\to6\) refinement, \(6\to4\) coarsening, and \(6\to8\) refinement.  The
 largest global conservation residual among these cases is
-\(1.01\times10^{-14}\), the largest direct-vs-sparse residual is
+\(4.36\times10^{-15}\), the largest direct-vs-sparse residual is
 \(2.78\times10^{-16}\), and the largest target-cell KKT edge re-integration
-residual is \(2.22\times10^{-16}\).  The identity case transfers all directed
-edge DOFs with maximum error \(3.33\times10^{-16}\).  After switching the
-cell-centered \(L^1\) diagnostic to physical spherical area and adding metric
-weights to the reconstruction Gram matrix and moment integrals, the relative
-edge-flux error decreases from \(6.40\times10^{-2}\) on \(4\to6\) to
-\(3.02\times10^{-2}\) on \(6\to8\), while preserving the same machine-precision
+residual is \(2.24\times10^{-16}\).  The identity case transfers all directed
+edge DOFs with maximum error \(2.78\times10^{-16}\).  With the full
+Hodge/Piola-consistent spherical Gram matrix, the relative edge-flux error is
+\(6.51\times10^{-2}\) on \(4\to6\), \(3.37\times10^{-2}\) on \(6\to4\), and
+\(3.05\times10^{-2}\) on \(6\to8\), while preserving the same machine-precision
 conservation checks.
 
 To quantify refinement beyond the default acceptance cases, an additional sweep
 was run on \((3\to5), (4\to6), (6\to8), (8\to10), (12\to14), (16\to18)\)
 structured cubed-sphere transfers.  The measured relative edge-flux errors were
-\(1.02\times10^{-1}\), \(6.40\times10^{-2}\), \(3.02\times10^{-2}\),
-\(1.75\times10^{-2}\), \(7.96\times10^{-3}\), and \(4.52\times10^{-3}\),
-with observed convergence rates approaching two.  Thus the spherical extension
-is not merely conservative; on these smooth cubed-sphere tests it is also
-strongly convergent under refinement.
+\(1.03\times10^{-1}\), \(6.51\times10^{-2}\), \(3.05\times10^{-2}\),
+\(1.76\times10^{-2}\), \(7.98\times10^{-3}\), and \(4.53\times10^{-3}\), with
+observed edge-error convergence rates \(1.61\), \(1.87\), \(1.91\), \(1.95\),
+and \(1.97\) between successive levels.  The direct target cell-average
+\(L^1\) error drops from \(1.00\) on \(3\to5\) to \(4.74\times10^{-2}\) on
+\(16\to18\), while the reconstructed target cell-average \(L^1\) error drops
+from \(1.40\) to \(8.87\times10^{-2}\).  Thus the spherical extension is not
+merely conservative; on these smooth cubed-sphere tests it remains strongly
+convergent under refinement.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\textwidth]{spherical_convergence.png}
+  \caption{Structured cubed-sphere convergence for the Hodge/Piola-consistent
+  spherical reconstruction.  Left: directed target-edge error norms.  Right:
+  direct and reconstructed target cell-average errors from the same transferred
+  edge data.}
+  \label{fig:spherical-convergence}
+\end{figure}
 
 The spherical unstructured test builds deterministic n-sided Voronoi patches in
 a common gnomonic chart and maps their edges to great-circle arcs on the unit
@@ -839,11 +882,11 @@ structured-patch-to-Voronoi transfers.  The coarse Voronoi-to-Voronoi case has
 36 source cells and 45 target cells, with 30 source n-gons and 38 target
 n-gons.  The fine case has 100 source cells and 120 target cells, with 86
 source n-gons and 98 target n-gons.  The maximum global conservation residual
-over all unstructured spherical cases is \(2.66\times10^{-15}\), the maximum
-direct-vs-sparse residual is \(3.05\times10^{-13}\), and the maximum
-target-cell KKT re-integration residual is \(2.71\times10^{-16}\).  The
+over all unstructured spherical cases is \(4.44\times10^{-15}\), the maximum
+direct-vs-sparse residual is \(4.68\times10^{-15}\), and the maximum
+target-cell KKT re-integration residual is \(1.80\times10^{-16}\).  The
 Voronoi-to-Voronoi relative edge-flux error decreases from \(1.11\times10^{-2}\)
-to \(5.07\times10^{-3}\).
+to \(5.08\times10^{-3}\).
 
 
 
@@ -871,11 +914,11 @@ to \(5.07\times10^{-3}\).
   \(4\to4\), \(4\to6\), \(6\to4\), and \(6\to8\) great-circle quad meshes &
   Global conservation, target KKT re-integration, direct-vs-sparse equality,
   and identity transfer &
-  \(1.01\times10^{-14}\) global, \(2.78\times10^{-16}\) sparse \\
+  \(4.36\times10^{-15}\) global, \(2.78\times10^{-16}\) sparse \\
   Spherical Voronoi patch &
   Deterministic n-sided source and target great-circle polygons &
   Global conservation, direct-vs-sparse equality, and edge-error convergence &
-  \(2.66\times10^{-15}\) global, \(3.05\times10^{-13}\) sparse \\
+  \(4.44\times10^{-15}\) global, \(4.68\times10^{-15}\) sparse \\
   \bottomrule
   \end{tabular}
   \caption{Verification summary from the deterministic regression studies.
@@ -912,18 +955,16 @@ strongest current spherical result because it verifies conservation and sparse
 operator equivalence on n-sided great-circle polygons rather than on only
 quad-like cells.
 
-The additional convergence sweep changed the interpretation of the spherical
-backend in an important way.  The initial interpretation focused on
-the comparatively large coarse-mesh errors and suggested that the Euclidean
-harmonic basis on a gnomonic chart might be fundamentally mismatched to the
-surface geometry.  The extended refinement data show that this concern was too
-strong: the method already converges at an observed rate close to second order
-on the smooth cubed-sphere regression sequence.  Metric weighting of the cell
-interior reconstruction norm is still beneficial, but only modestly so.  For
-example, the \(3\to5\) relative edge error drops from \(1.04\times10^{-1}\) to
-\(1.02\times10^{-1}\), and the \(4\to6\) error drops from \(6.53\times10^{-2}\)
-to \(6.40\times10^{-2}\).  This indicates that the missing metric weight is a
-secondary effect rather than the dominant source of error.
+The additional convergence sweep clarifies the role of the spherical inner
+product.  The Hodge/Piola correction is methodologically necessary because the
+spherical least-squares norm must be a surface vector norm, not a scalar
+area-weighted chart norm.  Numerically, however, it changes the error constants
+only modestly.  The dominant observation remains the same: once the edge-flux
+constraints, source-chart clipping, and direct-vs-sparse consistency are all
+enforced, the smooth cubed-sphere regression sequence converges at a rate close
+to second order in the directed target-edge norms.  The corrected metric
+therefore strengthens the formulation without changing the basic convergence
+interpretation.
 
 A scalar control experiment was also added.  It performs a first-order
 conservative remap of cell averages for the same zonal spherical harmonic using
