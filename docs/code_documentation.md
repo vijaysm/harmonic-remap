@@ -12,10 +12,10 @@ dominating the manuscript.
 | Area | Files | Role |
 | --- | --- | --- |
 | Public API and data types | `include/mimetic/mimetic.hpp` | Geometry options, local polygon data, reconstruction coefficients, sparse projection types, global target-edge conforming projection types, and `MimeticInterpolator` interface. |
-| Numerical kernels | `src/mimetic.cpp` | Local geometry construction, harmonic basis evaluation, KKT reconstruction, high-order moment reconstruction, clipped edge transfer, sparse operator assembly, global target-edge constrained projection, and MatrixMarket output. |
+| Numerical kernels | `src/mimetic.cpp` | Local geometry construction, harmonic basis evaluation, low-order KKT reconstruction, unified split-basis high-order reconstruction, clipped edge transfer, sparse operator assembly, global target-edge constrained projection, and MatrixMarket output. |
 | Shared spherical test utilities | `tests/spherical_transfer_test_utils.hpp` | Cubed-sphere generators, manufactured spherical fields, edge quadrature, conservative edge-flux assignment, and diagnostic helpers. |
 | Planar validation | `tests/patch_test.cpp`, `tests/conservative_intersection_test.cpp`, `tests/voronoi_intersection_test.cpp`, `tests/convergence_validation_test.cpp`, `tests/hdiv_conforming_projection_test.cpp`, `tests/high_order_edge_moment_test.cpp`, `tests/high_order_hdiv_convergence_test.cpp` | Constant patch, rectangular overlap, Voronoi n-gon, planar convergence, global target-edge conforming-projection checks, exact higher-order patch tests, and `p=1,2,3` high-order convergence studies. |
-| Spherical validation | `tests/spherical_geometry_test.cpp`, `tests/spherical_quad_test.cpp`, `tests/spherical_voronoi_test.cpp`, `tests/spherical_scalar_test.cpp` | Spherical geometry primitives, structured cubed-sphere transfer, unstructured Voronoi transfer, and scalar control. |
+| Spherical validation | `tests/spherical_geometry_test.cpp`, `tests/spherical_quad_test.cpp`, `tests/spherical_voronoi_test.cpp`, `tests/spherical_scalar_test.cpp`, `tests/spherical_high_order_moment_test.cpp` | Spherical geometry primitives, structured cubed-sphere transfer, unstructured Voronoi transfer, scalar control, and unified higher-order edge-moment regression in gnomonic charts. |
 | Study scripts | `scripts/convergence_study.sh`, `scripts/plot_convergence.py`, `scripts/run_high_order_hdiv_convergence.sh`, `scripts/plot_high_order_hdiv_convergence.py` | Structured spherical convergence sweep and rate reporting, plus the planar high-order `H(div)`-style study and its figure generation. |
 
 ## Manuscript-to-Code Map
@@ -33,7 +33,7 @@ dominating the manuscript.
 | Direct edge transfer | `MimeticInterpolator::transfer_source_to_target_edges(...)` | Clips each directed target edge against candidate source cells and evaluates the source reconstruction on clipped segments. |
 | Sparse edge projection | `MimeticInterpolator::assemble_edge_projection_operator(...)` | Applies the same clipped-segment functional to local reconstruction matrices and assembles \(U_t = P U_s\). |
 | Global target-edge conforming projection | `ConformingEdgeTransferResult`, `project_target_fluxes_to_hdiv_conforming(...)` | Collapses directed target edges to unique geometric edges, assembles exact target-cell divergence constraints, and solves the constrained least-squares correction described in manuscript Algorithm 6. |
-| Higher-order planar moment reconstruction | `MomentMethodOptions`, `MomentReconstruction`, `PlanarMomentInterpolator` | Reconstructs a local vector polynomial from edge-normal Legendre moments and optional cell vector moments, then transfers target edge moments with the same clipping machinery used by the low-order remap. |
+| Unified higher-order moment reconstruction | `MomentMethodOptions`, `MomentReconstruction`, `PlanarMomentInterpolator` | Reconstructs a local field from polynomial-divergence, harmonic-gradient, and divergence-free completion modes, then transfers target edge moments with the same clipping machinery used by the low-order remap. |
 | Matrix output | `write_matrix_market(...)`, `write_edge_map_csv(...)` | Writes the sparse directed edge operator and row/column maps. |
 
 ## Directed Edge Convention
@@ -83,25 +83,26 @@ directed target edge to avoid double counting.
 
 ## Higher-Order Planar Moment Path
 
-The new higher-order kernel is intentionally separate from
-`MimeticInterpolator`.
+The higher-order kernel is intentionally separate from
+`MimeticInterpolator`, but it now uses one hierarchy for `p=1,2,3`.
 
 1. `PlanarMomentInterpolator::set_source_edge_moments(...)` stores one vector of
    Legendre edge moments per directed source-cell edge.
 2. `set_source_cell_vector_moments(...)` stores optional interior vector
    moments.
-3. `reconstruct_source_polygon(...)` builds a local vector-polynomial basis of
-   degree `p = edge_moment_order`, assembles edge and cell moment constraints,
-   and solves for the polynomial coefficients.
+3. `reconstruct_source_polygon(...)` builds a local split basis consisting of
+   polynomial-divergence modes, harmonic-gradient modes, and divergence-free
+   completion modes, assembles edge and cell moment constraints, and solves for
+   the local coefficients.
 4. `transfer_source_to_target_edge_moments(...)` clips every directed target
    edge against all source cells and accumulates the corresponding target edge
    moments.
 
-The implementation is currently a planar `H(div)`-style research kernel rather
-than a full polygonal VEM or generalized Whitney space.  It is exact for the
-current `p=2` manufactured polynomial regression because the source field lies
-in the reconstructed polynomial space and the source moments are integrated
-exactly.
+The implementation is currently a polygonal `H(div)`-style research kernel
+rather than a full polygonal VEM or generalized Whitney space.  It is exact for
+the current `p=1` affine and `p=2` manufactured polynomial regressions because
+those source fields lie in the reconstructed local space and the source moments
+are integrated exactly.
 
 Two details matter:
 
@@ -111,21 +112,21 @@ Two details matter:
 - For fully or over-determined local systems the code solves the constraint
   matrix directly with QR.  The KKT minimum-energy solve is only used when the
   local system is under-determined.
-- In projected mode (`MomentMethodOptions::exact_constraints = false`), the
-  zeroth edge moment on every source edge is kept as a hard conservation
-  constraint, while higher edge moments and optional cell moments are treated as
-  weighted soft rows in a constrained least-squares solve.
-- The local vector-polynomial basis is evaluated in centroid-relative
-  coordinates scaled by `local_length_scale(poly)`.  This keeps `p=2` and
-  `p=3` conditioning under control on refined quads and irregular Voronoi
-  polygons.
+- In constrained least-squares mode
+  (`MomentMethodOptions::exact_constraints = false`), the zeroth edge moment on
+  every source edge is kept as a hard conservation constraint, while higher
+  edge moments and optional cell moments are treated as weighted soft rows in a
+  constrained least-squares solve.
+- The local basis is evaluated in centroid-relative coordinates scaled by
+  `local_length_scale(poly)`.  This keeps `p=1,2,3` conditioning under control
+  on refined quads and irregular Voronoi polygons.
 
-The convergence driver `tests/high_order_hdiv_convergence_test.cpp` uses this
-path in a deliberately split way:
-
-- `p=1` uses the validated low-order harmonic `MimeticInterpolator` baseline,
-- `p=2` and `p=3` use the projected `PlanarMomentInterpolator` path,
-- all cases still enforce exact moment-0 edge conservation.
+The convergence driver `tests/high_order_hdiv_convergence_test.cpp` now uses
+the same split hierarchy for `p=1,2,3`.  The moment-0 edge flux remains an
+exact hard constraint at every order.  On the current deterministic
+Voronoi-to-Voronoi sequence, `p=2` and `p=3` show clear formal order
+separation, while `p=1` improves on the first refinement and remains bounded
+but is still pre-asymptotic on the finest unstructured level.
 
 ## Sparse Projection Path
 

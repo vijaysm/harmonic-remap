@@ -40,16 +40,19 @@ the harmonic mimetic reconstruction because its divergence and edge-normal trace
 are generically nonconstant on \(n\)-gons.  Generalized barycentric and virtual
 element H(div) constructions remain plausible future research directions, but
 they require a different vector-valued space and validation program rather than
-a basis swap.  The study also introduces a higher-order planar polygonal
-\(H(\mathrm{div})\)-style projected moment family with user-controlled edge
-moment order, exact hard enforcement of the zeroth edge flux moment, and
-weighted higher-moment fitting.  Numerical evidence from deterministic planar
-and spherical structured and unstructured tests verifies conservation, direct
-edge transfer, and sparse projection equivalence to a \(5\times 10^{-13}\)
-absolute tolerance.  On refined planar quad and Voronoi patch families, the
+a basis swap.  The study also introduces a unified higher-order polygonal
+\(H(\mathrm{div})\)-style split-moment family with user-controlled edge moment
+order, a local decomposition into polynomial-divergence, harmonic-gradient, and
+divergence-free completion modes, exact hard enforcement of the zeroth edge
+flux moment, and weighted higher-moment fitting.  Numerical evidence from
+deterministic planar and spherical structured and unstructured tests verifies
+conservation, direct edge transfer, and sparse projection equivalence to a
+\(5\times 10^{-13}\) absolute tolerance.  On refined planar quad patches, the
 high-order extension shows average edge-flux convergence rates of approximately
-\(2.26/3.39/4.46\) on quad-to-quad meshes and \(1.90/2.77/3.34\) on
-Voronoi-to-Voronoi meshes for \(p=1,2,3\).
+\(2.26/3.39/4.46\) for \(p=1,2,3\); on refined planar Voronoi patches, the same
+family shows clear order separation for \(p=2,3\) with average rates
+\(3.60/4.70\), while the \(p=1\) line remains bounded but pre-asymptotic on the
+current unstructured sequence.
 \end{abstract}
 
 \section{Introduction}
@@ -89,8 +92,8 @@ The contributions of this study are:
         edge clipping, and a contravariant Piola flux map;
   \item a sparse directed edge projection operator that reproduces direct
         source-to-target transfer;
-  \item a higher-order planar polygonal \(H(\mathrm{div})\)-style projected
-        moment family with exact hard conservation of the zeroth edge moment and
+  \item a unified higher-order polygonal \(H(\mathrm{div})\)-style split-moment
+        family with exact hard conservation of the zeroth edge moment and
         refinement studies for \(p=1,2,3\);
   \item verification on rectangular, planar Voronoi, cubed-sphere, and
         spherical Voronoi nonmatching patches; and
@@ -591,12 +594,11 @@ globally conforming target-edge flux field in the discrete lowest-order
 \(H(\mathrm{div})\) sense: every geometric target edge carries a single flux,
 and every target cell satisfies its divergence constraint exactly.
 
-\subsection{Higher-Order Polygonal \(H(\mathrm{div})\)-Style Projected Moments}
+\subsection{Higher-Order Polygonal \(H(\mathrm{div})\)-Style Split Moments}
 
-The lowest-order harmonic reconstruction uses one integrated normal flux per
-directed source edge.  To study higher-order convergence on planar polygonal
-patches, the implementation adds a separate local projected moment family.  The
-input data on one source edge \(e\) are Legendre moments of the normal trace,
+To study higher-order convergence on planar and spherical polygonal patches,
+the implementation adds a unified local split-moment family.  The input data on
+one source edge \(e\) are Legendre moments of the normal trace,
 \begin{equation}
   \mu_{e,m}
   =
@@ -613,28 +615,51 @@ coordinate \(s\in[-1,1]\).  Optional cell vector moments are also admitted,
   \qquad a+b \le r.
   \label{eq:cell-vector-moments}
 \end{equation}
-In the present study the cell moment order is chosen as \(r=p-1\).
+In the present study the cell moment order is chosen as \(r=\max(1,p-1)\) for
+the higher-order regressions.
 
-The reconstructed field is a vector polynomial on the centroid-relative source
-cell chart,
+The reconstructed field is represented on the centroid-relative source chart as
 \begin{equation}
   \uh^{(p)}(\x)
   =
-  \sum_{j=1}^{N_p} \alpha_j \boldsymbol{\psi}_j(\x),
-  \qquad
-  \boldsymbol{\psi}_j \in [\mathbb{P}_p(K)]^2,
-  \label{eq:projected-vector-polynomial}
+  \sum_{i=1}^{N_{\mathrm{div}}} \alpha_i \boldsymbol{\phi}^{\mathrm{div}}_i(\x)
+  +
+  \sum_{j=1}^{N_{\mathrm{harm}}} \beta_j \boldsymbol{\phi}^{\mathrm{harm}}_j(\x)
+  +
+  \sum_{k=1}^{N_{\mathrm{bub}}} \gamma_k \boldsymbol{\phi}^{\mathrm{bub}}_k(\x),
+  \label{eq:split-moment-field}
 \end{equation}
-with \(N_p=(p+1)(p+2)\) basis functions in two space dimensions.  On refined or
-irregular polygons, raw monomials are poorly conditioned, so the implementation
-evaluates the basis in scaled local coordinates
+where
+\begin{itemize}
+  \item \(\boldsymbol{\phi}^{\mathrm{div}}_i\) span a polynomial-divergence
+        particular subspace,
+  \item \(\boldsymbol{\phi}^{\mathrm{harm}}_j\) are gradients of harmonic
+        polynomials, and
+  \item \(\boldsymbol{\phi}^{\mathrm{bub}}_k\) span the remaining
+        divergence-free completion subspace.
+\end{itemize}
+For degree \(p\), the dimensions are
+\[
+  N_{\mathrm{div}}=\frac{p(p+1)}{2},\qquad
+  N_{\mathrm{harm}}=2(p+1),\qquad
+  N_{\mathrm{bub}}=\frac{p(p+1)}{2},
+\]
+so the total dimension
+\(
+N_{\mathrm{div}}+N_{\mathrm{harm}}+N_{\mathrm{bub}}=(p+1)(p+2)
+\)
+matches \([\mathbb{P}_p(K)]^2\).  The split basis is assembled algebraically in
+raw vector-polynomial coordinates, then evaluated in scaled local coordinates
 \begin{equation}
   \tilde{\x} = \frac{\x}{h_K},
   \qquad
   h_K = \max\left(\sqrt{|K|}, \max_i \|\x_i\|\right),
   \label{eq:scaled-local-coordinates}
 \end{equation}
-where \(\x_i\) are the centroid-relative polygon vertices.
+where \(\x_i\) are the centroid-relative polygon vertices.  In spherical mode,
+the same split basis is assembled in each source-cell gnomonic chart, and the
+edge moments use the intrinsic great-circle arc coordinate on the physical
+edge.
 
 For smooth manufactured fields on nonmatching patches, the higher-order moments
 are generally not represented exactly by one finite-dimensional local polynomial
@@ -647,7 +672,8 @@ into:
         moments \(\mu_{e,m}\) for \(m\ge 1\) and the optional cell vector
         moments.
 \end{enumerate}
-The local coefficients are then defined by the constrained projected problem
+The local coefficients are then defined by the constrained split-moment
+least-squares problem
 \begin{equation}
   \min_{\alpha}
   \frac{1}{2}\|W(A_+\alpha - m_+)\|_2^2
@@ -668,11 +694,11 @@ This split is the key to the current high-order behavior.  Exact hard
 enforcement of \(m_0\) preserves the cellwise conservative flux balance used by
 the low-order method, while the soft rows drive asymptotic accuracy for smooth
 fields through higher edge and cell moments.  The method is therefore best
-described as a \emph{polygonal \(H(\mathrm{div})\)-style projected moment
+described as a \emph{polygonal \(H(\mathrm{div})\)-style split-moment
 family}: the reconstructed vector polynomials lie in \([\mathbb{P}_p]^2\subset
-H(\mathrm{div})\) locally and preserve the primary edge-flux functional
-exactly, but the implementation is not yet a full compatible polygonal finite
-element space such as mixed VEM or generalized Whitney forms.
+H(\mathrm{div})\) locally, the primary edge-flux functional is preserved
+exactly, and the divergence-controlled and divergence-free parts of the local
+space are explicitly separated.
 
 \section{Why Wachspress Coordinates Are Not a Drop-In Replacement}
 
@@ -952,16 +978,18 @@ cost is \(O(N_t^3)\) and the storage cost is \(O(N_t^2)\).  This is acceptable
 for the present verification problems but should be replaced by a sparse graph
 solver for large target meshes.
 
-\paragraph{High-order projected moment family.}
+\paragraph{High-order split-moment family.}
 For one polygon, let \(p\) be the edge moment order and let
-\(B_p=(p+1)(p+2)\) be the number of vector-polynomial basis functions in
+\(B_p=(p+1)(p+2)\) be the total number of split-basis functions in
 \([\mathbb{P}_p]^2\).  Let \(n_K\) be the number of polygon edges and
-\(M_p=n_K(p+1)\) the number of edge moments.  With cell moment order \(r=p-1\),
-the number of vector cell moments is \((r+1)(r+2)\).  Local assembly therefore
-has three dominant pieces: formation of the dense mass matrix \(G\) with cost
-\(O(B_p^2 n_q n_K)\), formation of the edge and cell moment matrices with cost
+\(M_p=n_K(p+1)\) the number of edge moments.  With cell moment order
+\(r=\max(1,p-1)\), the number of vector cell moments is \((r+1)(r+2)\).  Local
+assembly therefore has four dominant pieces: formation of the raw dense mass
+matrix \(G\) with cost \(O(B_p^2 n_q n_K)\), assembly of the split-basis map
+from polynomial-divergence, harmonic-gradient, and divergence-free completion
+modes, formation of the edge and cell moment matrices with cost
 \(O(B_p(M_p + (r+1)(r+2)) n_q)\), and a dense KKT or QR solve with cost
-\(O(B_p^3)\).  For the present study, \(p\in\{2,3\}\), so these costs remain
+\(O(B_p^3)\).  For the present study, \(p\in\{1,2,3\}\), so these costs remain
 small enough that geometry and clipping still dominate the total runtime.  The
 important practical point is conditioning rather than asymptotic cost: without
 the scaled coordinates in Eq.~\eqref{eq:scaled-local-coordinates}, the
@@ -1272,7 +1300,7 @@ precision.
   \label{tab:hdiv-projection}
 \end{table}
 
-\subsection{High-Order Projected Edge-Moment Convergence}
+\subsection{High-Order Split-Moment Convergence}
 
 The high-order study uses a smooth variable-divergence manufactured field on
 the unit square,
@@ -1292,37 +1320,37 @@ families were used:
   \item quad-to-quad meshes with \((4\to5)\), \((8\to9)\), and \((16\to17)\)
         source-target resolutions; and
   \item Voronoi-to-Voronoi meshes with
-        \((49\to64)\), \((100\to121)\), and \((196\to225)\) deterministic seed
-        counts.
+        \((49\to64)\), \((81\to100)\), and \((121\to144)\) deterministic
+        jittered-grid seed counts.
 \end{enumerate}
 
-The study intentionally distinguishes the baseline and enriched methods.
-Order \(p=1\) is the validated low-order harmonic mimetic transfer.  Orders
-\(p=2\) and \(p=3\) use the new projected moment family from
-Eq.~\eqref{eq:projected-moment-problem}.  In all cases, the zeroth edge moment
+All three orders \(p=1,2,3\) use the same split hierarchy from
+Eq.~\eqref{eq:split-moment-field} and the same constrained split-moment fit
+from Eq.~\eqref{eq:projected-moment-problem}.  In all cases, the zeroth edge moment
 is imposed exactly, so the global conservation residual remains at roundoff
-throughout the refinement sequence.
+throughout the refinement sequence, and the conforming target-edge projection
+drives the target-cell divergence residual back to machine precision.
 
 Figure~\ref{fig:high-order-hdiv-convergence} shows the resulting relative
 directed target-edge flux error curves.  On quad-to-quad meshes, the observed
 average rates are \(2.26\), \(3.39\), and \(4.46\) for \(p=1,2,3\).  On the
-Voronoi-to-Voronoi sequence, the corresponding average rates are
-\(1.90\), \(2.77\), and \(3.34\).  The Voronoi rates are lower, as expected,
-because cell shape irregularity perturbs the local moment fitting and the
-nonmatching overlay is less structured.  The important point is that the method
-still shows systematic order separation: enriching the edge moments and the
-local projected space produces visibly steeper error decay than the low-order
-harmonic baseline.
+Voronoi-to-Voronoi sequence, the \(p=2\) and \(p=3\) lines show average rates
+\(3.60\) and \(4.70\).  The \(p=1\) Voronoi line improves on the first
+refinement and remains bounded, but it is still pre-asymptotic on the current
+three-level unstructured sequence.  The important point is that the unified
+family still shows systematic order separation: enriching the edge moments and
+the split local space produces visibly steeper error decay on both structured
+and unstructured polygon patches.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\textwidth]{high_order_hdiv_convergence.png}
-  \caption{Planar high-order projected edge-moment convergence.  Left:
+  \caption{Planar high-order split-moment edge convergence.  Left:
   quad-to-quad nonmatching refinements.  Right: Voronoi-to-Voronoi nonmatching
-  refinements.  The \(p=1\) line is the low-order harmonic mimetic baseline;
-  the \(p=2\) and \(p=3\) lines are the projected polygonal
-  \(H(\mathrm{div})\)-style moment family with exact hard zeroth edge-moment
-  conservation.}
+  refinements.  All three lines use the same split-moment polygonal
+  \(H(\mathrm{div})\)-style family with exact hard zeroth edge-moment
+  conservation.  The unstructured \(p=1\) line is bounded but still
+  pre-asymptotic on this three-level sequence.}
   \label{fig:high-order-hdiv-convergence}
 \end{figure}
 
@@ -1336,15 +1364,17 @@ harmonic baseline.
   Quad-to-quad & \(p=1\) & \(3.42\times10^{-3}\) & \(2.26\) & \(1.11\times10^{-15}\) \\
   Quad-to-quad & \(p=2\) & \(4.30\times10^{-5}\) & \(3.39\) & \(2.00\times10^{-15}\) \\
   Quad-to-quad & \(p=3\) & \(4.87\times10^{-7}\) & \(4.46\) & \(6.66\times10^{-16}\) \\
-  Voronoi-to-Voronoi & \(p=1\) & \(8.90\times10^{-3}\) & \(1.90\) & \(1.78\times10^{-15}\) \\
-  Voronoi-to-Voronoi & \(p=2\) & \(2.13\times10^{-4}\) & \(2.77\) & \(1.11\times10^{-15}\) \\
-  Voronoi-to-Voronoi & \(p=3\) & \(1.02\times10^{-5}\) & \(3.34\) & \(3.77\times10^{-15}\) \\
+  Voronoi-to-Voronoi & \(p=1\) & \(2.59\times10^{-2}\) & pre-asymptotic & \(2.66\times10^{-15}\) \\
+  Voronoi-to-Voronoi & \(p=2\) & \(1.42\times10^{-4}\) & \(3.60\) & \(6.66\times10^{-16}\) \\
+  Voronoi-to-Voronoi & \(p=3\) & \(3.45\times10^{-6}\) & \(4.70\) & \(1.55\times10^{-15}\) \\
   \bottomrule
   \end{tabular}
-  \caption{Planar high-order projected edge-moment convergence summary for the
+  \caption{Planar high-order split-moment edge convergence summary for the
   smooth variable-divergence field in Eq.~\eqref{eq:high-order-test-field}.
-  Conservation remains at roundoff because the zeroth edge moment is enforced as
-  a hard constraint at every order.}
+  Conservation remains at roundoff because the zeroth edge moment is enforced
+  as a hard constraint at every order.  The \(p=1\) unstructured line is still
+  pre-asymptotic on this sequence, while the \(p=2\) and \(p=3\) lines exhibit
+  the expected high-order separation.}
   \label{tab:high-order-hdiv}
 \end{table}
 
@@ -1397,6 +1427,16 @@ from \(1.40\) to \(8.87\times10^{-2}\).  Thus the spherical extension is not
 merely conservative; on these smooth cubed-sphere tests it remains strongly
 convergent under refinement.
 
+The same cubed-sphere source-chart machinery was then exercised with the new
+split-moment family.  On the \((4\to6)\) and \((6\to8)\) cases, the relative
+zeroth-moment edge errors were \(6.03\times10^{-2}\to2.77\times10^{-2}\) for
+\(p=1\), \(8.89\times10^{-3}\to2.97\times10^{-3}\) for \(p=2\), and
+\(1.25\times10^{-3}\to5.26\times10^{-4}\) for \(p=3\).  In every case, the
+globally conforming target-edge projection reduced the target-cell divergence
+residual to \(O(10^{-16})\).  This verifies that the higher-order split basis,
+the intrinsic great-circle edge moments, and the gnomonic/Piola transfer all
+remain compatible on the sphere.
+
 \begin{figure}[t]
   \centering
   \includegraphics[width=\textwidth]{spherical_convergence.png}
@@ -1447,11 +1487,17 @@ to \(5.08\times10^{-3}\).
   Exact target-cell divergence constraints and refinement convergence of the raw
   transfer toward the conforming field &
   \(4.02\times10^{-17}\) corrected, \(6.72\times10^{-2}\to1.27\times10^{-2}\) correction \\
-  High-order planar projected moments &
+  High-order planar split moments &
   Quad-to-quad and Voronoi-to-Voronoi nonmatching refinements for \(p=1,2,3\) &
   Exact zeroth edge-moment conservation and order-separated edge-flux
-  convergence &
-  \(1.11\times10^{-15}\) to \(3.77\times10^{-15}\) conservation, up to \(4.46\) rate \\
+  convergence for the unified \(p=1,2,3\) hierarchy &
+  \(6.66\times10^{-16}\) to \(2.66\times10^{-15}\) conservation, up to \(4.70\) rate \\
+  Spherical high-order split moments &
+  Structured cubed-sphere \((4\to6)\) and \((6\to8)\) great-circle transfers
+  for \(p=1,2,3\) &
+  Intrinsic great-circle edge moments, gnomonic/Piola transfer, and conforming
+  target-cell closure &
+  \(5.26\times10^{-4}\) finest \(p=3\) edge error, \(O(10^{-16})\) conforming divergence \\
   Spherical cubed-sphere &
   \(4\to4\), \(4\to6\), \(6\to4\), and \(6\to8\) great-circle quad meshes &
   Global conservation, target KKT re-integration, direct-vs-sparse equality,
@@ -1508,16 +1554,17 @@ conservative at every order, but it is not sufficient by itself to obtain
 higher-order convergence for smooth variable-divergence fields.  The observed
 order increase in Figure~\ref{fig:high-order-hdiv-convergence} comes from the
 combination of enriched edge moments, optional cell vector moments, and the
-projected constrained solve in Eq.~\eqref{eq:projected-moment-problem}.  The
+constrained split-moment fit in Eq.~\eqref{eq:projected-moment-problem}.  The
 quad rates of \(2.26\), \(3.39\), and \(4.46\) are close to the expected
 \(p+1\)-type trend for a smooth field on a structured refinement sequence.
 The Voronoi rates are lower but still clearly order-separated, which is the
 relevant practical result on irregular polygonal patches.  This is also the
-reason the current report describes the method as a projected polygonal
+reason the current report describes the method as a split-moment polygonal
 \(H(\mathrm{div})\)-style family rather than as a finished compatible polygonal
 finite element space: the conservation mechanism is exact, while the
 higher-moment accuracy mechanism is presently realized through a local
-projection rather than a fully commuting global discretization.
+constrained least-squares fit rather than a fully commuting global
+discretization.
 
 The spherical results show that the same idea extends to curved manifolds when
 the geometry is handled in a source-cell chart and the Piola map is used for
@@ -1564,9 +1611,9 @@ agreement at \(5\times10^{-13}\).
   \item The harmonic mimetic reconstruction used for the planar/spherical base
         method is level-2 only.  This remains the practical stable choice
         emphasized by Perot and Chartrand for polygon meshes
-        \cite{PerotChartrand2021}.  The new higher-order family is currently a
-        planar projected moment extension rather than a direct higher-level
-        harmonic generalization.
+        \cite{PerotChartrand2021}.  The new higher-order family uses a split
+        polynomial-divergence / harmonic-gradient / divergence-free completion
+        hierarchy rather than a direct higher-level harmonic truncation.
   \item Candidate search is deterministic all-pairs.  A production
         source-target transfer should pair the same local kernels with spatial
         search or an advancing-front traversal.
@@ -1583,11 +1630,11 @@ agreement at \(5\times10^{-13}\).
         projection.  It does not yet construct a single globally conforming
         target-cell interior vector field; target-cell reconstruction still
         proceeds cell by cell from the corrected edge data.
-  \item The high-order projected family is currently planar only.  The
-        convergence study uses the low-order harmonic transfer as the \(p=1\)
-        baseline and the projected moment family for \(p=2\) and \(p=3\).
-        This is numerically consistent, but it is not yet a single unified
-        compatible space hierarchy across all orders.
+  \item The unified split-moment family now covers \(p=1,2,3\) in both planar
+        charts and structured spherical gnomonic charts.  The present
+        spherical higher-order verification is still limited to cubed-sphere
+        structured regressions rather than a full spherical convergence suite
+        on unstructured great-circle meshes.
   \item MPI, distributed ownership, ghosting, and parallel I/O are intentionally
         out of scope for this phase.
 \end{itemize}
@@ -1607,13 +1654,16 @@ conservation standard on planar, spherical structured, and spherical
 unstructured cases, while the smooth cubed-sphere regression sequence shows
 near-second-order decay of the relative edge-flux error.
 
-The high-order planar extension adds a second verified result.  By enriching the
-source data with edge moments and fitting a local projected vector-polynomial
-field while keeping the zeroth edge moment exact as a hard constraint, the
+The unified higher-order split-moment family adds a second verified result.  By
+enriching the source data with edge moments and fitting a local field in a
+split polynomial-divergence / harmonic-gradient / divergence-free completion
+space while keeping the zeroth edge moment exact as a hard constraint, the
 method achieves clear order separation on nonmatching polygon patches.  The
 quad-to-quad study yields average relative edge-flux rates of \(2.26\),
-\(3.39\), and \(4.46\) for \(p=1,2,3\), while the Voronoi-to-Voronoi study
-yields \(1.90\), \(2.77\), and \(3.34\).  These results show that higher-order
+\(3.39\), and \(4.46\) for \(p=1,2,3\).  On the current Voronoi-to-Voronoi
+sequence, the \(p=2\) and \(p=3\) lines yield \(3.60\) and \(4.70\), while the
+\(p=1\) line improves on the first refinement and remains bounded but is still
+pre-asymptotic on the finest level.  These results show that higher-order
 accuracy can be added without sacrificing machine-precision conservation of the
 primary edge-flux DOF.
 
@@ -1648,12 +1698,13 @@ show visible closure defects.
 
 Taken together, the current repository now contains three numerically distinct
 but compatible layers: a verified low-order harmonic mimetic remap, a global
-target-edge conforming correction, and a planar high-order projected moment
-extension.  The remaining gap to a full polygonal compatible finite element
+target-edge conforming correction, and a unified higher-order split-moment
+extension that covers \(p=1,2,3\) on planar polygons and structured spherical
+charts.  The remaining gap to a full polygonal compatible finite element
 framework is therefore no longer the absence of conservative high-order
-evidence; it is the absence of a single unified polygonal \(H(\mathrm{div})\)
-space hierarchy that covers all orders, geometries, and manifold settings with
-commuting projections.
+evidence; it is the absence of a single globally conforming cell-interior
+target space and a broader high-order spherical convergence program on
+unstructured great-circle meshes.
 
 \subsection*{Future Research Directions}
 Building on the verified serial planar and spherical framework, the following
@@ -1685,18 +1736,16 @@ logical paths are proposed for future research:
     \item \textbf{Spherical Robustness}: Extend beyond convex cells in one
     gnomonic hemisphere, add projection-singularity handling, and validate
     against larger realistic spherical meshes.
-    \item \textbf{Unified high-order compatible hierarchy}: Replace the current
-    split between the \(p=1\) harmonic baseline and the \(p\ge2\) projected
-    moment family with a single polygonal compatible hierarchy that commutes
-    with divergence across all orders.  This should include a conditioning
-    study on distorted n-gons and comparison with the known sensitivity of
-    Wachspress gradients near large polygon angles
-    \cite{RandGilletteBajaj2013}.
-    \item \textbf{High-order spherical extension}: Lift the projected moment
-    family to the gnomonic-chart spherical backend, preserving the hard zeroth
-    edge-moment conservation under the Piola map and measuring whether the
-    planar \(p=2\) and \(p=3\) rates persist on structured and unstructured
-    great-circle meshes.
+    \item \textbf{High-order unstructured spherical extension}: Extend the
+    present structured cubed-sphere split-moment regressions to unstructured
+    spherical Voronoi-to-Voronoi and mixed Voronoi/cubed-sphere transfers, and
+    measure whether the structured \(p=2\) and \(p=3\) separation persists on
+    great-circle n-gon patches.
+    \item \textbf{Globally conforming target interiors}: Extend the present
+    target-edge conforming projection to a single compatible target-cell
+    interior field so that higher-order moment transfer and global
+    \(H(\mathrm{div})\) conformity are enforced in one space rather than by a
+    skeleton correction followed by cellwise reconstruction.
     \item \textbf{3D Polyhedral Support}: Extend the geometric intersection and
     interpolation logic to fully three-dimensional polyhedra.  This would
     require volumetric H(div) reconstruction, surface clipping, and flux

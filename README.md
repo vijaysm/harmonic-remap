@@ -141,8 +141,8 @@ The low-order `MimeticInterpolator` reconstructs a level-2 harmonic field from
 one integrated normal flux per directed source edge.  That is the validated
 lowest-order conservative transfer path.
 
-For higher-order planar experiments, the repo now includes
-`PlanarMomentInterpolator`.  It reconstructs a local vector polynomial from:
+For higher-order edge transfer, the repo now includes
+`PlanarMomentInterpolator`.  It reconstructs a local field from:
 
 - edge-normal moments
 
@@ -158,41 +158,47 @@ For higher-order planar experiments, the repo now includes
 
 The current implementation uses:
 
-- a vector-polynomial basis of degree `p`,
+- a unified split basis with
+  - polynomial-divergence particular modes,
+  - harmonic-gradient divergence-free modes,
+  - divergence-free completion ("bubble") modes,
 - Legendre moments on each polygon edge,
 - exact clipping-based transfer of target edge moments,
-- a projected constrained solve in which the zeroth edge moment on every source
-  edge is enforced exactly and the higher edge moments and cell moments are fit
-  in weighted least squares,
-- local basis scaling by a cell length scale to stabilize `p=2` and `p=3`
+- a constrained least-squares solve in which the zeroth edge moment on every
+  source edge is enforced exactly and the higher edge moments and cell moments
+  are fit in weighted least squares,
+- local basis scaling by a cell length scale to stabilize `p=1,2,3`
   reconstructions on refined or irregular polygons,
 - QR solves when the local constraint matrix is fully or over-determined,
 - KKT minimum-energy fallback when the local system is under-determined.
 
-This is a planar higher-order `H(div)`-style reconstruction kernel, not yet a
-full polygonal virtual element or generalized Whitney implementation.  Its
-current verified scope is:
+This is a polygonal `H(div)`-style reconstruction kernel assembled in planar
+coordinates or in spherical gnomonic source charts.  It is not yet a full
+polygonal virtual element or generalized Whitney implementation.  Its current
+verified scope is:
 
-- exact recovery of a `p=2` variable-divergence polynomial field,
+- exact recovery of a `p=1` affine field and a `p=2` variable-divergence
+  polynomial field,
 - exact transfer of target edge moments on nonmatching quad and Voronoi meshes,
 - regression coverage in `tests/high_order_edge_moment_test.cpp`,
 - conservative refinement studies for `p=1,2,3` in
-  `tests/high_order_hdiv_convergence_test.cpp`.
+  `tests/high_order_hdiv_convergence_test.cpp`,
+- spherical structured high-order moment regression coverage in
+  `tests/spherical_high_order_moment_test.cpp`.
 
-In the current refinement study:
-
-- `p=1` is the validated low-order harmonic `MimeticInterpolator` baseline,
-- `p=2` and `p=3` use the projected `PlanarMomentInterpolator` path,
-- the moment-0 edge flux is preserved exactly to the repository conservation
-  tolerance, and
-- higher moments are used to drive asymptotic accuracy.
+In the current refinement study, all three orders `p=1,2,3` use the same split
+hierarchy. The moment-0 edge flux is preserved exactly to the repository
+conservation tolerance, while the higher moments and optional cell moments
+control asymptotic accuracy.
 
 The current convergence study reports:
 
 - quad-to-quad average relative edge-flux rates of approximately
   `2.26`, `3.39`, and `4.46` for `p=1,2,3`,
 - Voronoi-to-Voronoi average relative edge-flux rates of approximately
-  `1.90`, `2.77`, and `3.34` for `p=1,2,3`,
+  `3.60` and `4.70` for `p=2,3`, while the `p=1` line is bounded and improves
+  on the first refinement but remains pre-asymptotic on the current unstructured
+  sequence,
 - conservation residuals at roundoff, typically `1e-15` to `1e-16`.
 
 Run it with:
