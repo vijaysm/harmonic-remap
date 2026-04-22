@@ -272,12 +272,16 @@ struct MomentMethodOptions {
     int cell_moment_order = -1;
     int quadrature_points = 8;
     double regularization = 1.0e-12;
+    bool exact_constraints = true;
+    double edge_weight = 1.0;
+    double cell_weight = 1.0;
 };
 
 struct MomentReconstruction {
     MomentMethodOptions options;
     int vector_polynomial_degree = 0;
     int harmonic_degree = -1;
+    double length_scale = 1.0;
     std::vector<double> coefficients;
 };
 
