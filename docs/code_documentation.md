@@ -15,8 +15,8 @@ dominating the manuscript.
 | Numerical kernels | `src/mimetic.cpp` | Local geometry construction, harmonic basis evaluation, low-order KKT reconstruction, unified split-basis high-order reconstruction, clipped edge transfer, sparse operator assembly, global target-edge constrained projection, and MatrixMarket output. |
 | Shared spherical test utilities | `tests/spherical_transfer_test_utils.hpp` | Cubed-sphere generators, manufactured spherical fields, edge quadrature, conservative edge-flux assignment, and diagnostic helpers. |
 | Planar validation | `tests/patch_test.cpp`, `tests/conservative_intersection_test.cpp`, `tests/voronoi_intersection_test.cpp`, `tests/convergence_validation_test.cpp`, `tests/hdiv_conforming_projection_test.cpp`, `tests/high_order_edge_moment_test.cpp`, `tests/high_order_hdiv_convergence_test.cpp` | Constant patch, rectangular overlap, Voronoi n-gon, planar convergence, global target-edge conforming-projection checks, exact higher-order patch tests, and `p=1,2,3` high-order convergence studies. |
-| Spherical validation | `tests/spherical_geometry_test.cpp`, `tests/spherical_quad_test.cpp`, `tests/spherical_voronoi_test.cpp`, `tests/spherical_scalar_test.cpp`, `tests/spherical_high_order_moment_test.cpp` | Spherical geometry primitives, structured cubed-sphere transfer, unstructured Voronoi transfer, scalar control, and unified higher-order edge-moment regression in gnomonic charts. |
-| Study scripts | `scripts/convergence_study.sh`, `scripts/plot_convergence.py`, `scripts/run_high_order_hdiv_convergence.sh`, `scripts/plot_high_order_hdiv_convergence.py` | Structured spherical convergence sweep and rate reporting, plus the planar high-order `H(div)`-style study and its figure generation. |
+| Spherical validation | `tests/spherical_geometry_test.cpp`, `tests/spherical_quad_test.cpp`, `tests/spherical_voronoi_test.cpp`, `tests/spherical_scalar_test.cpp`, `tests/spherical_high_order_moment_test.cpp`, `tests/spherical_high_order_hdiv_convergence_test.cpp` | Spherical geometry primitives, structured cubed-sphere transfer, unstructured Voronoi transfer, exact scalar-overlap control, and unified higher-order structured plus Voronoi-patch convergence studies in gnomonic charts. |
+| Study scripts | `scripts/convergence_study.sh`, `scripts/plot_convergence.py`, `scripts/run_high_order_hdiv_convergence.sh`, `scripts/plot_high_order_hdiv_convergence.py`, `scripts/run_spherical_high_order_hdiv_convergence.sh`, `scripts/plot_spherical_high_order_hdiv_convergence.py` | Structured low-order spherical convergence sweep, planar high-order `H(div)`-style study, and spherical structured plus Voronoi high-order study figure generation. |
 
 ## Manuscript-to-Code Map
 
@@ -121,12 +121,19 @@ Two details matter:
   `local_length_scale(poly)`.  This keeps `p=1,2,3` conditioning under control
   on refined quads and irregular Voronoi polygons.
 
-The convergence driver `tests/high_order_hdiv_convergence_test.cpp` now uses
-the harmonic-compatible lowest-order remap for `p=1` and the split-moment
+The planar convergence driver `tests/high_order_hdiv_convergence_test.cpp`
+uses the harmonic-compatible lowest-order remap for `p=1` and the split-moment
 enrichment for `p=2,3`.  The moment-0 edge flux remains an exact hard
 constraint at every order.  On the current Voronoi-to-Voronoi sequence the
 observed average relative edge-flux rates are approximately `1.90`, `2.77`,
 and `3.34` for `p=1,2,3`.
+
+The spherical convergence driver
+`tests/spherical_high_order_hdiv_convergence_test.cpp` applies the same order
+split on source-cell gnomonic charts and then projects the resulting target
+edge moments onto a globally conforming target skeleton.  It reports both the
+zeroth-moment edge error and the all-moment edge error on structured
+cubed-sphere transfers and deterministic spherical Voronoi patches.
 
 ## Sparse Projection Path
 
@@ -174,6 +181,10 @@ target mesh.
 - `TARGET_FIELD_RECON`: target-cell average obtained by reconstructing the
   transferred target edge fluxes.
 - `TARGET_FIELD_EXACT`: exact manufactured target-cell average.
+- `TARGET_FIELD_ERROR`: vector difference
+  `TARGET_FIELD_RECON - TARGET_FIELD_EXACT`.
+- `TARGET_FIELD_DIRECT_ERROR`: vector difference
+  `TARGET_FIELD_DIRECT - TARGET_FIELD_EXACT`.
 - `TARGET_FIELD_ERROR_NORM`: norm of `TARGET_FIELD_RECON - TARGET_FIELD_EXACT`.
 - `TARGET_FIELD_DIRECT_ERROR_NORM`: norm of
   `TARGET_FIELD_DIRECT - TARGET_FIELD_EXACT`.
@@ -202,12 +213,13 @@ target-cell flux-closure error, not the value of the exact vector solution.
 ## Current Numerical Caveats
 
 The current implementation passes the conservation and direct-vs-sparse tests.
-The main remaining numerical caveat is:
+The main remaining numerical caveats are:
 
-1. The scalar control test estimates spherical overlap area with a centroid
-   area-scale approximation.  For a strict conservative scalar baseline, the
-   overlap area should be integrated over the clipped polygon or computed as a
-   spherical polygon area, and global scalar conservation should be asserted.
+1. The global correction is a conforming target-edge skeleton solve.  It does
+   not yet build one globally conforming target-cell interior field.
+2. The spherical higher-order study currently covers structured cubed-sphere
+   transfers and deterministic Voronoi chart patches.  It does not yet cover
+   larger mixed-topology or production spherical meshes.
 
 ## Build and Validation Commands
 
@@ -227,3 +239,17 @@ conda run -n climate-vis python scripts/plot_convergence.py /tmp/mimetic_converg
 The convergence script currently invokes the VTK-writing driver path for each
 case.  A future CLI flag should allow convergence sweeps without writing VTK
 files.
+
+Planar and spherical high-order studies:
+
+```bash
+./build/high_order_hdiv_convergence_test docs/high_order_hdiv_convergence.csv
+conda run -n climate-vis python scripts/plot_high_order_hdiv_convergence.py \
+  docs/high_order_hdiv_convergence.csv \
+  docs/figures/high_order_hdiv_convergence.png
+
+./build/spherical_high_order_hdiv_convergence_test docs/spherical_high_order_hdiv_convergence.csv
+conda run -n climate-vis python scripts/plot_spherical_high_order_hdiv_convergence.py \
+  docs/spherical_high_order_hdiv_convergence.csv \
+  docs/figures/spherical_high_order_hdiv_convergence.png
+```

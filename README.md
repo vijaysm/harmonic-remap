@@ -184,7 +184,9 @@ verified scope is:
 - conservative refinement studies for `p=1,2,3` in
   `tests/high_order_hdiv_convergence_test.cpp`,
 - spherical structured high-order moment regression coverage in
-  `tests/spherical_high_order_moment_test.cpp`.
+  `tests/spherical_high_order_moment_test.cpp`, and
+- spherical structured plus Voronoi-patch high-order convergence coverage in
+  `tests/spherical_high_order_hdiv_convergence_test.cpp`.
 
 In the current refinement study, the `p=1` line uses the harmonic-compatible
 lowest-order remap, while the `p=2,3` lines use the split-moment enrichment.
@@ -198,6 +200,10 @@ The current convergence study reports:
   `2.26`, `3.39`, and `4.46` for `p=1,2,3`,
 - Voronoi-to-Voronoi average relative edge-flux rates of approximately
   `1.90`, `2.77`, and `3.34` for `p=1,2,3`,
+- cubed-sphere average relative moment-0 edge rates of approximately
+  `2.49`, `3.80`, and `2.42` for `p=1,2,3`,
+- spherical Voronoi-patch average relative moment-0 edge rates of approximately
+  `2.08`, `2.66`, and `3.31` for `p=1,2,3`,
 - conservation residuals at roundoff, typically `1e-15` to `1e-16`.
 
 Run it with:
@@ -209,6 +215,12 @@ ctest --test-dir build -R high_order_hdiv_convergence_test --output-on-failure
 conda run -n climate-vis python scripts/plot_high_order_hdiv_convergence.py \
   docs/high_order_hdiv_convergence.csv \
   docs/figures/high_order_hdiv_convergence.png
+
+ctest --test-dir build -R spherical_high_order_hdiv_convergence_test --output-on-failure
+./build/spherical_high_order_hdiv_convergence_test docs/spherical_high_order_hdiv_convergence.csv
+conda run -n climate-vis python scripts/plot_spherical_high_order_hdiv_convergence.py \
+  docs/spherical_high_order_hdiv_convergence.csv \
+  docs/figures/spherical_high_order_hdiv_convergence.png
 ```
 
 The planar rectangular test exercises this on a nonmatching mesh.  The assembled
@@ -294,9 +306,13 @@ The target VTK file contains cell data:
 
 - `TARGET_DIV_RECON`
 - `TARGET_FLUX_ERROR`
+- `TARGET_FIELD_DIRECT`
 - `TARGET_FIELD_RECON`
 - `TARGET_FIELD_EXACT`
+- `TARGET_FIELD_ERROR`
+- `TARGET_FIELD_DIRECT_ERROR`
 - `TARGET_FIELD_ERROR_NORM`
+- `TARGET_FIELD_DIRECT_ERROR_NORM`
 
 ### Spherical Error Diagnostics
 
@@ -308,8 +324,8 @@ reconstruction quality can be separated.
    - `Linf`: maximum transferred integrated flux error
 
 2. **Cell-centered target vector errors**
-   - `L1`: area-weighted sum of centroid-sampled vector error magnitudes
-   - `Linf`: maximum centroid-sampled vector error magnitude
+   - `L1`: area-weighted sum of target-cell average vector error magnitudes
+   - `Linf`: maximum target-cell average vector error magnitude
 
 These diagnostics are intentionally separate from conservation checks.  The
 spherical tests fail if global conservation, direct-vs-sparse agreement, or KKT
@@ -352,6 +368,11 @@ Current tests:
 - `spherical_voronoi_test`: checks deterministic n-sided spherical Voronoi patch
   transfers, Voronoi-to-structured patch transfer, structured-to-Voronoi patch
   transfer, sparse projection agreement, and edge-error convergence.
+- `spherical_scalar_test`: checks exact spherical overlap coverage and global
+  scalar conservation for the geometry-only control remap.
+- `spherical_high_order_hdiv_convergence_test`: checks `p=1,2,3` higher-order
+  structured cubed-sphere and spherical Voronoi-patch convergence with
+  conforming target-edge closure.
 
 Representative spherical CTest output:
 
@@ -367,6 +388,11 @@ spherical_voronoi_test:
   max direct-sparse delta    3.05e-13
   coarse Voronoi L2_rel      1.11e-02
   fine Voronoi L2_rel        5.07e-03
+
+spherical_high_order_hdiv_convergence_test:
+  cubed-sphere avg rates     2.49 / 3.80 / 2.42
+  Voronoi avg rates          2.08 / 2.66 / 3.31
+  max conforming residual    2.22e-16
 ```
 
 ## Manuscript And Figures

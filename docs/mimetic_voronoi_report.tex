@@ -51,7 +51,11 @@ conservation, direct edge transfer, and sparse projection equivalence to a
 high-order extension shows average edge-flux convergence rates of approximately
 \(2.26/3.39/4.46\) for \(p=1,2,3\); on refined planar Voronoi patches, the
 harmonic \(p=1\) baseline and split-moment \(p=2,3\) enrichments yield average
-rates \(1.90/2.77/3.34\).
+rates \(1.90/2.77/3.34\).  The same split-moment hierarchy extends to
+structured cubed-sphere and deterministic spherical Voronoi-patch transfers,
+where the globally conforming target-edge projection preserves
+machine-precision target-cell closure and the higher-order fits show the same
+order separation in great-circle edge norms.
 \end{abstract}
 
 \section{Introduction}
@@ -1426,14 +1430,17 @@ merely conservative; on these smooth cubed-sphere tests it remains strongly
 convergent under refinement.
 
 The same cubed-sphere source-chart machinery was then exercised with the new
-split-moment family.  On the \((4\to6)\) and \((6\to8)\) cases, the relative
-zeroth-moment edge errors were \(6.03\times10^{-2}\to2.77\times10^{-2}\) for
-\(p=1\), \(8.89\times10^{-3}\to2.97\times10^{-3}\) for \(p=2\), and
-\(1.25\times10^{-3}\to5.26\times10^{-4}\) for \(p=3\).  In every case, the
-globally conforming target-edge projection reduced the target-cell divergence
-residual to \(O(10^{-16})\).  This verifies that the higher-order split basis,
-the intrinsic great-circle edge moments, and the gnomonic/Piola transfer all
-remain compatible on the sphere.
+split-moment family on the structured sequence
+\((4\to6), (6\to8), (8\to10), (10\to12)\).  For the zeroth edge moment, the
+average convergence rates are \(2.49\), \(3.80\), and \(2.42\) for
+\(p=1,2,3\).  When all transferred edge moments are included in the error norm,
+the corresponding average rates are \(2.49\), \(2.72\), and \(2.15\).  The
+finest structured relative zeroth-moment errors are
+\(1.14\times10^{-2}\), \(6.36\times10^{-4}\), and \(2.24\times10^{-4}\) for
+\(p=1,2,3\), and every structured case still reduces the conforming target-cell
+divergence residual to \(O(10^{-16})\).  This verifies that the higher-order
+split basis, the intrinsic great-circle edge moments, and the gnomonic/Piola
+transfer remain compatible on the sphere.
 
 \begin{figure}[t]
   \centering
@@ -1457,6 +1464,53 @@ direct-vs-sparse residual is \(4.68\times10^{-15}\), and the maximum
 target-cell KKT re-integration residual is \(1.80\times10^{-16}\).  The
 Voronoi-to-Voronoi relative edge-flux error decreases from \(1.11\times10^{-2}\)
 to \(5.08\times10^{-3}\).
+
+The higher-order spherical study was then extended to deterministic Voronoi
+patch sequences \((25\to36), (49\to64), (81\to100), (121\to144)\).  For the
+zeroth edge moment, the average rates are \(2.08\), \(2.66\), and \(3.31\) for
+\(p=1,2,3\).  For the all-moment norm, the corresponding rates are
+\(2.08\), \(2.22\), and \(2.04\).  The \(p=3\) moment-0 curve shows one
+finest-level uptick on this deterministic patch sequence, but the overall
+structured-versus-unstructured picture is still clear: the higher-order moment
+fits reduce the great-circle edge error by more than an order of magnitude
+relative to the harmonic \(p=1\) baseline, while the conforming target-edge
+projection keeps the target-cell divergence residual at roundoff.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\textwidth]{spherical_high_order_hdiv_convergence.png}
+  \caption{Spherical high-order split-moment convergence.  Top row:
+  structured cubed-sphere transfers.  Bottom row: deterministic spherical
+  Voronoi-patch transfers.  Left column: relative zeroth-moment edge error.
+  Right column: relative all-moment edge error.  In all cases the target-edge
+  skeleton is projected back to a globally conforming target field before the
+  target-cell divergence residual is checked.}
+  \label{fig:spherical-high-order-hdiv-convergence}
+\end{figure}
+
+\begin{table}[t]
+  \centering
+  \small
+  \begin{tabular}{@{}L{0.23\linewidth}L{0.09\linewidth}L{0.16\linewidth}L{0.16\linewidth}L{0.18\linewidth}@{}}
+  \toprule
+  Domain & Order & Final-level \(L^2_{\mathrm{rel}}\) moment-0 error & Average all-moment rate & Max conforming residual \\
+  \midrule
+  Spherical cubed-sphere & \(p=1\) & \(1.14\times10^{-2}\) & \(2.49\) & \(1.25\times10^{-16}\) \\
+  Spherical cubed-sphere & \(p=2\) & \(6.36\times10^{-4}\) & \(2.72\) & \(1.11\times10^{-16}\) \\
+  Spherical cubed-sphere & \(p=3\) & \(2.24\times10^{-4}\) & \(2.15\) & \(1.32\times10^{-16}\) \\
+  Spherical Voronoi patch & \(p=1\) & \(4.46\times10^{-3}\) & \(2.08\) & \(5.55\times10^{-17}\) \\
+  Spherical Voronoi patch & \(p=2\) & \(3.00\times10^{-4}\) & \(2.22\) & \(9.71\times10^{-17}\) \\
+  Spherical Voronoi patch & \(p=3\) & \(2.49\times10^{-5}\) & \(2.04\) & \(6.94\times10^{-17}\) \\
+  \bottomrule
+  \end{tabular}
+  \caption{Spherical high-order split-moment convergence summary.  The
+  tabulated finest errors are the final-level zeroth-moment edge errors from
+  the structured and Voronoi-patch sequences, while the reported rates are the
+  average all-moment convergence rates over the full refinement sequence.  The
+  conforming target-edge projection keeps the target-cell divergence residual at
+  roundoff throughout.}
+  \label{tab:spherical-high-order-hdiv}
+\end{table}
 
 
 
@@ -1492,11 +1546,11 @@ to \(5.08\times10^{-3}\).
   enrichments &
   \(4.44\times10^{-16}\) to \(1.78\times10^{-15}\) conservation, up to \(4.46\) rate \\
   Spherical high-order split moments &
-  Structured cubed-sphere \((4\to6)\) and \((6\to8)\) great-circle transfers
-  for \(p=1,2,3\) &
+  Structured cubed-sphere and deterministic spherical Voronoi-patch refinement
+  sequences for \(p=1,2,3\) &
   Intrinsic great-circle edge moments, gnomonic/Piola transfer, and conforming
-  target-cell closure &
-  \(5.26\times10^{-4}\) finest \(p=3\) edge error, \(O(10^{-16})\) conforming divergence \\
+  target-cell closure on both structured and n-sided unstructured patches &
+  \(2.49\times10^{-5}\) finest Voronoi \(p=3\) moment-0 error, \(O(10^{-16})\) conforming divergence \\
   Spherical cubed-sphere &
   \(4\to4\), \(4\to6\), \(6\to4\), and \(6\to8\) great-circle quad meshes &
   Global conservation, target KKT re-integration, direct-vs-sparse equality,
@@ -1585,15 +1639,16 @@ to second order in the directed target-edge norms.  The corrected metric
 therefore strengthens the formulation without changing the basic convergence
 interpretation.
 
-A scalar control experiment was also added.  It performs a first-order
+A scalar control experiment was also added.  It performs a piecewise-constant
 conservative remap of cell averages for the same zonal spherical harmonic using
-projected polygon overlap areas.  That scalar remap converges under refinement,
-but it is not more accurate than the edge-flux vector remap.  The lesson is not
-that vector transfer is easier than scalar transfer; rather, the chosen scalar
-control is itself only a low-order overlap-area approximation and therefore is
-not a sharp upper bound for the edge-based method.  It remains useful as a
-geometry-only regression, but it should not be overinterpreted as a method
-comparison.
+exact spherical overlap areas recovered from the inverse gnomonic map.  The
+test now verifies both complete target coverage and global scalar conservation
+to the same \(5\times10^{-13}\) tolerance used by the vector transfer.  Its
+convergence remains first order, which is the expected behavior for a
+piecewise-constant overlap remap.  That makes it a useful geometry-only control:
+it verifies the spherical overlap and clipping machinery independently of the
+higher-order vector reconstruction, but it is not intended as a sharp accuracy
+upper bound for the edge-based method.
 
 The visualizations also clarify what remains outside this phase.  The clipping
 kernel assumes convex cells that fit in the relevant source gnomonic hemisphere;
@@ -1619,21 +1674,20 @@ agreement at \(5\times10^{-13}\).
   \item Tests use manufactured analytic fields and deterministic serial meshes.
         They verify local conservation, sparse operator equivalence, and
         refinement behavior, not global PDE accuracy.
-  \item The scalar control test is intentionally low order: it uses overlap-area
-        weighting of source cell averages to isolate geometry and clipping.  Its
-        errors therefore should not be interpreted as an upper bound on the
-        edge-flux remap accuracy.
+  \item The scalar control test is intentionally piecewise constant: it uses
+        exact spherical overlap areas and source cell averages to isolate
+        geometry and clipping.  Its first-order behavior therefore should not be
+        interpreted as an upper bound on the edge-flux remap accuracy.
   \item The sparse projection currently uses directed cell-edge DOFs.  Shared
         mesh-edge collapse requires explicit orientation metadata.
   \item The new global correction is a conforming \emph{target-edge skeleton}
         projection.  It does not yet construct a single globally conforming
         target-cell interior vector field; target-cell reconstruction still
         proceeds cell by cell from the corrected edge data.
-  \item The unified split-moment family now covers \(p=1,2,3\) in both planar
-        charts and structured spherical gnomonic charts.  The present
-        spherical higher-order verification is still limited to cubed-sphere
-        structured regressions rather than a full spherical convergence suite
-        on unstructured great-circle meshes.
+  \item The unified split-moment family now covers \(p=1,2,3\) in planar
+        charts, structured spherical gnomonic charts, and deterministic
+        spherical Voronoi chart patches.  Broader spherical studies on mixed
+        topologies and larger realistic meshes remain future work.
   \item MPI, distributed ownership, ghosting, and parallel I/O are intentionally
         out of scope for this phase.
 \end{itemize}
@@ -1662,7 +1716,11 @@ quad-to-quad study yields average relative edge-flux rates of \(2.26\),
 \(3.39\), and \(4.46\) for \(p=1,2,3\).  On the current Voronoi-to-Voronoi
 sequence, the corresponding rates are \(1.90\), \(2.77\), and \(3.34\).  These
 results show that higher-order accuracy can be added without sacrificing
-machine-precision conservation of the primary edge-flux DOF.
+machine-precision conservation of the primary edge-flux DOF.  The same
+hierarchy now also has verified spherical convergence studies: on the
+cubed-sphere sequence the zeroth-moment rates are \(2.49\), \(3.80\), and
+\(2.42\), while on the deterministic spherical Voronoi-patch sequence they are
+\(2.08\), \(2.66\), and \(3.31\).
 
 The added spherical diagnostics sharpen the interpretation of the method.
 Switching the cell-centered \(L^1\) norm to physical spherical area is a
@@ -1696,12 +1754,12 @@ show visible closure defects.
 Taken together, the current repository now contains three numerically distinct
 but compatible layers: a verified low-order harmonic mimetic remap, a global
 target-edge conforming correction, and a unified higher-order split-moment
-extension that covers \(p=1,2,3\) on planar polygons and structured spherical
-charts.  The remaining gap to a full polygonal compatible finite element
-framework is therefore no longer the absence of conservative high-order
-evidence; it is the absence of a single globally conforming cell-interior
-target space and a broader high-order spherical convergence program on
-unstructured great-circle meshes.
+extension that covers \(p=1,2,3\) on planar polygons, structured spherical
+charts, and deterministic spherical Voronoi patches.  The remaining gap to a
+full polygonal compatible finite element framework is therefore no longer the
+absence of conservative high-order evidence; it is the absence of a single
+globally conforming cell-interior target space and broader verification on
+mixed-topology and production-scale spherical meshes.
 
 \subsection*{Future Research Directions}
 Building on the verified serial planar and spherical framework, the following
@@ -1727,17 +1785,17 @@ logical paths are proposed for future research:
     would clarify when edge-flux transfer and scalar conservative remapping can
     share overlap geometry and sparse operator infrastructure.
     \item \textbf{Higher-order spherical controls}: Replace the current
-    first-order scalar control with a higher-order conservative spherical
-    remapping baseline so that geometry-only and vector-space effects can be
-    separated more sharply.
+    piecewise-constant scalar control with a higher-order conservative
+    spherical remapping baseline so that geometry-only and vector-space
+    effects can be separated more sharply.
     \item \textbf{Spherical Robustness}: Extend beyond convex cells in one
     gnomonic hemisphere, add projection-singularity handling, and validate
     against larger realistic spherical meshes.
-    \item \textbf{High-order unstructured spherical extension}: Extend the
-    present structured cubed-sphere split-moment regressions to unstructured
-    spherical Voronoi-to-Voronoi and mixed Voronoi/cubed-sphere transfers, and
-    measure whether the structured \(p=2\) and \(p=3\) separation persists on
-    great-circle n-gon patches.
+    \item \textbf{Broader spherical high-order validation}: Extend the present
+    cubed-sphere and deterministic Voronoi-patch regressions to mixed
+    Voronoi/cubed-sphere transfers, larger full-sphere meshes, and more
+    challenging great-circle topologies, and measure whether the current
+    structured-versus-unstructured order separation persists there.
     \item \textbf{Globally conforming target interiors}: Extend the present
     target-edge conforming projection to a single compatible target-cell
     interior field so that higher-order moment transfer and global
