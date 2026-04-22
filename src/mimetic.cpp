@@ -632,19 +632,41 @@ Eigen::Vector2d moment_velocity_value(const MomentReconstruction& reconstruction
 }
 
 std::vector<double> basis_edge_moments(const VectorBasisTerm& term,
+                                       const LocalPolygon& polygon,
+                                       const std::size_t edge_index,
                                        const LocalEdge& edge,
                                        const int order,
                                        const std::vector<GaussLegendrePoint>& quadrature,
-                                       const double scale)
+                                       const double scale,
+                                       const GeometryOptions& options)
 {
     std::vector<double> moments(static_cast<std::size_t>(order + 1), 0.0);
     const Eigen::Vector2d delta = edge.b - edge.a;
     const double denom = delta.squaredNorm();
+    Eigen::Vector3d a3 = Eigen::Vector3d::Zero();
+    double total_angle = 0.0;
+    GnomonicFrame frame;
+    if (options.mode == GeometryMode::SphericalGnomonic) {
+        a3 = polygon.points_3d[edge_index].normalized();
+        const Eigen::Vector3d b3 = polygon.points_3d[(edge_index + 1) % polygon.points_3d.size()].normalized();
+        total_angle = std::acos(clamp_unit(a3.dot(b3)));
+        frame = GnomonicFrame{polygon.n, polygon.e_x, polygon.e_y, options.radius};
+    }
     for (int degree = 0; degree <= order; ++degree) {
         moments[degree] = integrate_edge_highorder_rule(edge.a, edge.b, quadrature, [&](const Eigen::Vector2d& p) {
-            const double t = (denom > kTolerance)
-                ? (2.0 * (p - edge.a).dot(delta) / denom - 1.0)
-                : 0.0;
+            double t = 0.0;
+            if (options.mode == GeometryMode::SphericalGnomonic) {
+                if (total_angle > kTolerance) {
+                    const Eigen::Vector2d xi = p + polygon.centroid;
+                    const Eigen::Vector3d point3 = inverse_gnomonic(xi, frame).normalized();
+                    const double angle = std::acos(clamp_unit(a3.dot(point3)));
+                    t = 2.0 * (angle / total_angle) - 1.0;
+                }
+            } else {
+                t = (denom > kTolerance)
+                    ? (2.0 * (p - edge.a).dot(delta) / denom - 1.0)
+                    : 0.0;
+            }
             return vector_basis_value(term, p, scale).dot(edge.outward_normal) * legendre_polynomial(degree, t);
         });
     }
@@ -929,7 +951,8 @@ double moment_polygon_boundary_flux(const MomentReconstruction& reconstruction,
     return flux;
 }
 
-std::vector<double> target_divergence_rhs(const moab::Core& mb,
+std::vector<double> target_divergence_rhs(moab::Core& mb,
+                                          const GeometryOptions& options,
                                           const std::map<moab::EntityHandle, MomentReconstruction>& reconstructions,
                                           const std::vector<moab::EntityHandle>& source_polygons,
                                           const std::vector<moab::EntityHandle>& target_polygons)
@@ -948,7 +971,7 @@ std::vector<double> target_divergence_rhs(const moab::Core& mb,
         if (it == reconstructions.end()) {
             throw std::runtime_error("Missing high-order reconstruction for source polygon");
         }
-        const LocalPolygon local = local_polygon(const_cast<moab::Core&>(mb), source_polygon);
+        const LocalPolygon local = local_polygon(mb, source_polygon, options);
         sources.push_back(SourceCache{
             source_polygon,
             local,
@@ -961,12 +984,30 @@ std::vector<double> target_divergence_rhs(const moab::Core& mb,
     std::vector<double> rhs(target_polygons.size(), 0.0);
     for (std::size_t target_index = 0; target_index < target_polygons.size(); ++target_index) {
         const moab::EntityHandle target_polygon = target_polygons[target_index];
-        const LocalPolygon target = local_polygon(const_cast<moab::Core&>(mb), target_polygon);
-        const std::vector<Eigen::Vector2d> target_absolute = absolute_points(target);
+        const LocalPolygon target = local_polygon(mb, target_polygon, options);
         for (const SourceCache& source : sources) {
+            std::vector<Eigen::Vector2d> target_in_source;
+            if (options.mode == GeometryMode::SphericalGnomonic) {
+                const GnomonicFrame source_frame{source.local.n, source.local.e_x, source.local.e_y, options.radius};
+                target_in_source.reserve(target.points_3d.size());
+                bool valid_projection = true;
+                for (const Eigen::Vector3d& p3d : target.points_3d) {
+                    try {
+                        target_in_source.push_back(project_gnomonic(p3d, source_frame));
+                    } catch (const std::runtime_error&) {
+                        valid_projection = false;
+                        break;
+                    }
+                }
+                if (!valid_projection) {
+                    continue;
+                }
+            } else {
+                target_in_source = absolute_points(target);
+            }
             const std::vector<Eigen::Vector2d> overlap =
-                convex_polygon_intersection(target_absolute, source.absolute, kTolerance);
-            if (polygon_area_abs(overlap) <= kTolerance) {
+                convex_polygon_intersection(target_in_source, source.absolute, options.geometry_tolerance);
+            if (polygon_area_abs(overlap) <= options.geometry_tolerance) {
                 continue;
             }
             rhs[target_index] += moment_polygon_boundary_flux(
@@ -2063,6 +2104,9 @@ ConformingEdgeTransferResult MimeticInterpolator::project_target_fluxes_to_hdiv_
     for (std::size_t i = 0; i < num_cells; ++i) {
         b(static_cast<Eigen::Index>(i)) = divergence_rhs[i];
     }
+    if (options_.mode == GeometryMode::SphericalGnomonic && b.size() > 0) {
+        b.array() -= b.mean();
+    }
 
     const Eigen::MatrixXd schur = AHinv * A.transpose();
     const Eigen::VectorXd schur_rhs = AHinv * g - b;
@@ -2072,7 +2116,7 @@ ConformingEdgeTransferResult MimeticInterpolator::project_target_fluxes_to_hdiv_
     ConformingEdgeTransferResult result;
     result.target_edges = raw_transfer.target_edges;
     result.target_cells = target_polygons;
-    result.target_divergence_integrals = divergence_rhs;
+    result.target_divergence_integrals.resize(num_cells, 0.0);
     result.target_edge_to_unique = collapse.directed_to_unique;
     result.target_edge_signs = collapse.directed_signs;
     result.unique_edge_fluxes.resize(num_unique, 0.0);
@@ -2096,6 +2140,29 @@ ConformingEdgeTransferResult MimeticInterpolator::project_target_fluxes_to_hdiv_
 PlanarMomentInterpolator::PlanarMomentInterpolator(moab::Core& moab_instance)
     : mb_(moab_instance)
 {
+}
+
+void PlanarMomentInterpolator::set_geometry_options(const GeometryOptions& options)
+{
+    if (options.radius <= 0.0) {
+        throw std::runtime_error("GeometryOptions::radius must be positive");
+    }
+    options_ = options;
+}
+
+GeometryOptions PlanarMomentInterpolator::geometry_options() const
+{
+    return options_;
+}
+
+void PlanarMomentInterpolator::set_spherical(const bool is_spherical)
+{
+    options_.mode = is_spherical ? GeometryMode::SphericalGnomonic : GeometryMode::Planar;
+}
+
+bool PlanarMomentInterpolator::is_spherical() const
+{
+    return options_.mode == GeometryMode::SphericalGnomonic;
 }
 
 void PlanarMomentInterpolator::set_source_edge_moments(const moab::EntityHandle polygon,
@@ -2137,7 +2204,7 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
         throw std::runtime_error("Edge moment order must be non-negative");
     }
 
-    const LocalPolygon poly = local_polygon(mb_, polygon);
+    const LocalPolygon poly = local_polygon(mb_, polygon, options_);
     const std::vector<LocalEdge> edges = local_edges(mb_, poly);
     const std::vector<GaussLegendrePoint> quadrature = gauss_legendre_rule(options.quadrature_points);
     const double scale_length = local_length_scale(poly);
@@ -2178,7 +2245,8 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
         }
         for (int col = 0; col < B; ++col) {
             const std::vector<double> basis_moments =
-                basis_edge_moments(basis[col], edge, options.edge_moment_order, quadrature, scale_length);
+                basis_edge_moments(basis[col], poly, edge_index, edge, options.edge_moment_order,
+                                   quadrature, scale_length, options_);
             for (int degree = 0; degree <= options.edge_moment_order; ++degree) {
                 A(row - (options.edge_moment_order + 1) + degree, col) = basis_moments[degree];
             }
@@ -2362,7 +2430,7 @@ EdgeMomentTransferResult PlanarMomentInterpolator::transfer_source_to_target_edg
         if (reconstruction_it == reconstructions_.end()) {
             throw std::runtime_error("Missing high-order reconstruction for source polygon");
         }
-        const LocalPolygon local = local_polygon(mb_, source_polygon);
+        const LocalPolygon local = local_polygon(mb_, source_polygon, options_);
         sources.push_back(SourceCache{
             source_polygon,
             local,
@@ -2375,7 +2443,7 @@ EdgeMomentTransferResult PlanarMomentInterpolator::transfer_source_to_target_edg
     const std::vector<GaussLegendrePoint> quadrature = gauss_legendre_rule(10);
 
     for (const moab::EntityHandle target_polygon : target_polygons) {
-        const LocalPolygon target = local_polygon(mb_, target_polygon);
+        const LocalPolygon target = local_polygon(mb_, target_polygon, options_);
         const std::vector<LocalEdge> target_edges = local_edges(mb_, target);
 
         for (std::size_t edge_index = 0; edge_index < target_edges.size(); ++edge_index) {
@@ -2384,17 +2452,26 @@ EdgeMomentTransferResult PlanarMomentInterpolator::transfer_source_to_target_edg
             result.target_edges.push_back(DirectedEdgeDof{target_polygon, target_edge.handle, edge_index});
             result.target_moments.push_back(std::vector<double>(static_cast<std::size_t>(target_moment_order + 1), 0.0));
 
-            const Eigen::Vector2d whole_a = target.centroid + target_edge.a;
-            const Eigen::Vector2d whole_b = target.centroid + target_edge.b;
-            const Eigen::Vector2d whole_delta = whole_b - whole_a;
-            const double whole_length = whole_delta.norm();
-            const double whole_denom = whole_delta.squaredNorm();
-            if (whole_length <= kTolerance) {
-                continue;
-            }
-            const Eigen::Vector2d whole_normal(whole_delta.y(), -whole_delta.x());
-
             for (const SourceCache& source : sources) {
+                Eigen::Vector2d whole_a = target.centroid + target_edge.a;
+                Eigen::Vector2d whole_b = target.centroid + target_edge.b;
+                if (options_.mode == GeometryMode::SphericalGnomonic) {
+                    const GnomonicFrame source_frame{source.local.n, source.local.e_x, source.local.e_y, options_.radius};
+                    try {
+                        whole_a = project_gnomonic(target.points_3d[edge_index], source_frame);
+                        whole_b = project_gnomonic(target.points_3d[(edge_index + 1) % target.points_3d.size()], source_frame);
+                    } catch (const std::runtime_error&) {
+                        continue;
+                    }
+                }
+                const Eigen::Vector2d whole_delta = whole_b - whole_a;
+                const double whole_length = whole_delta.norm();
+                const double whole_denom = whole_delta.squaredNorm();
+                if (whole_length <= kTolerance) {
+                    continue;
+                }
+                const Eigen::Vector2d whole_normal(whole_delta.y(), -whole_delta.x());
+
                 Eigen::Vector2d clipped_a;
                 Eigen::Vector2d clipped_b;
                 if (!clip_segment_to_convex_polygon(whole_a, whole_b, source.absolute_points, clipped_a, clipped_b)) {
@@ -2428,14 +2505,13 @@ ConformingEdgeMomentTransferResult PlanarMomentInterpolator::project_target_edge
     const std::vector<moab::EntityHandle>& target_polygons,
     const EdgeMomentTransferResult& raw_transfer) const
 {
-    const GeometryOptions planar;
     const std::vector<DirectedTargetEdgeInfo> target_edges =
-        build_directed_target_edges(mb_, target_polygons, planar);
+        build_directed_target_edges(mb_, target_polygons, options_);
     verify_raw_target_order(raw_transfer, target_edges);
 
-    const CollapsedTargetEdges collapse = collapse_target_edges(target_edges, planar);
+    const CollapsedTargetEdges collapse = collapse_target_edges(target_edges, options_);
     const std::vector<double> divergence_rhs =
-        target_divergence_rhs(mb_, reconstructions_, source_polygons, target_polygons);
+        target_divergence_rhs(mb_, options_, reconstructions_, source_polygons, target_polygons);
 
     const std::size_t num_unique = collapse.unique_count;
     const std::size_t num_directed = target_edges.size();
@@ -2486,6 +2562,12 @@ ConformingEdgeMomentTransferResult PlanarMomentInterpolator::project_target_edge
     Eigen::VectorXd b(static_cast<Eigen::Index>(num_cells));
     for (std::size_t i = 0; i < num_cells; ++i) {
         b(static_cast<Eigen::Index>(i)) = divergence_rhs[i];
+    }
+    if (options_.mode == GeometryMode::SphericalGnomonic && b.size() > 0) {
+        b.array() -= b.mean();
+    }
+    for (std::size_t i = 0; i < num_cells; ++i) {
+        result.target_divergence_integrals[i] = b(static_cast<Eigen::Index>(i));
     }
 
     for (std::size_t degree = 0; degree < num_moments; ++degree) {

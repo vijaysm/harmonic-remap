@@ -458,6 +458,11 @@ class PlanarMomentInterpolator {
   public:
     explicit PlanarMomentInterpolator(moab::Core& moab_instance);
 
+    void set_geometry_options(const GeometryOptions& options);
+    GeometryOptions geometry_options() const;
+    void set_spherical(bool is_spherical);
+    bool is_spherical() const;
+
     void set_source_edge_moments(moab::EntityHandle polygon,
                                  std::size_t local_edge_index,
                                  const std::vector<double>& moments);
@@ -486,6 +491,7 @@ class PlanarMomentInterpolator {
 
   private:
     moab::Core& mb_;
+    GeometryOptions options_;
     std::map<std::pair<moab::EntityHandle, std::size_t>, std::vector<double>> directed_source_moments_;
     std::map<moab::EntityHandle, std::vector<Eigen::Vector2d>> source_cell_vector_moments_;
     std::map<moab::EntityHandle, MomentReconstruction> reconstructions_;
