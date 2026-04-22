@@ -106,18 +106,18 @@ double exact_directed_edge_flux(const Eigen::Vector2d& a, const Eigen::Vector2d&
 }
 
 void set_source_fluxes_highorder(moab::Core& mb,
-                                 const moab::Tag source_flux_tag,
+                                 mimetic::MimeticInterpolator& interpolator,
                                  const moab::EntityHandle polygon,
                                  FieldFunc field)
 {
     const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, polygon);
     const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb, poly);
-    for (const mimetic::LocalEdge& edge : edges) {
+    for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+        const mimetic::LocalEdge& edge = edges[edge_index];
         const double flux = integrate_edge_highorder(edge.a, edge.b, [&](const Eigen::Vector2d& p) {
             return field(p + poly.centroid).dot(edge.outward_normal);
         });
-        mimetic::check_moab(mb.tag_set_data(source_flux_tag, &edge.handle, 1, &flux),
-                            "Failed to set source flux");
+        interpolator.set_source_edge_flux(polygon, edge_index, flux);
     }
 }
 
@@ -220,6 +220,12 @@ std::vector<CellInfo> create_quad_mesh(moab::Core& mb, int nx, int ny)
             cells.push_back(CellInfo{mimetic::create_polygon(mb, pts), pts});
         }
     }
+    std::vector<moab::EntityHandle> polygons;
+    polygons.reserve(cells.size());
+    for (const CellInfo& cell : cells) {
+        polygons.push_back(cell.handle);
+    }
+    mimetic::merge_polygon_vertices(mb, polygons);
     return cells;
 }
 
@@ -231,6 +237,12 @@ std::vector<CellInfo> create_voronoi_mesh(moab::Core& mb, const std::vector<Eige
         if (pts.size() < 3 || polygon_area(pts) < 1.0e-12) continue;
         cells.push_back(CellInfo{mimetic::create_polygon(mb, pts), pts});
     }
+    std::vector<moab::EntityHandle> polygons;
+    polygons.reserve(cells.size());
+    for (const CellInfo& cell : cells) {
+        polygons.push_back(cell.handle);
+    }
+    mimetic::merge_polygon_vertices(mb, polygons);
     return cells;
 }
 
@@ -278,7 +290,7 @@ ErrorMetrics compute_transfer_errors(
     double h_eff)
 {
     for (const CellInfo& src : source_cells) {
-        set_source_fluxes_highorder(mb, interpolator.source_flux_tag(), src.handle, field);
+        set_source_fluxes_highorder(mb, interpolator, src.handle, field);
         interpolator.reconstruct_source_polygon(src.handle);
     }
 

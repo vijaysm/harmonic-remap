@@ -45,32 +45,34 @@ double directed_edge_flux_from_absolute_field(const Eigen::Vector2d& a, const Ei
 
 template <typename Field>
 void set_source_fluxes_from_field(moab::Core& mb,
-                                  const moab::Tag source_flux_tag,
+                                  mimetic::MimeticInterpolator& interpolator,
                                   const moab::EntityHandle polygon,
                                   const Field& field)
 {
     const LocalPolygon poly = local_polygon(mb, polygon);
     const std::vector<LocalEdge> edges = local_edges(mb, poly);
-    for (const LocalEdge& edge : edges) {
+    for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+        const LocalEdge& edge = edges[edge_index];
         const double flux =
             integrate_edge_scalar(edge.a, edge.b, [&](const Eigen::Vector2d& p) { return field(p).dot(edge.outward_normal); });
-        check_moab(mb.tag_set_data(source_flux_tag, &edge.handle, 1, &flux), "Failed to set source flux");
+        interpolator.set_source_edge_flux(polygon, edge_index, flux);
     }
 }
 
 template <typename Field>
 void set_source_fluxes_from_absolute_field(moab::Core& mb,
-                                           const moab::Tag source_flux_tag,
+                                           mimetic::MimeticInterpolator& interpolator,
                                            const moab::EntityHandle polygon,
                                            const Field& field)
 {
     const LocalPolygon poly = local_polygon(mb, polygon);
     const std::vector<LocalEdge> edges = local_edges(mb, poly);
-    for (const LocalEdge& edge : edges) {
+    for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+        const LocalEdge& edge = edges[edge_index];
         const double flux = integrate_edge_scalar(edge.a, edge.b, [&](const Eigen::Vector2d& p) {
             return field(p + poly.centroid).dot(edge.outward_normal);
         });
-        check_moab(mb.tag_set_data(source_flux_tag, &edge.handle, 1, &flux), "Failed to set source flux");
+        interpolator.set_source_edge_flux(polygon, edge_index, flux);
     }
 }
 

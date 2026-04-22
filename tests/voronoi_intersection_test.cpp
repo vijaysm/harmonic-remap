@@ -127,6 +127,12 @@ std::vector<VoronoiCell> create_voronoi_mesh(moab::Core& mb, const std::vector<E
         }
         cells.push_back(VoronoiCell{seed, points, mimetic::create_polygon(mb, points)});
     }
+    std::vector<moab::EntityHandle> polygons;
+    polygons.reserve(cells.size());
+    for (const VoronoiCell& cell : cells) {
+        polygons.push_back(cell.cell);
+    }
+    mimetic::merge_polygon_vertices(mb, polygons);
     return cells;
 }
 
@@ -223,7 +229,7 @@ int main()
 
         for (const VoronoiCell& source : source_cells) {
             mimetic::test::set_source_fluxes_from_absolute_field(
-                mb, interpolator.source_flux_tag(), source.cell, mimetic::test::linear_absolute_field);
+                mb, interpolator, source.cell, mimetic::test::linear_absolute_field);
             interpolator.reconstruct_source_polygon(source.cell);
         }
 

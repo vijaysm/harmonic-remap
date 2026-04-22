@@ -27,7 +27,7 @@ int main()
                                                                             Vector2d(0.0, 1.0),
                                                                         }});
         mimetic::test::set_source_fluxes_from_field(
-            mb, interpolator.source_flux_tag(), source_quad, mimetic::test::constant_field);
+            mb, interpolator, source_quad, mimetic::test::constant_field);
 
         const mimetic::ReconstructionCoeffs coeffs = interpolator.reconstruct_source_polygon(source_quad);
 

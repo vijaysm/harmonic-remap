@@ -1,5 +1,7 @@
 #include "mimetic/mimetic.hpp"
 
+#include <moab/MergeMesh.hpp>
+
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -740,6 +742,24 @@ moab::EntityHandle create_polygon(moab::Core& mb, const std::vector<Eigen::Vecto
         find_or_create_edge(mb, vertices[i], vertices[(i + 1) % vertices.size()]);
     }
     return polygon;
+}
+
+void merge_polygon_vertices(moab::Core& mb,
+                            const std::vector<moab::EntityHandle>& polygons,
+                            const double merge_tolerance)
+{
+    if (polygons.empty()) {
+        return;
+    }
+
+    moab::Range elems;
+    for (const moab::EntityHandle polygon : polygons) {
+        elems.insert(polygon);
+    }
+
+    moab::MergeMesh merger(&mb);
+    check_moab(merger.merge_entities(elems, merge_tolerance, true, false, 0, true),
+               "Failed to merge coincident polygon vertices");
 }
 
 bool clip_segment_to_convex_polygon(const Eigen::Vector2d& segment_a,

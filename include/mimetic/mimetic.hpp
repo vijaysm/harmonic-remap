@@ -283,6 +283,10 @@ std::vector<LocalEdge> local_edges(moab::Core& mb, const LocalPolygon& polygon);
 moab::EntityHandle create_polygon(moab::Core& mb, const std::vector<Eigen::Vector2d>& points);
 /// Convenience wrapper for creating a four-sided polygon.
 moab::EntityHandle create_quad(moab::Core& mb, const std::array<Eigen::Vector2d, 4>& points);
+/// Merge coincident vertices and higher-dimensional adjacencies on one planar mesh patch.
+void merge_polygon_vertices(moab::Core& mb,
+                            const std::vector<moab::EntityHandle>& polygons,
+                            double merge_tolerance = 1.0e-12);
 /// Clip a directed segment against a convex counter-clockwise polygon.
 bool clip_segment_to_convex_polygon(const Eigen::Vector2d& segment_a,
                                     const Eigen::Vector2d& segment_b,

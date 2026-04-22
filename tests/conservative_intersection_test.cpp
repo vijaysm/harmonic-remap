@@ -35,6 +35,12 @@ std::vector<Rect> create_rect_mesh(moab::Core& mb, const std::vector<double>& xs
             cells.push_back(Rect{xs[i], xs[i + 1], ys[j], ys[j + 1], mimetic::create_quad(mb, points)});
         }
     }
+    std::vector<moab::EntityHandle> polygons;
+    polygons.reserve(cells.size());
+    for (const Rect& cell : cells) {
+        polygons.push_back(cell.cell);
+    }
+    mimetic::merge_polygon_vertices(mb, polygons);
     return cells;
 }
 
@@ -91,7 +97,7 @@ int main()
 
         for (const Rect& source : source_cells) {
             mimetic::test::set_source_fluxes_from_absolute_field(
-                mb, interpolator.source_flux_tag(), source.cell, mimetic::test::linear_absolute_field);
+                mb, interpolator, source.cell, mimetic::test::linear_absolute_field);
             interpolator.reconstruct_source_polygon(source.cell);
         }
 
@@ -161,7 +167,8 @@ int main()
             const mimetic::LocalPolygon target_poly = mimetic::local_polygon(mb, target_rect.cell);
             const std::vector<mimetic::LocalEdge> target_edges = mimetic::local_edges(mb, target_poly);
             double target_cell_flux = 0.0;
-            for (const mimetic::LocalEdge& edge : target_edges) {
+            for (std::size_t edge_index = 0; edge_index < target_edges.size(); ++edge_index) {
+                const mimetic::LocalEdge& edge = target_edges[edge_index];
                 const Eigen::Vector2d a = target_poly.centroid + edge.a;
                 const Eigen::Vector2d b = target_poly.centroid + edge.b;
                 const double exact_flux =
@@ -172,11 +179,10 @@ int main()
                                          "target directed edge " + std::to_string(target_dof)) &&
                      ok;
 
-                double tagged_flux = 0.0;
-                mimetic::check_moab(mb.tag_get_data(interpolator.target_flux_tag(), &edge.handle, 1, &tagged_flux),
-                                    "Failed to read target flux tag");
-                ok = mimetic::test::near(tagged_flux, exact_flux, mimetic::kConservationTolerance,
-                                         "target flux tag " + std::to_string(target_dof)) &&
+                const double directed_flux =
+                    interpolator.target_edge_flux(target_rect.cell, edge_index, edge.handle);
+                ok = mimetic::test::near(directed_flux, exact_flux, mimetic::kConservationTolerance,
+                                         "target directed flux accessor " + std::to_string(target_dof)) &&
                      ok;
                 ok = mimetic::test::near(coverage[target_dof], edge.length, mimetic::kConservationTolerance,
                                          "target edge coverage " + std::to_string(target_dof)) &&
