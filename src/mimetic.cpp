@@ -425,6 +425,198 @@ Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly,
     return reconstruction;
 }
 
+struct DirectedTargetEdgeInfo {
+    DirectedEdgeDof dof;
+    std::size_t cell_index = 0;
+    Eigen::Vector2d a2 = Eigen::Vector2d::Zero();
+    Eigen::Vector2d b2 = Eigen::Vector2d::Zero();
+    Eigen::Vector3d a3 = Eigen::Vector3d::Zero();
+    Eigen::Vector3d b3 = Eigen::Vector3d::Zero();
+};
+
+struct CollapsedTargetEdges {
+    std::vector<std::size_t> directed_to_unique;
+    std::vector<int> directed_signs;
+    std::size_t unique_count = 0;
+};
+
+bool same_edge_endpoint(const Eigen::Vector2d& a, const Eigen::Vector2d& b, const double tolerance)
+{
+    return (a - b).norm() <= tolerance;
+}
+
+bool same_edge_endpoint(const Eigen::Vector3d& a, const Eigen::Vector3d& b, const double tolerance)
+{
+    return (a.normalized() - b.normalized()).norm() <= tolerance;
+}
+
+int edge_orientation_sign(const DirectedTargetEdgeInfo& reference,
+                          const DirectedTargetEdgeInfo& current,
+                          const GeometryOptions& options)
+{
+    if (options.mode == GeometryMode::SphericalGnomonic) {
+        const bool same =
+            same_edge_endpoint(reference.a3, current.a3, options.geometry_tolerance) &&
+            same_edge_endpoint(reference.b3, current.b3, options.geometry_tolerance);
+        if (same) {
+            return 1;
+        }
+        const bool reversed =
+            same_edge_endpoint(reference.a3, current.b3, options.geometry_tolerance) &&
+            same_edge_endpoint(reference.b3, current.a3, options.geometry_tolerance);
+        if (reversed) {
+            return -1;
+        }
+        return 0;
+    }
+
+    const bool same =
+        same_edge_endpoint(reference.a2, current.a2, options.geometry_tolerance) &&
+        same_edge_endpoint(reference.b2, current.b2, options.geometry_tolerance);
+    if (same) {
+        return 1;
+    }
+    const bool reversed =
+        same_edge_endpoint(reference.a2, current.b2, options.geometry_tolerance) &&
+        same_edge_endpoint(reference.b2, current.a2, options.geometry_tolerance);
+    if (reversed) {
+        return -1;
+    }
+    return 0;
+}
+
+std::vector<DirectedTargetEdgeInfo> build_directed_target_edges(moab::Core& mb,
+                                                                const std::vector<moab::EntityHandle>& target_polygons,
+                                                                const GeometryOptions& options)
+{
+    std::vector<DirectedTargetEdgeInfo> edges;
+    for (std::size_t cell_index = 0; cell_index < target_polygons.size(); ++cell_index) {
+        const moab::EntityHandle target_polygon = target_polygons[cell_index];
+        const LocalPolygon target = local_polygon(mb, target_polygon, options);
+        const std::vector<LocalEdge> local = local_edges(mb, target);
+        for (std::size_t edge_index = 0; edge_index < local.size(); ++edge_index) {
+            DirectedTargetEdgeInfo info;
+            info.dof = DirectedEdgeDof{target_polygon, local[edge_index].handle, edge_index};
+            info.cell_index = cell_index;
+            if (options.mode == GeometryMode::SphericalGnomonic) {
+                info.a3 = target.points_3d[edge_index].normalized();
+                info.b3 = target.points_3d[(edge_index + 1) % target.points_3d.size()].normalized();
+            } else {
+                info.a2 = target.centroid + local[edge_index].a;
+                info.b2 = target.centroid + local[edge_index].b;
+            }
+            edges.push_back(info);
+        }
+    }
+    return edges;
+}
+
+void verify_raw_target_order(const EdgeTransferResult& raw_transfer, const std::vector<DirectedTargetEdgeInfo>& target_edges)
+{
+    if (raw_transfer.target_edges.size() != target_edges.size()) {
+        throw std::runtime_error("Raw transfer target edge count does not match target mesh enumeration");
+    }
+    for (std::size_t i = 0; i < target_edges.size(); ++i) {
+        const DirectedEdgeDof& expected = target_edges[i].dof;
+        const DirectedEdgeDof& actual = raw_transfer.target_edges[i];
+        if (expected.polygon != actual.polygon ||
+            expected.edge != actual.edge ||
+            expected.local_edge_index != actual.local_edge_index) {
+            throw std::runtime_error("Raw transfer target edge ordering does not match target mesh enumeration");
+        }
+    }
+}
+
+CollapsedTargetEdges collapse_target_edges(const std::vector<DirectedTargetEdgeInfo>& target_edges,
+                                           const GeometryOptions& options)
+{
+    CollapsedTargetEdges collapse;
+    collapse.directed_to_unique.resize(target_edges.size());
+    collapse.directed_signs.resize(target_edges.size());
+
+    std::map<moab::EntityHandle, std::pair<std::size_t, DirectedTargetEdgeInfo>> unique_edge_map;
+    for (std::size_t i = 0; i < target_edges.size(); ++i) {
+        const moab::EntityHandle edge = target_edges[i].dof.edge;
+        const auto insertion = unique_edge_map.insert(
+            std::make_pair(edge, std::make_pair(unique_edge_map.size(), target_edges[i])));
+        collapse.directed_to_unique[i] = insertion.first->second.first;
+        if (insertion.second) {
+            collapse.directed_signs[i] = 1;
+            continue;
+        }
+
+        const int sign = edge_orientation_sign(insertion.first->second.second, target_edges[i], options);
+        if (sign == 0) {
+            throw std::runtime_error("Merged target edge orientation mismatch");
+        }
+        collapse.directed_signs[i] = sign;
+    }
+    collapse.unique_count = unique_edge_map.size();
+    return collapse;
+}
+
+std::vector<double> target_divergence_rhs(moab::Core& mb,
+                                          const moab::Tag coeff_tag,
+                                          const GeometryOptions& options,
+                                          const std::vector<moab::EntityHandle>& source_polygons,
+                                          const std::vector<moab::EntityHandle>& target_polygons)
+{
+    struct SourceCache {
+        moab::EntityHandle polygon;
+        LocalPolygon local;
+        std::vector<Eigen::Vector2d> absolute;
+        ReconstructionCoeffs coeffs;
+    };
+
+    std::vector<SourceCache> sources;
+    sources.reserve(source_polygons.size());
+    for (const moab::EntityHandle source_polygon : source_polygons) {
+        const LocalPolygon local = local_polygon(mb, source_polygon, options);
+        sources.push_back(SourceCache{
+            source_polygon,
+            local,
+            absolute_points(local),
+            read_coefficients(mb, coeff_tag, source_polygon),
+        });
+    }
+
+    std::vector<double> rhs(target_polygons.size(), 0.0);
+    for (std::size_t target_index = 0; target_index < target_polygons.size(); ++target_index) {
+        const moab::EntityHandle target_polygon = target_polygons[target_index];
+        const LocalPolygon target = local_polygon(mb, target_polygon, options);
+        for (const SourceCache& source : sources) {
+            std::vector<Eigen::Vector2d> target_in_source;
+            if (options.mode == GeometryMode::SphericalGnomonic) {
+                const GnomonicFrame source_frame{source.local.n, source.local.e_x, source.local.e_y, options.radius};
+                target_in_source.reserve(target.points_3d.size());
+                bool valid_projection = true;
+                for (const Eigen::Vector3d& p3d : target.points_3d) {
+                    try {
+                        target_in_source.push_back(project_gnomonic(p3d, source_frame));
+                    } catch (const std::runtime_error&) {
+                        valid_projection = false;
+                        break;
+                    }
+                }
+                if (!valid_projection) {
+                    continue;
+                }
+            } else {
+                target_in_source = absolute_points(target);
+            }
+
+            const std::vector<Eigen::Vector2d> overlap =
+                convex_polygon_intersection(target_in_source, source.absolute, options.geometry_tolerance);
+            const double overlap_chart_area = polygon_area_abs(overlap);
+            if (overlap_chart_area <= options.geometry_tolerance) {
+                continue;
+            }
+            rhs[target_index] += source.coeffs.d * overlap_chart_area;
+        }
+    }
+    return rhs;
+}
+
 void write_edge_map_csv(const std::string& path, const std::vector<DirectedEdgeDof>& edges)
 {
     std::ofstream out(path.c_str());
@@ -1459,6 +1651,87 @@ SparseEdgeProjection MimeticInterpolator::assemble_edge_projection_operator(
     projection.matrix.setFromTriplets(triplets.begin(), triplets.end());
     projection.matrix.makeCompressed();
     return projection;
+}
+
+ConformingEdgeTransferResult MimeticInterpolator::project_target_fluxes_to_hdiv_conforming(
+    const std::vector<moab::EntityHandle>& source_polygons,
+    const std::vector<moab::EntityHandle>& target_polygons,
+    const EdgeTransferResult& raw_transfer)
+{
+    const std::vector<DirectedTargetEdgeInfo> target_edges =
+        build_directed_target_edges(mb_, target_polygons, options_);
+    verify_raw_target_order(raw_transfer, target_edges);
+
+    const CollapsedTargetEdges collapse = collapse_target_edges(target_edges, options_);
+    const std::vector<double> divergence_rhs =
+        target_divergence_rhs(mb_, tag_coeffs_, options_, source_polygons, target_polygons);
+
+    const std::size_t num_unique = collapse.unique_count;
+    const std::size_t num_directed = target_edges.size();
+    const std::size_t num_cells = target_polygons.size();
+    if (num_directed != raw_transfer.target_fluxes.size()) {
+        throw std::runtime_error("Raw transfer flux count does not match target edge DOF count");
+    }
+    if (divergence_rhs.size() != num_cells) {
+        throw std::runtime_error("Target divergence right-hand side size mismatch");
+    }
+
+    Eigen::VectorXd hdiag = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(num_unique));
+    Eigen::VectorXd g = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(num_unique));
+    Eigen::MatrixXd A = Eigen::MatrixXd::Zero(static_cast<Eigen::Index>(num_cells),
+                                              static_cast<Eigen::Index>(num_unique));
+    for (std::size_t i = 0; i < num_directed; ++i) {
+        const std::size_t unique = collapse.directed_to_unique[i];
+        const double sign = static_cast<double>(collapse.directed_signs[i]);
+        hdiag(static_cast<Eigen::Index>(unique)) += 1.0;
+        g(static_cast<Eigen::Index>(unique)) += sign * raw_transfer.target_fluxes[i];
+        A(static_cast<Eigen::Index>(target_edges[i].cell_index), static_cast<Eigen::Index>(unique)) += sign;
+    }
+
+    for (Eigen::Index i = 0; i < hdiag.size(); ++i) {
+        if (hdiag(i) <= 0.0) {
+            throw std::runtime_error("Degenerate unique target edge encountered in H(div) projection");
+        }
+    }
+
+    const Eigen::VectorXd hinv = hdiag.cwiseInverse();
+    Eigen::MatrixXd AHinv = A;
+    for (Eigen::Index j = 0; j < AHinv.cols(); ++j) {
+        AHinv.col(j) *= hinv(j);
+    }
+
+    Eigen::VectorXd b(static_cast<Eigen::Index>(num_cells));
+    for (std::size_t i = 0; i < num_cells; ++i) {
+        b(static_cast<Eigen::Index>(i)) = divergence_rhs[i];
+    }
+
+    const Eigen::MatrixXd schur = AHinv * A.transpose();
+    const Eigen::VectorXd schur_rhs = AHinv * g - b;
+    const Eigen::VectorXd lambda = schur.completeOrthogonalDecomposition().solve(schur_rhs);
+    const Eigen::VectorXd unique_fluxes = hinv.cwiseProduct(g - A.transpose() * lambda);
+
+    ConformingEdgeTransferResult result;
+    result.target_edges = raw_transfer.target_edges;
+    result.target_cells = target_polygons;
+    result.target_divergence_integrals = divergence_rhs;
+    result.target_edge_to_unique = collapse.directed_to_unique;
+    result.target_edge_signs = collapse.directed_signs;
+    result.unique_edge_fluxes.resize(num_unique, 0.0);
+    result.target_fluxes.resize(num_directed, 0.0);
+
+    for (std::size_t i = 0; i < num_unique; ++i) {
+        result.unique_edge_fluxes[i] = unique_fluxes(static_cast<Eigen::Index>(i));
+    }
+    for (std::size_t i = 0; i < num_directed; ++i) {
+        const std::size_t unique = collapse.directed_to_unique[i];
+        const double flux = static_cast<double>(collapse.directed_signs[i]) * result.unique_edge_fluxes[unique];
+        result.target_fluxes[i] = flux;
+        directed_target_flux_[std::make_pair(result.target_edges[i].polygon, result.target_edges[i].local_edge_index)] = flux;
+        check_moab(mb_.tag_set_data(tag_target_flux_, &result.target_edges[i].edge, 1, &flux),
+                   "Failed to write H(div)-conforming target flux tag");
+    }
+
+    return result;
 }
 
 }  // namespace mimetic

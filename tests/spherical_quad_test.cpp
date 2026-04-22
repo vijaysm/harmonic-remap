@@ -28,6 +28,8 @@ struct CaseMetrics {
     double global_conservation_residual;
     double max_target_cell_reintegration_residual;
     double max_direct_sparse_delta;
+    double max_conforming_target_cell_residual;
+    double conforming_correction_l2_relative;
     double l2_relative_flux_error;
     double max_flux_error;
     double direct_cell_average_l1_error;
@@ -122,6 +124,8 @@ CaseMetrics run_case(const int source_n,
 
     const mimetic::EdgeTransferResult transfer =
         interpolator.transfer_source_to_target_edges(source_mesh, target_mesh);
+    const mimetic::ConformingEdgeTransferResult conforming =
+        interpolator.project_target_fluxes_to_hdiv_conforming(source_mesh, target_mesh, transfer);
     const mimetic::CellAverageTransferResult direct_cell =
         interpolator.transfer_source_to_target_cell_averages(
             source_mesh, target_mesh, mimetic::CellAverageReductionMode::Harmonic);
@@ -138,10 +142,13 @@ CaseMetrics run_case(const int source_n,
     double l2_den = 0.0;
     double max_flux_error = 0.0;
     double max_reintegration_residual = 0.0;
+    double max_conforming_target_cell_residual = 0.0;
     double direct_cell_average_l1_error = 0.0;
     double direct_cell_average_linf_error = 0.0;
     double reconstructed_cell_average_l1_error = 0.0;
     double reconstructed_cell_average_linf_error = 0.0;
+    double correction_num = 0.0;
+    double correction_den = 0.0;
     std::size_t dof = 0;
 
     for (std::size_t cell_index = 0; cell_index < target_mesh.size(); ++cell_index) {
@@ -149,21 +156,29 @@ CaseMetrics run_case(const int source_n,
         const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, cell, options);
         const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb, poly);
         double cell_divergence = 0.0;
+        double conforming_cell_divergence = 0.0;
         double cell_max_flux_error = 0.0;
 
         for (std::size_t i = 0; i < edges.size(); ++i) {
             const double exact = target_exact_fluxes.at(std::make_pair(cell, i));
             const double transferred = transfer.target_fluxes[dof++];
+            const double conforming_transferred = conforming.target_fluxes[dof - 1];
             const double error = std::abs(transferred - exact);
             l2_num += error * error;
             l2_den += exact * exact;
             max_flux_error = std::max(max_flux_error, error);
             cell_max_flux_error = std::max(cell_max_flux_error, error);
             cell_divergence += transferred;
+            conforming_cell_divergence += conforming_transferred;
+            correction_num += (conforming_transferred - transferred) * (conforming_transferred - transferred);
+            correction_den += conforming_transferred * conforming_transferred;
             interpolator.set_source_edge_flux(cell, i, transferred);
         }
 
         total_target_divergence += cell_divergence;
+        max_conforming_target_cell_residual =
+            std::max(max_conforming_target_cell_residual,
+                     std::abs(conforming_cell_divergence - conforming.target_divergence_integrals[cell_index]));
         interpolator.reconstruct_source_polygon(cell);
         const mimetic::ReconstructionCoeffs target_coeffs = mimetic::test_sphere::read_coeffs(mb, interpolator, cell);
         for (std::size_t i = 0; i < edges.size(); ++i) {
@@ -237,6 +252,10 @@ CaseMetrics run_case(const int source_n,
     metrics.global_conservation_residual = std::abs(total_source_divergence - total_target_divergence);
     metrics.max_target_cell_reintegration_residual = max_reintegration_residual;
     metrics.max_direct_sparse_delta = direct_sparse_delta;
+    metrics.max_conforming_target_cell_residual = max_conforming_target_cell_residual;
+    metrics.conforming_correction_l2_relative =
+        (correction_den > std::numeric_limits<double>::epsilon()) ? std::sqrt(correction_num / correction_den)
+                                                                  : std::sqrt(correction_num);
     metrics.l2_relative_flux_error =
         (l2_den > std::numeric_limits<double>::epsilon()) ? std::sqrt(l2_num / l2_den) : std::sqrt(l2_num);
     metrics.max_flux_error = max_flux_error;
@@ -258,7 +277,9 @@ void print_case_metrics(const CaseMetrics& m)
               << " target_div=" << m.target_divergence
               << " global_residual=" << m.global_conservation_residual << "\n"
               << "  direct_sparse_delta=" << m.max_direct_sparse_delta
-              << " target_reintegration=" << m.max_target_cell_reintegration_residual << "\n"
+              << " target_reintegration=" << m.max_target_cell_reintegration_residual
+              << " conforming_target_residual=" << m.max_conforming_target_cell_residual << "\n"
+              << "  conforming_correction_l2_rel=" << m.conforming_correction_l2_relative << "\n"
               << "  edge_flux_l2_rel=" << m.l2_relative_flux_error
               << " edge_flux_linf=" << m.max_flux_error << "\n"
               << "  direct_cell_avg_l1=" << m.direct_cell_average_l1_error
@@ -271,7 +292,8 @@ bool invariants_pass(const CaseMetrics& m)
 {
     return m.global_conservation_residual <= mimetic::kConservationTolerance &&
            m.max_target_cell_reintegration_residual <= mimetic::kConservationTolerance &&
-           m.max_direct_sparse_delta <= mimetic::kConservationTolerance;
+           m.max_direct_sparse_delta <= mimetic::kConservationTolerance &&
+           m.max_conforming_target_cell_residual <= mimetic::kConservationTolerance;
 }
 
 void print_usage(const char* argv0)

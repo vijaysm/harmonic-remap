@@ -66,6 +66,9 @@ target_link_libraries(spherical_scalar_test PRIVATE mimetic)
 add_executable(cell_average_transfer_test tests/cell_average_transfer_test.cpp)
 target_link_libraries(cell_average_transfer_test PRIVATE mimetic)
 
+add_executable(hdiv_conforming_projection_test tests/hdiv_conforming_projection_test.cpp)
+target_link_libraries(hdiv_conforming_projection_test PRIVATE mimetic)
+
 enable_testing()
 add_test(NAME patch_test COMMAND patch_test)
 add_test(NAME conservative_intersection_test COMMAND conservative_intersection_test)
@@ -76,6 +79,7 @@ add_test(NAME spherical_quad_test COMMAND spherical_quad_test)
 add_test(NAME spherical_voronoi_test COMMAND spherical_voronoi_test)
 add_test(NAME spherical_scalar_test COMMAND spherical_scalar_test)
 add_test(NAME cell_average_transfer_test COMMAND cell_average_transfer_test)
+add_test(NAME hdiv_conforming_projection_test COMMAND hdiv_conforming_projection_test)
 
 add_executable(dump_visuals tests/dump_visuals.cpp)
 target_link_libraries(dump_visuals PRIVATE mimetic ${MOAB_LIBRARY})

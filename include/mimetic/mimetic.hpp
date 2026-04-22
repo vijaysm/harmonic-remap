@@ -245,6 +245,27 @@ struct SparseEdgeProjection {
     std::vector<DirectedEdgeDof> target_edges;
 };
 
+/**
+ * Globally conforming target-edge flux field derived from a raw directed transfer.
+ *
+ * `target_fluxes` stores one signed flux per directed target edge in the same
+ * ordering convention as EdgeTransferResult.  `unique_edge_fluxes` stores one
+ * global edge flux per geometric target edge after collapsing opposite cell-local
+ * orientations.  The relation is
+ *   target_fluxes[i] = target_edge_signs[i] * unique_edge_fluxes[target_edge_to_unique[i]].
+ * `target_divergence_integrals` stores the exact per-target-cell divergence
+ * constraints assembled from the source-cell reconstructions.
+ */
+struct ConformingEdgeTransferResult {
+    std::vector<DirectedEdgeDof> target_edges;
+    std::vector<double> target_fluxes;
+    std::vector<moab::EntityHandle> target_cells;
+    std::vector<double> target_divergence_integrals;
+    std::vector<std::size_t> target_edge_to_unique;
+    std::vector<int> target_edge_signs;
+    std::vector<double> unique_edge_fluxes;
+};
+
 /// Signed shoelace area; positive for counter-clockwise point order.
 double signed_area(const std::vector<Eigen::Vector2d>& points);
 /// Area-weighted polygon centroid in absolute planar coordinates.
@@ -365,6 +386,18 @@ class MimeticInterpolator {
     /// Assemble the linear sparse operator U_t = P U_s for directed edge DOFs.
     SparseEdgeProjection assemble_edge_projection_operator(const std::vector<moab::EntityHandle>& source_polygons,
                                                            const std::vector<moab::EntityHandle>& target_polygons);
+    /**
+     * Project raw directed target-edge fluxes onto a globally conforming target skeleton.
+     *
+     * The postprocess solves a constrained least-squares problem on unique
+     * geometric target edges: it stays as close as possible to `raw_transfer`
+     * in the directed edge-flux norm while enforcing one exact divergence
+     * constraint per target cell.
+     */
+    ConformingEdgeTransferResult project_target_fluxes_to_hdiv_conforming(
+        const std::vector<moab::EntityHandle>& source_polygons,
+        const std::vector<moab::EntityHandle>& target_polygons,
+        const EdgeTransferResult& raw_transfer);
 
   private:
     moab::Core& mb_;
