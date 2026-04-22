@@ -327,6 +327,9 @@ Eigen::Vector3d inverse_gnomonic(const Eigen::Vector2d& xi, const GnomonicFrame&
 Eigen::Matrix<double, 3, 2> gnomonic_jacobian(const Eigen::Vector2d& xi, const GnomonicFrame& frame);
 /// Area scale |dr/dxi x dr/deta| for the inverse gnomonic chart.
 double gnomonic_area_scale(const Eigen::Vector2d& xi, const GnomonicFrame& frame);
+/// Physical spherical area of a chart polygon under the inverse gnomonic map.
+double chart_polygon_surface_area(const std::vector<Eigen::Vector2d>& polygon,
+                                  const GnomonicFrame& frame);
 /// Contravariant Piola lift from chart vector components to a surface tangent vector.
 Eigen::Vector3d lift_contravariant_piola(const Eigen::Vector2d& chart_vector,
                                          const Eigen::Vector2d& xi,

@@ -81,14 +81,15 @@ moab::Tag vector_tag(moab::Core& mb, const std::string& name)
 CaseMetrics run_case(const int source_n,
                      const int target_n,
                      const std::string& output_prefix,
-                     const bool write_vtk)
+                     const bool write_vtk,
+                     const bool metric_weighted = true)
 {
     moab::Core mb;
     mimetic::MimeticInterpolator interpolator(mb);
     mimetic::GeometryOptions options;
     options.mode = mimetic::GeometryMode::SphericalGnomonic;
     options.conservation_tolerance = mimetic::kConservationTolerance;
-    options.metric_weighted = true;
+    options.metric_weighted = metric_weighted;
     interpolator.set_geometry_options(options);
 
     const std::vector<moab::EntityHandle> source_mesh =
@@ -104,6 +105,8 @@ CaseMetrics run_case(const int source_n,
     const moab::Tag target_field_recon_tag = vector_tag(mb, "TARGET_FIELD_RECON");
     const moab::Tag target_field_direct_tag = vector_tag(mb, "TARGET_FIELD_DIRECT");
     const moab::Tag target_field_exact_tag = vector_tag(mb, "TARGET_FIELD_EXACT");
+    const moab::Tag target_field_error_tag = vector_tag(mb, "TARGET_FIELD_ERROR");
+    const moab::Tag target_field_direct_error_tag = vector_tag(mb, "TARGET_FIELD_DIRECT_ERROR");
 
     double total_source_divergence = 0.0;
     mimetic::test_sphere::set_conservative_source_fluxes(
@@ -207,6 +210,8 @@ CaseMetrics run_case(const int source_n,
         const double direct_data[3] = {field_direct.x(), field_direct.y(), field_direct.z()};
         const double recon_data[3] = {field_recon.x(), field_recon.y(), field_recon.z()};
         const double exact_data[3] = {field_exact.x(), field_exact.y(), field_exact.z()};
+        const double error_data[3] = {field_error.x(), field_error.y(), field_error.z()};
+        const double direct_error_data[3] = {direct_field_error.x(), direct_field_error.y(), direct_field_error.z()};
         mimetic::check_moab(mb.tag_set_data(target_div_tag, &cell, 1, &cell_divergence),
                             "Failed to write target divergence diagnostic");
         mimetic::check_moab(mb.tag_set_data(target_field_direct_tag, &cell, 1, direct_data),
@@ -215,6 +220,10 @@ CaseMetrics run_case(const int source_n,
                             "Failed to write reconstructed field diagnostic");
         mimetic::check_moab(mb.tag_set_data(target_field_exact_tag, &cell, 1, exact_data),
                             "Failed to write exact field diagnostic");
+        mimetic::check_moab(mb.tag_set_data(target_field_error_tag, &cell, 1, error_data),
+                            "Failed to write reconstructed field error diagnostic");
+        mimetic::check_moab(mb.tag_set_data(target_field_direct_error_tag, &cell, 1, direct_error_data),
+                            "Failed to write direct field error diagnostic");
         mimetic::check_moab(mb.tag_set_data(target_field_error_norm_tag, &cell, 1, &field_error_norm),
                             "Failed to write field error norm diagnostic");
         mimetic::check_moab(mb.tag_set_data(target_field_direct_error_norm_tag, &cell, 1, &direct_field_error_norm),
@@ -318,10 +327,10 @@ int main(int argc, char** argv)
             const int target_n = parse_positive_int(argv[2], "target_n");
             const CaseMetrics metrics = run_case(source_n, target_n, argv[3], true);
             print_case_metrics(metrics);
-        bool ok = invariants_pass(metrics);
-        if (source_n == target_n) {
-            ok = (metrics.max_flux_error <= mimetic::kConservationTolerance) && ok;
-        }
+            bool ok = invariants_pass(metrics);
+            if (source_n == target_n) {
+                ok = (metrics.max_flux_error <= mimetic::kConservationTolerance) && ok;
+            }
             if (!ok) {
                 std::cout << "\n[FAILED] Spherical cubed-sphere case failed acceptance checks.\n";
                 return 1;
@@ -334,6 +343,7 @@ int main(int argc, char** argv)
         const CaseMetrics refine = run_case(4, 6, "cubed_sphere", true);
         const CaseMetrics coarsen = run_case(6, 4, "cubed_sphere_coarsen", false);
         const CaseMetrics fine = run_case(6, 8, "cubed_sphere_fine", false);
+        const CaseMetrics refine_unweighted = run_case(4, 6, "cubed_sphere_unweighted", false, false);
 
         std::cout << "Identity case:\n";
         print_case_metrics(identity);
@@ -343,9 +353,12 @@ int main(int argc, char** argv)
         print_case_metrics(coarsen);
         std::cout << "Fine refinement case:\n";
         print_case_metrics(fine);
+        std::cout << "Unweighted parity case:\n";
+        print_case_metrics(refine_unweighted);
 
         bool ok = invariants_pass(identity) && invariants_pass(refine) &&
-                  invariants_pass(coarsen) && invariants_pass(fine);
+                  invariants_pass(coarsen) && invariants_pass(fine) &&
+                  invariants_pass(refine_unweighted);
         ok = (identity.max_flux_error <= mimetic::kConservationTolerance) && ok;
         ok = (fine.l2_relative_flux_error < refine.l2_relative_flux_error) && ok;
         ok = (fine.max_flux_error < refine.max_flux_error) && ok;

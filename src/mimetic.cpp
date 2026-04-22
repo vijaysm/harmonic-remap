@@ -11,6 +11,10 @@
 
 namespace mimetic {
 
+namespace {
+constexpr double kPi = 3.141592653589793238462643383279502884;
+}
+
 void check_moab(const moab::ErrorCode code, const std::string& message)
 {
     if (code != moab::MB_SUCCESS) {
@@ -1345,6 +1349,38 @@ double gnomonic_area_scale(const Eigen::Vector2d& xi, const GnomonicFrame& frame
 {
     const Eigen::Matrix<double, 3, 2> jacobian = gnomonic_jacobian(xi, frame);
     return jacobian.col(0).cross(jacobian.col(1)).norm();
+}
+
+double chart_polygon_surface_area(const std::vector<Eigen::Vector2d>& polygon,
+                                  const GnomonicFrame& frame)
+{
+    if (polygon.size() < 3) {
+        return 0.0;
+    }
+
+    std::vector<Eigen::Vector2d> polygon_ccw = polygon;
+    if (signed_area(polygon_ccw) < 0.0) {
+        std::reverse(polygon_ccw.begin(), polygon_ccw.end());
+    }
+
+    double area = 0.0;
+    std::vector<Eigen::Vector3d> lifted_points;
+    lifted_points.reserve(polygon_ccw.size());
+    for (const Eigen::Vector2d& xi : polygon_ccw) {
+        lifted_points.push_back(inverse_gnomonic(xi, frame).normalized());
+    }
+    for (std::size_t i = 0; i < lifted_points.size(); ++i) {
+        const Eigen::Vector3d& previous = lifted_points[(i + lifted_points.size() - 1) % lifted_points.size()];
+        const Eigen::Vector3d& vertex = lifted_points[i];
+        const Eigen::Vector3d& next = lifted_points[(i + 1) % lifted_points.size()];
+        const Eigen::Vector3d tangent_prev =
+            (previous - previous.dot(vertex) * vertex).normalized();
+        const Eigen::Vector3d tangent_next =
+            (next - next.dot(vertex) * vertex).normalized();
+        area += std::acos(clamp_unit(tangent_prev.dot(tangent_next)));
+    }
+    area -= (static_cast<double>(lifted_points.size()) - 2.0) * kPi;
+    return area * frame.radius * frame.radius;
 }
 
 Eigen::Vector3d lift_contravariant_piola(const Eigen::Vector2d& chart_vector,

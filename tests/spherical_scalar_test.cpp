@@ -138,6 +138,8 @@ struct Metrics {
     int target_n;
     double l2_relative_error;
     double max_error;
+    double max_target_coverage_residual;
+    double global_conservation_residual;
 };
 
 Metrics run_case(const int source_n, const int target_n)
@@ -160,10 +162,18 @@ Metrics run_case(const int source_n, const int target_n)
     double l2_num = 0.0;
     double l2_den = 0.0;
     double max_error = 0.0;
+    double max_target_coverage_residual = 0.0;
+    double total_source_integral = 0.0;
+    double total_target_integral = 0.0;
+
+    for (std::size_t i = 0; i < source_mesh.size(); ++i) {
+        total_source_integral += source_values[i] * source_polys[i].spherical_area;
+    }
 
     for (const moab::EntityHandle target : target_mesh) {
         const mimetic::SphericalPolygon target_poly = mimetic::spherical_polygon(mb, target, options);
         double remapped_integral = 0.0;
+        double covered_area = 0.0;
 
         for (std::size_t i = 0; i < source_polys.size(); ++i) {
             std::vector<Eigen::Vector2d> target_in_source;
@@ -183,15 +193,14 @@ Metrics run_case(const int source_n, const int target_n)
 
             const std::vector<Eigen::Vector2d> overlap =
                 clip_convex_polygon(target_in_source, source_polys[i].projected_points, 1.0e-13);
-            const double overlap_chart_area = polygon_area(overlap);
-            if (overlap_chart_area <= 1.0e-14) {
+            if (polygon_area(overlap) <= 1.0e-14) {
                 continue;
             }
 
-            const Eigen::Vector2d overlap_centroid = mimetic::polygon_centroid(overlap);
-            const double local_scale = mimetic::gnomonic_area_scale(overlap_centroid, source_polys[i].frame);
-            const double overlap_spherical_area = overlap_chart_area * local_scale;
+            const double overlap_spherical_area =
+                mimetic::chart_polygon_surface_area(overlap, source_polys[i].frame);
             remapped_integral += source_values[i] * overlap_spherical_area;
+            covered_area += overlap_spherical_area;
         }
 
         const double remapped_average = remapped_integral / target_poly.spherical_area;
@@ -200,6 +209,9 @@ Metrics run_case(const int source_n, const int target_n)
         l2_num += target_poly.spherical_area * error * error;
         l2_den += target_poly.spherical_area * exact_average * exact_average;
         max_error = std::max(max_error, error);
+        max_target_coverage_residual =
+            std::max(max_target_coverage_residual, std::abs(covered_area - target_poly.spherical_area));
+        total_target_integral += remapped_integral;
     }
 
     Metrics metrics{};
@@ -207,6 +219,8 @@ Metrics run_case(const int source_n, const int target_n)
     metrics.target_n = target_n;
     metrics.l2_relative_error = l2_den > std::numeric_limits<double>::epsilon() ? std::sqrt(l2_num / l2_den) : std::sqrt(l2_num);
     metrics.max_error = max_error;
+    metrics.max_target_coverage_residual = max_target_coverage_residual;
+    metrics.global_conservation_residual = std::abs(total_target_integral - total_source_integral);
     return metrics;
 }
 
@@ -215,7 +229,9 @@ void print_metrics(const Metrics& metrics)
     std::cout << "  source_n=" << metrics.source_n << " target_n=" << metrics.target_n << "\n"
               << std::scientific << std::setprecision(6)
               << "  scalar_l2_rel=" << metrics.l2_relative_error
-              << " scalar_linf=" << metrics.max_error << "\n";
+              << " scalar_linf=" << metrics.max_error << "\n"
+              << "  target_coverage_residual=" << metrics.max_target_coverage_residual
+              << " global_conservation_residual=" << metrics.global_conservation_residual << "\n";
 }
 
 }
@@ -234,7 +250,11 @@ int main()
         print_metrics(fine);
 
         const bool ok = fine.l2_relative_error < coarse.l2_relative_error &&
-                        fine.max_error < coarse.max_error;
+                        fine.max_error < coarse.max_error &&
+                        coarse.max_target_coverage_residual <= mimetic::kConservationTolerance &&
+                        fine.max_target_coverage_residual <= mimetic::kConservationTolerance &&
+                        coarse.global_conservation_residual <= mimetic::kConservationTolerance &&
+                        fine.global_conservation_residual <= mimetic::kConservationTolerance;
         if (!ok) {
             std::cout << "\n[FAILED] Scalar control test did not converge under refinement.\n";
             return 1;
