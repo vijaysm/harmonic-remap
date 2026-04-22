@@ -290,6 +290,16 @@ struct EdgeMomentTransferResult {
     std::vector<std::vector<double>> target_moments;
 };
 
+struct ConformingEdgeMomentTransferResult {
+    std::vector<DirectedEdgeDof> target_edges;
+    std::vector<std::vector<double>> target_moments;
+    std::vector<moab::EntityHandle> target_cells;
+    std::vector<double> target_divergence_integrals;
+    std::vector<std::size_t> target_edge_to_unique;
+    std::vector<int> target_edge_orientations;
+    std::vector<std::vector<double>> unique_edge_moments;
+};
+
 /// Signed shoelace area; positive for counter-clockwise point order.
 double signed_area(const std::vector<Eigen::Vector2d>& points);
 /// Area-weighted polygon centroid in absolute planar coordinates.
@@ -469,6 +479,10 @@ class PlanarMomentInterpolator {
         const std::vector<moab::EntityHandle>& source_polygons,
         const std::vector<moab::EntityHandle>& target_polygons,
         int target_moment_order) const;
+    ConformingEdgeMomentTransferResult project_target_edge_moments_to_hdiv_conforming(
+        const std::vector<moab::EntityHandle>& source_polygons,
+        const std::vector<moab::EntityHandle>& target_polygons,
+        const EdgeMomentTransferResult& raw_transfer) const;
 
   private:
     moab::Core& mb_;

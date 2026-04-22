@@ -290,6 +290,9 @@ struct ErrorSummary {
     double l2_target_moment0_error = 0.0;
     double l2_target_all_error = 0.0;
     double max_target_moment_error = 0.0;
+    double max_conforming_target_moment_error = 0.0;
+    double max_conforming_target_divergence_residual = 0.0;
+    double relative_conforming_correction = 0.0;
 };
 
 ErrorSummary run_case(const std::string& label,
@@ -338,42 +341,68 @@ ErrorSummary run_case(const std::string& label,
 
     const mimetic::EdgeMomentTransferResult high_transfer =
         high_order.transfer_source_to_target_edge_moments(handles(source_cells), handles(target_cells), p2_options.edge_moment_order);
+    const mimetic::ConformingEdgeMomentTransferResult conforming =
+        high_order.project_target_edge_moments_to_hdiv_conforming(handles(source_cells), handles(target_cells), high_transfer);
 
     std::size_t dof = 0;
+    double conforming_delta_num = 0.0;
+    double conforming_delta_den = 0.0;
     for (const CellInfo& target : target_cells) {
         const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, target.handle);
         const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb, poly);
+        double exact_divergence_integral = 0.0;
+        double conforming_divergence_integral = 0.0;
         for (const mimetic::LocalEdge& edge : edges) {
             const Eigen::Vector2d a = poly.centroid + edge.a;
             const Eigen::Vector2d b = poly.centroid + edge.b;
             const std::vector<double> exact = exact_edge_moments_absolute(a, b, p2_options.edge_moment_order);
 
             const std::vector<double>& high_moments = high_transfer.target_moments[dof];
+            const std::vector<double>& conforming_moments = conforming.target_moments[dof];
 
             const double high_m0_error = high_moments[0] - exact[0];
             summary.l2_target_moment0_error += high_m0_error * high_m0_error;
             summary.max_target_moment_error =
                 std::max(summary.max_target_moment_error, std::abs(high_m0_error));
+            exact_divergence_integral += exact[0];
+            conforming_divergence_integral += conforming_moments[0];
 
             for (int degree = 0; degree <= p2_options.edge_moment_order; ++degree) {
                 const double error = high_moments[degree] - exact[degree];
                 summary.l2_target_all_error += error * error;
                 summary.max_target_moment_error =
                     std::max(summary.max_target_moment_error, std::abs(error));
+
+                const double conf_error = conforming_moments[degree] - exact[degree];
+                summary.max_conforming_target_moment_error =
+                    std::max(summary.max_conforming_target_moment_error, std::abs(conf_error));
+
+                const double delta = conforming_moments[degree] - high_moments[degree];
+                conforming_delta_num += delta * delta;
+                conforming_delta_den += exact[degree] * exact[degree];
             }
             ++dof;
         }
+        summary.max_conforming_target_divergence_residual =
+            std::max(summary.max_conforming_target_divergence_residual,
+                     std::abs(conforming_divergence_integral - exact_divergence_integral));
     }
 
     summary.l2_target_moment0_error = std::sqrt(summary.l2_target_moment0_error);
     summary.l2_target_all_error = std::sqrt(summary.l2_target_all_error);
+    summary.relative_conforming_correction =
+        (conforming_delta_den > 1.0e-30) ? std::sqrt(conforming_delta_num / conforming_delta_den)
+                                         : std::sqrt(conforming_delta_num);
 
     std::cout << std::scientific << std::setprecision(6)
               << "  max_source_moment_residual = " << summary.max_source_moment_residual << "\n"
               << "  max_source_point_error     = " << summary.max_source_point_error << "\n"
               << "  p2 target moment-0 L2      = " << summary.l2_target_moment0_error << "\n"
               << "  p2 target all-moment L2    = " << summary.l2_target_all_error << "\n"
-              << "  p2 max target moment error = " << summary.max_target_moment_error << "\n";
+              << "  p2 max target moment error = " << summary.max_target_moment_error << "\n"
+              << "  conforming max moment err  = " << summary.max_conforming_target_moment_error << "\n"
+              << "  conforming max div resid   = " << summary.max_conforming_target_divergence_residual << "\n"
+              << "  conforming rel correction  = " << summary.relative_conforming_correction << "\n";
 
     bool ok = true;
     ok = mimetic::test::near(summary.max_source_moment_residual, 0.0, 1.0e-10,
@@ -384,6 +413,12 @@ ErrorSummary run_case(const std::string& label,
                              label + " target flux transfer") && ok;
     ok = mimetic::test::near(summary.l2_target_all_error, 0.0, 2.0e-10,
                              label + " target moment transfer") && ok;
+    ok = mimetic::test::near(summary.max_conforming_target_moment_error, 0.0, 2.0e-10,
+                             label + " conforming target moment transfer") && ok;
+    ok = mimetic::test::near(summary.max_conforming_target_divergence_residual, 0.0, 5.0e-13,
+                             label + " conforming target divergence balance") && ok;
+    ok = mimetic::test::near(summary.relative_conforming_correction, 0.0, 2.0e-10,
+                             label + " conforming correction on exact field") && ok;
 
     if (!ok) {
         throw std::runtime_error("High-order edge-moment validation failed for " + label);

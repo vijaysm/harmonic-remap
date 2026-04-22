@@ -779,6 +779,34 @@ void verify_raw_target_order(const EdgeTransferResult& raw_transfer, const std::
     }
 }
 
+void verify_raw_target_order(const EdgeMomentTransferResult& raw_transfer,
+                             const std::vector<DirectedTargetEdgeInfo>& target_edges)
+{
+    if (raw_transfer.target_edges.size() != target_edges.size()) {
+        throw std::runtime_error("Raw high-order transfer target edge count does not match target mesh enumeration");
+    }
+    for (std::size_t i = 0; i < target_edges.size(); ++i) {
+        const DirectedEdgeDof& expected = target_edges[i].dof;
+        const DirectedEdgeDof& actual = raw_transfer.target_edges[i];
+        if (expected.polygon != actual.polygon ||
+            expected.edge != actual.edge ||
+            expected.local_edge_index != actual.local_edge_index) {
+            throw std::runtime_error("Raw high-order transfer target edge ordering does not match target mesh enumeration");
+        }
+    }
+}
+
+double target_edge_moment_orientation_factor(const int orientation, const int degree)
+{
+    if (orientation == 1) {
+        return 1.0;
+    }
+    if (orientation == -1) {
+        return ((degree % 2) == 0) ? -1.0 : 1.0;
+    }
+    throw std::runtime_error("Invalid target edge orientation");
+}
+
 CollapsedTargetEdges collapse_target_edges(const std::vector<DirectedTargetEdgeInfo>& target_edges,
                                            const GeometryOptions& options)
 {
@@ -864,6 +892,85 @@ std::vector<double> target_divergence_rhs(moab::Core& mb,
                 continue;
             }
             rhs[target_index] += source.coeffs.d * overlap_chart_area;
+        }
+    }
+    return rhs;
+}
+
+double moment_polygon_boundary_flux(const MomentReconstruction& reconstruction,
+                                    const std::vector<Eigen::Vector2d>& polygon_points_absolute,
+                                    const Eigen::Vector2d& source_centroid,
+                                    const std::vector<GaussLegendrePoint>& quadrature)
+{
+    if (polygon_points_absolute.size() < 3) {
+        return 0.0;
+    }
+
+    std::vector<Eigen::Vector2d> points = polygon_points_absolute;
+    if (signed_area(points) < 0.0) {
+        std::reverse(points.begin(), points.end());
+    }
+
+    double flux = 0.0;
+    for (std::size_t i = 0; i < points.size(); ++i) {
+        const Eigen::Vector2d a = points[i];
+        const Eigen::Vector2d b = points[(i + 1) % points.size()];
+        const Eigen::Vector2d delta = b - a;
+        const double length = delta.norm();
+        if (length <= kTolerance) {
+            continue;
+        }
+        const Eigen::Vector2d outward(delta.y(), -delta.x());
+        const Eigen::Vector2d unit_outward = outward / length;
+        flux += integrate_edge_highorder_rule(a, b, quadrature, [&](const Eigen::Vector2d& p_abs) {
+            return moment_velocity_value(reconstruction, p_abs - source_centroid).dot(unit_outward);
+        });
+    }
+    return flux;
+}
+
+std::vector<double> target_divergence_rhs(const moab::Core& mb,
+                                          const std::map<moab::EntityHandle, MomentReconstruction>& reconstructions,
+                                          const std::vector<moab::EntityHandle>& source_polygons,
+                                          const std::vector<moab::EntityHandle>& target_polygons)
+{
+    struct SourceCache {
+        moab::EntityHandle polygon;
+        LocalPolygon local;
+        std::vector<Eigen::Vector2d> absolute;
+        MomentReconstruction reconstruction;
+    };
+
+    std::vector<SourceCache> sources;
+    sources.reserve(source_polygons.size());
+    for (const moab::EntityHandle source_polygon : source_polygons) {
+        const auto it = reconstructions.find(source_polygon);
+        if (it == reconstructions.end()) {
+            throw std::runtime_error("Missing high-order reconstruction for source polygon");
+        }
+        const LocalPolygon local = local_polygon(const_cast<moab::Core&>(mb), source_polygon);
+        sources.push_back(SourceCache{
+            source_polygon,
+            local,
+            absolute_points(local),
+            it->second,
+        });
+    }
+
+    const std::vector<GaussLegendrePoint> quadrature = gauss_legendre_rule(10);
+    std::vector<double> rhs(target_polygons.size(), 0.0);
+    for (std::size_t target_index = 0; target_index < target_polygons.size(); ++target_index) {
+        const moab::EntityHandle target_polygon = target_polygons[target_index];
+        const LocalPolygon target = local_polygon(const_cast<moab::Core&>(mb), target_polygon);
+        const std::vector<Eigen::Vector2d> target_absolute = absolute_points(target);
+        for (const SourceCache& source : sources) {
+            const std::vector<Eigen::Vector2d> overlap =
+                convex_polygon_intersection(target_absolute, source.absolute, kTolerance);
+            if (polygon_area_abs(overlap) <= kTolerance) {
+                continue;
+            }
+            rhs[target_index] += moment_polygon_boundary_flux(
+                source.reconstruction, overlap, source.local.centroid, quadrature);
         }
     }
     return rhs;
@@ -2310,6 +2417,104 @@ EdgeMomentTransferResult PlanarMomentInterpolator::transfer_source_to_target_edg
                     result.target_moments[target_dof][degree] += contribution;
                 }
             }
+        }
+    }
+
+    return result;
+}
+
+ConformingEdgeMomentTransferResult PlanarMomentInterpolator::project_target_edge_moments_to_hdiv_conforming(
+    const std::vector<moab::EntityHandle>& source_polygons,
+    const std::vector<moab::EntityHandle>& target_polygons,
+    const EdgeMomentTransferResult& raw_transfer) const
+{
+    const GeometryOptions planar;
+    const std::vector<DirectedTargetEdgeInfo> target_edges =
+        build_directed_target_edges(mb_, target_polygons, planar);
+    verify_raw_target_order(raw_transfer, target_edges);
+
+    const CollapsedTargetEdges collapse = collapse_target_edges(target_edges, planar);
+    const std::vector<double> divergence_rhs =
+        target_divergence_rhs(mb_, reconstructions_, source_polygons, target_polygons);
+
+    const std::size_t num_unique = collapse.unique_count;
+    const std::size_t num_directed = target_edges.size();
+    const std::size_t num_cells = target_polygons.size();
+    if (num_directed != raw_transfer.target_moments.size()) {
+        throw std::runtime_error("Raw high-order transfer moment count does not match target edge DOF count");
+    }
+    if (divergence_rhs.size() != num_cells) {
+        throw std::runtime_error("High-order target divergence right-hand side size mismatch");
+    }
+
+    const std::size_t num_moments = raw_transfer.target_moments.empty() ? 0 : raw_transfer.target_moments.front().size();
+    ConformingEdgeMomentTransferResult result;
+    result.target_edges = raw_transfer.target_edges;
+    result.target_cells = target_polygons;
+    result.target_divergence_integrals = divergence_rhs;
+    result.target_edge_to_unique = collapse.directed_to_unique;
+    result.target_edge_orientations = collapse.directed_signs;
+    result.unique_edge_moments.assign(num_unique, std::vector<double>(num_moments, 0.0));
+    result.target_moments.assign(num_directed, std::vector<double>(num_moments, 0.0));
+
+    if (num_moments == 0) {
+        return result;
+    }
+
+    Eigen::VectorXd hdiag = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(num_unique));
+    Eigen::MatrixXd A = Eigen::MatrixXd::Zero(static_cast<Eigen::Index>(num_cells),
+                                              static_cast<Eigen::Index>(num_unique));
+    for (std::size_t i = 0; i < num_directed; ++i) {
+        const std::size_t unique = collapse.directed_to_unique[i];
+        hdiag(static_cast<Eigen::Index>(unique)) += 1.0;
+        A(static_cast<Eigen::Index>(target_edges[i].cell_index), static_cast<Eigen::Index>(unique)) +=
+            target_edge_moment_orientation_factor(collapse.directed_signs[i], 0);
+    }
+
+    for (Eigen::Index i = 0; i < hdiag.size(); ++i) {
+        if (hdiag(i) <= 0.0) {
+            throw std::runtime_error("Degenerate unique target edge encountered in high-order H(div) projection");
+        }
+    }
+
+    const Eigen::VectorXd hinv = hdiag.cwiseInverse();
+    Eigen::MatrixXd AHinv = A;
+    for (Eigen::Index j = 0; j < AHinv.cols(); ++j) {
+        AHinv.col(j) *= hinv(j);
+    }
+
+    Eigen::VectorXd b(static_cast<Eigen::Index>(num_cells));
+    for (std::size_t i = 0; i < num_cells; ++i) {
+        b(static_cast<Eigen::Index>(i)) = divergence_rhs[i];
+    }
+
+    for (std::size_t degree = 0; degree < num_moments; ++degree) {
+        Eigen::VectorXd g = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(num_unique));
+        for (std::size_t i = 0; i < num_directed; ++i) {
+            const std::size_t unique = collapse.directed_to_unique[i];
+            const double factor = target_edge_moment_orientation_factor(collapse.directed_signs[i],
+                                                                        static_cast<int>(degree));
+            g(static_cast<Eigen::Index>(unique)) += factor * raw_transfer.target_moments[i][degree];
+        }
+
+        Eigen::VectorXd unique_moments = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(num_unique));
+        if (degree == 0) {
+            const Eigen::MatrixXd schur = AHinv * A.transpose();
+            const Eigen::VectorXd schur_rhs = AHinv * g - b;
+            const Eigen::VectorXd lambda = schur.completeOrthogonalDecomposition().solve(schur_rhs);
+            unique_moments = hinv.cwiseProduct(g - A.transpose() * lambda);
+        } else {
+            unique_moments = hinv.cwiseProduct(g);
+        }
+
+        for (std::size_t i = 0; i < num_unique; ++i) {
+            result.unique_edge_moments[i][degree] = unique_moments(static_cast<Eigen::Index>(i));
+        }
+        for (std::size_t i = 0; i < num_directed; ++i) {
+            const std::size_t unique = collapse.directed_to_unique[i];
+            const double factor = target_edge_moment_orientation_factor(collapse.directed_signs[i],
+                                                                        static_cast<int>(degree));
+            result.target_moments[i][degree] = factor * result.unique_edge_moments[unique][degree];
         }
     }
 
