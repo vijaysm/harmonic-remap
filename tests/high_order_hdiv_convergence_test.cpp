@@ -389,6 +389,89 @@ CaseMetrics run_case(const std::string& domain,
                      const int order,
                      const double h)
 {
+    if (order == 1) {
+        mimetic::MimeticInterpolator interpolator(mb);
+        for (const CellInfo& source : source_cells) {
+            const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, source.handle);
+            const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb, poly);
+            for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+                const Eigen::Vector2d a = poly.centroid + edges[edge_index].a;
+                const Eigen::Vector2d b = poly.centroid + edges[edge_index].b;
+                const double flux = exact_edge_moments_absolute(a, b, 0, smooth_variable_divergence_field)[0];
+                interpolator.set_source_edge_flux(source.handle, edge_index, flux);
+            }
+            interpolator.reconstruct_source_polygon(source.handle);
+        }
+
+        const mimetic::EdgeTransferResult transfer =
+            interpolator.transfer_source_to_target_edges(handles(source_cells), handles(target_cells));
+        const mimetic::ConformingEdgeTransferResult conforming =
+            interpolator.project_target_fluxes_to_hdiv_conforming(handles(source_cells), handles(target_cells), transfer);
+
+        double flux_num = 0.0;
+        double flux_den = 0.0;
+        double conforming_flux_num = 0.0;
+        double linf_flux = 0.0;
+        double total_target_flux = 0.0;
+        double conforming_delta_num = 0.0;
+        double conforming_delta_den = 0.0;
+        double max_conforming_divergence_residual = 0.0;
+
+        std::size_t dof = 0;
+        for (std::size_t cell_index = 0; cell_index < target_cells.size(); ++cell_index) {
+            const CellInfo& target = target_cells[cell_index];
+            const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, target.handle);
+            const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb, poly);
+            double conforming_divergence_integral = 0.0;
+            for (const mimetic::LocalEdge& edge : edges) {
+                const Eigen::Vector2d a = poly.centroid + edge.a;
+                const Eigen::Vector2d b = poly.centroid + edge.b;
+                const double exact = exact_edge_moments_absolute(a, b, 0, smooth_variable_divergence_field)[0];
+                const double computed = transfer.target_fluxes[dof];
+                const double conforming_flux = conforming.target_fluxes[dof];
+
+                const double flux_error = computed - exact;
+                flux_num += flux_error * flux_error;
+                flux_den += exact * exact;
+                total_target_flux += computed;
+                linf_flux = std::max(linf_flux, std::abs(flux_error));
+
+                const double conforming_flux_error = conforming_flux - exact;
+                conforming_flux_num += conforming_flux_error * conforming_flux_error;
+                conforming_divergence_integral += conforming_flux;
+
+                const double delta = conforming_flux - computed;
+                conforming_delta_num += delta * delta;
+                conforming_delta_den += exact * exact;
+                ++dof;
+            }
+            max_conforming_divergence_residual =
+                std::max(max_conforming_divergence_residual,
+                         std::abs(conforming_divergence_integral - conforming.target_divergence_integrals[cell_index]));
+        }
+
+        const double conservation =
+            std::abs(total_target_flux - exact_domain_divergence_integral(smooth_variable_divergence_field));
+        const double l2_rel = (flux_den > 1.0e-30) ? std::sqrt(flux_num / flux_den) : std::sqrt(flux_num);
+        const double conforming_l2_rel =
+            (flux_den > 1.0e-30) ? std::sqrt(conforming_flux_num / flux_den) : std::sqrt(conforming_flux_num);
+
+        return CaseMetrics{
+            order,
+            domain,
+            h,
+            l2_rel,
+            l2_rel,
+            conforming_l2_rel,
+            conforming_l2_rel,
+            linf_flux,
+            conservation,
+            max_conforming_divergence_residual,
+            (conforming_delta_den > 1.0e-30) ? std::sqrt(conforming_delta_num / conforming_delta_den)
+                                             : std::sqrt(conforming_delta_num),
+        };
+    }
+
     mimetic::PlanarMomentInterpolator interpolator(mb);
     mimetic::MomentMethodOptions options;
     options.edge_moment_order = order;
@@ -545,8 +628,8 @@ bool run_domain(const std::string& domain,
             double h = 0.0;
 
             if (voronoi) {
-                source_cells = create_voronoi_mesh(mb, jittered_grid_seeds(levels[level].source_resolution, 0));
-                target_cells = create_voronoi_mesh(mb, jittered_grid_seeds(levels[level].target_resolution, 500));
+                source_cells = create_voronoi_mesh(mb, halton_seeds(levels[level].source_resolution, 0));
+                target_cells = create_voronoi_mesh(mb, halton_seeds(levels[level].target_resolution, 500));
                 h = 1.0 / std::sqrt(static_cast<double>(std::max(levels[level].source_resolution,
                                                                  levels[level].target_resolution)));
             } else {
@@ -641,7 +724,7 @@ int main(int argc, char** argv)
             {4, 5}, {8, 9}, {16, 17},
         };
         const std::vector<RefinementLevel> voronoi_levels = {
-            {49, 64}, {81, 100}, {121, 144},
+            {49, 64}, {100, 121}, {196, 225},
         };
 
         bool ok = true;

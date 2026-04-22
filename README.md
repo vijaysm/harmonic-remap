@@ -186,19 +186,18 @@ verified scope is:
 - spherical structured high-order moment regression coverage in
   `tests/spherical_high_order_moment_test.cpp`.
 
-In the current refinement study, all three orders `p=1,2,3` use the same split
-hierarchy. The moment-0 edge flux is preserved exactly to the repository
-conservation tolerance, while the higher moments and optional cell moments
-control asymptotic accuracy.
+In the current refinement study, the `p=1` line uses the harmonic-compatible
+lowest-order remap, while the `p=2,3` lines use the split-moment enrichment.
+The moment-0 edge flux is preserved exactly to the repository conservation
+tolerance, while the enriched edge and cell moments control the higher-order
+asymptotic accuracy.
 
 The current convergence study reports:
 
 - quad-to-quad average relative edge-flux rates of approximately
   `2.26`, `3.39`, and `4.46` for `p=1,2,3`,
 - Voronoi-to-Voronoi average relative edge-flux rates of approximately
-  `3.60` and `4.70` for `p=2,3`, while the `p=1` line is bounded and improves
-  on the first refinement but remains pre-asymptotic on the current unstructured
-  sequence,
+  `1.90`, `2.77`, and `3.34` for `p=1,2,3`,
 - conservation residuals at roundoff, typically `1e-15` to `1e-16`.
 
 Run it with:

@@ -2357,6 +2357,9 @@ ConformingEdgeTransferResult MimeticInterpolator::project_target_fluxes_to_hdiv_
     for (std::size_t i = 0; i < num_unique; ++i) {
         result.unique_edge_fluxes[i] = unique_fluxes(static_cast<Eigen::Index>(i));
     }
+    for (std::size_t i = 0; i < num_cells; ++i) {
+        result.target_divergence_integrals[i] = b(static_cast<Eigen::Index>(i));
+    }
     for (std::size_t i = 0; i < num_directed; ++i) {
         const std::size_t unique = collapse.directed_to_unique[i];
         const double flux = static_cast<double>(collapse.directed_signs[i]) * result.unique_edge_fluxes[unique];

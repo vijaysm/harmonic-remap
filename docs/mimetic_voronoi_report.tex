@@ -49,10 +49,9 @@ deterministic planar and spherical structured and unstructured tests verifies
 conservation, direct edge transfer, and sparse projection equivalence to a
 \(5\times 10^{-13}\) absolute tolerance.  On refined planar quad patches, the
 high-order extension shows average edge-flux convergence rates of approximately
-\(2.26/3.39/4.46\) for \(p=1,2,3\); on refined planar Voronoi patches, the same
-family shows clear order separation for \(p=2,3\) with average rates
-\(3.60/4.70\), while the \(p=1\) line remains bounded but pre-asymptotic on the
-current unstructured sequence.
+\(2.26/3.39/4.46\) for \(p=1,2,3\); on refined planar Voronoi patches, the
+harmonic \(p=1\) baseline and split-moment \(p=2,3\) enrichments yield average
+rates \(1.90/2.77/3.34\).
 \end{abstract}
 
 \section{Introduction}
@@ -1320,37 +1319,35 @@ families were used:
   \item quad-to-quad meshes with \((4\to5)\), \((8\to9)\), and \((16\to17)\)
         source-target resolutions; and
   \item Voronoi-to-Voronoi meshes with
-        \((49\to64)\), \((81\to100)\), and \((121\to144)\) deterministic
-        jittered-grid seed counts.
+        \((49\to64)\), \((100\to121)\), and \((196\to225)\) deterministic
+        Halton seed counts.
 \end{enumerate}
 
-All three orders \(p=1,2,3\) use the same split hierarchy from
-Eq.~\eqref{eq:split-moment-field} and the same constrained split-moment fit
-from Eq.~\eqref{eq:projected-moment-problem}.  In all cases, the zeroth edge moment
+The \(p=1\) line in this study uses the harmonic-compatible lowest-order remap,
+while the \(p=2,3\) lines use the split-moment enrichment from
+Eq.~\eqref{eq:split-moment-field} and the constrained fit in
+Eq.~\eqref{eq:projected-moment-problem}.  In all cases, the zeroth edge moment
 is imposed exactly, so the global conservation residual remains at roundoff
-throughout the refinement sequence, and the conforming target-edge projection
-drives the target-cell divergence residual back to machine precision.
+throughout the refinement sequence.
 
 Figure~\ref{fig:high-order-hdiv-convergence} shows the resulting relative
 directed target-edge flux error curves.  On quad-to-quad meshes, the observed
 average rates are \(2.26\), \(3.39\), and \(4.46\) for \(p=1,2,3\).  On the
-Voronoi-to-Voronoi sequence, the \(p=2\) and \(p=3\) lines show average rates
-\(3.60\) and \(4.70\).  The \(p=1\) Voronoi line improves on the first
-refinement and remains bounded, but it is still pre-asymptotic on the current
-three-level unstructured sequence.  The important point is that the unified
-family still shows systematic order separation: enriching the edge moments and
-the split local space produces visibly steeper error decay on both structured
-and unstructured polygon patches.
+Voronoi-to-Voronoi sequence, the observed average rates are \(1.90\), \(2.77\),
+and \(3.34\) for \(p=1,2,3\).  The important point is that the harmonic
+baseline and split-moment enrichments show systematic order separation:
+enriching the edge moments and the split local space produces visibly steeper
+error decay on both structured and unstructured polygon patches.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=\textwidth]{high_order_hdiv_convergence.png}
   \caption{Planar high-order split-moment edge convergence.  Left:
   quad-to-quad nonmatching refinements.  Right: Voronoi-to-Voronoi nonmatching
-  refinements.  All three lines use the same split-moment polygonal
-  \(H(\mathrm{div})\)-style family with exact hard zeroth edge-moment
-  conservation.  The unstructured \(p=1\) line is bounded but still
-  pre-asymptotic on this three-level sequence.}
+  refinements.  The \(p=1\) line uses the harmonic-compatible lowest-order
+  remap and the \(p=2,3\) lines use the split-moment polygonal
+  \(H(\mathrm{div})\)-style enrichments, all with exact hard zeroth
+  edge-moment conservation.}
   \label{fig:high-order-hdiv-convergence}
 \end{figure}
 
@@ -1364,17 +1361,18 @@ and unstructured polygon patches.
   Quad-to-quad & \(p=1\) & \(3.42\times10^{-3}\) & \(2.26\) & \(1.11\times10^{-15}\) \\
   Quad-to-quad & \(p=2\) & \(4.30\times10^{-5}\) & \(3.39\) & \(2.00\times10^{-15}\) \\
   Quad-to-quad & \(p=3\) & \(4.87\times10^{-7}\) & \(4.46\) & \(6.66\times10^{-16}\) \\
-  Voronoi-to-Voronoi & \(p=1\) & \(2.59\times10^{-2}\) & pre-asymptotic & \(2.66\times10^{-15}\) \\
-  Voronoi-to-Voronoi & \(p=2\) & \(1.42\times10^{-4}\) & \(3.60\) & \(6.66\times10^{-16}\) \\
-  Voronoi-to-Voronoi & \(p=3\) & \(3.45\times10^{-6}\) & \(4.70\) & \(1.55\times10^{-15}\) \\
+  Voronoi-to-Voronoi & \(p=1\) & \(8.91\times10^{-3}\) & \(1.90\) & \(1.78\times10^{-15}\) \\
+  Voronoi-to-Voronoi & \(p=2\) & \(2.13\times10^{-4}\) & \(2.77\) & \(4.44\times10^{-16}\) \\
+  Voronoi-to-Voronoi & \(p=3\) & \(1.02\times10^{-5}\) & \(3.34\) & \(1.33\times10^{-15}\) \\
   \bottomrule
   \end{tabular}
   \caption{Planar high-order split-moment edge convergence summary for the
   smooth variable-divergence field in Eq.~\eqref{eq:high-order-test-field}.
   Conservation remains at roundoff because the zeroth edge moment is enforced
-  as a hard constraint at every order.  The \(p=1\) unstructured line is still
-  pre-asymptotic on this sequence, while the \(p=2\) and \(p=3\) lines exhibit
-  the expected high-order separation.}
+  as a hard constraint at every order.  The harmonic \(p=1\) baseline and the
+  split-moment \(p=2,3\) enrichments all show monotone decay on this
+  deterministic Voronoi refinement sequence, with steeper slopes at higher
+  order.}
   \label{tab:high-order-hdiv}
 \end{table}
 
@@ -1490,8 +1488,9 @@ to \(5.08\times10^{-3}\).
   High-order planar split moments &
   Quad-to-quad and Voronoi-to-Voronoi nonmatching refinements for \(p=1,2,3\) &
   Exact zeroth edge-moment conservation and order-separated edge-flux
-  convergence for the unified \(p=1,2,3\) hierarchy &
-  \(6.66\times10^{-16}\) to \(2.66\times10^{-15}\) conservation, up to \(4.70\) rate \\
+  convergence for the harmonic \(p=1\) baseline and split-moment \(p=2,3\)
+  enrichments &
+  \(4.44\times10^{-16}\) to \(1.78\times10^{-15}\) conservation, up to \(4.46\) rate \\
   Spherical high-order split moments &
   Structured cubed-sphere \((4\to6)\) and \((6\to8)\) great-circle transfers
   for \(p=1,2,3\) &
@@ -1661,11 +1660,9 @@ space while keeping the zeroth edge moment exact as a hard constraint, the
 method achieves clear order separation on nonmatching polygon patches.  The
 quad-to-quad study yields average relative edge-flux rates of \(2.26\),
 \(3.39\), and \(4.46\) for \(p=1,2,3\).  On the current Voronoi-to-Voronoi
-sequence, the \(p=2\) and \(p=3\) lines yield \(3.60\) and \(4.70\), while the
-\(p=1\) line improves on the first refinement and remains bounded but is still
-pre-asymptotic on the finest level.  These results show that higher-order
-accuracy can be added without sacrificing machine-precision conservation of the
-primary edge-flux DOF.
+sequence, the corresponding rates are \(1.90\), \(2.77\), and \(3.34\).  These
+results show that higher-order accuracy can be added without sacrificing
+machine-precision conservation of the primary edge-flux DOF.
 
 The added spherical diagnostics sharpen the interpretation of the method.
 Switching the cell-centered \(L^1\) norm to physical spherical area is a

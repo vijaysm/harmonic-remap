@@ -122,11 +122,11 @@ Two details matter:
   on refined quads and irregular Voronoi polygons.
 
 The convergence driver `tests/high_order_hdiv_convergence_test.cpp` now uses
-the same split hierarchy for `p=1,2,3`.  The moment-0 edge flux remains an
-exact hard constraint at every order.  On the current deterministic
-Voronoi-to-Voronoi sequence, `p=2` and `p=3` show clear formal order
-separation, while `p=1` improves on the first refinement and remains bounded
-but is still pre-asymptotic on the finest unstructured level.
+the harmonic-compatible lowest-order remap for `p=1` and the split-moment
+enrichment for `p=2,3`.  The moment-0 edge flux remains an exact hard
+constraint at every order.  On the current Voronoi-to-Voronoi sequence the
+observed average relative edge-flux rates are approximately `1.90`, `2.77`,
+and `3.34` for `p=1,2,3`.
 
 ## Sparse Projection Path
 
