@@ -14,6 +14,15 @@ The repository now contains two geometry backends:
 Both backends use directed cell-local edge degrees of freedom and are tested
 against a `5.0e-13` absolute conservation tolerance.
 
+The repository also contains a planar higher-order research kernel for
+edge-moment transfer:
+
+- `PlanarMomentInterpolator`
+- user-controlled edge moment order `p`
+- optional cell vector moments
+- exact nonmatching patch tests for a `p=2` variable-divergence polynomial on
+  quads and Voronoi polygons
+
 ## What The Code Does
 
 The source data are signed integrated normal fluxes on directed source-cell
@@ -123,6 +132,49 @@ mimetic::write_matrix_market(
 `edge_projection.mtx` is MatrixMarket coordinate format.  The two CSV files map
 matrix row and column numbers back to `(polygon_handle, edge_handle,
 local_edge_index)`.
+
+## Higher-Order Edge Moments
+
+The low-order `MimeticInterpolator` reconstructs a level-2 harmonic field from
+one integrated normal flux per directed source edge.  That is the validated
+lowest-order conservative transfer path.
+
+For higher-order planar experiments, the repo now includes
+`PlanarMomentInterpolator`.  It reconstructs a local vector polynomial from:
+
+- edge-normal moments
+
+  ```text
+  integral_e (u . n_e) L_m(s) ds,    m = 0, ..., p
+  ```
+
+- and optional cell vector moments
+
+  ```text
+  integral_K u x^a y^b dA
+  ```
+
+The current implementation uses:
+
+- a vector-polynomial basis of degree `p`,
+- Legendre moments on each polygon edge,
+- exact clipping-based transfer of target edge moments,
+- QR solves when the local constraint matrix is fully or over-determined,
+- KKT minimum-energy fallback when the local system is under-determined.
+
+This is a planar higher-order `H(div)`-style reconstruction kernel, not yet a
+full polygonal virtual element or generalized Whitney implementation.  Its
+current verified scope is:
+
+- exact recovery of a `p=2` variable-divergence polynomial field,
+- exact transfer of target edge moments on nonmatching quad and Voronoi meshes,
+- regression coverage in `tests/high_order_edge_moment_test.cpp`.
+
+Run it with:
+
+```bash
+ctest --test-dir build -R high_order_edge_moment_test --output-on-failure
+```
 
 The planar rectangular test exercises this on a nonmatching mesh.  The assembled
 projection has 36 directed target-edge rows, 16 directed source-edge columns,

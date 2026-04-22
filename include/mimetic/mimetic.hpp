@@ -266,6 +266,26 @@ struct ConformingEdgeTransferResult {
     std::vector<double> unique_edge_fluxes;
 };
 
+struct MomentMethodOptions {
+    int edge_moment_order = 0;
+    int harmonic_degree = -1;
+    int cell_moment_order = -1;
+    int quadrature_points = 8;
+    double regularization = 1.0e-12;
+};
+
+struct MomentReconstruction {
+    MomentMethodOptions options;
+    int vector_polynomial_degree = 0;
+    int harmonic_degree = -1;
+    std::vector<double> coefficients;
+};
+
+struct EdgeMomentTransferResult {
+    std::vector<DirectedEdgeDof> target_edges;
+    std::vector<std::vector<double>> target_moments;
+};
+
 /// Signed shoelace area; positive for counter-clockwise point order.
 double signed_area(const std::vector<Eigen::Vector2d>& points);
 /// Area-weighted polygon centroid in absolute planar coordinates.
@@ -407,6 +427,50 @@ class MimeticInterpolator {
     moab::Tag tag_coeffs_ = 0;
     std::map<std::pair<moab::EntityHandle, std::size_t>, double> directed_source_flux_;
     std::map<std::pair<moab::EntityHandle, std::size_t>, double> directed_target_flux_;
+};
+
+/**
+ * Planar higher-order edge-moment reconstruction.
+ *
+ * The prototype reconstructs one planar vector polynomial per cell from
+ * directed edge-normal moments and optional cell vector moments. The edge
+ * moment order controls the polynomial degree of the reconstructed field.
+ *
+ * This is a verified planar research kernel for higher-order edge-to-edge
+ * transfer. The `harmonic_degree` option is reserved for future divergence-free
+ * enrichment but is not used by the current implementation.
+ */
+class PlanarMomentInterpolator {
+  public:
+    explicit PlanarMomentInterpolator(moab::Core& moab_instance);
+
+    void set_source_edge_moments(moab::EntityHandle polygon,
+                                 std::size_t local_edge_index,
+                                 const std::vector<double>& moments);
+    std::vector<double> source_edge_moments(moab::EntityHandle polygon,
+                                            std::size_t local_edge_index) const;
+    void set_source_cell_vector_moments(moab::EntityHandle polygon,
+                                        const std::vector<Eigen::Vector2d>& moments);
+    std::vector<Eigen::Vector2d> source_cell_vector_moments(moab::EntityHandle polygon) const;
+
+    MomentReconstruction reconstruct_source_polygon(moab::EntityHandle polygon,
+                                                    const MomentMethodOptions& options);
+    Eigen::Vector2d velocity(const MomentReconstruction& reconstruction,
+                             const Eigen::Vector2d& p) const;
+    std::vector<double> edge_moments(const MomentReconstruction& reconstruction,
+                                     const Eigen::Vector2d& a,
+                                     const Eigen::Vector2d& b,
+                                     int order) const;
+    EdgeMomentTransferResult transfer_source_to_target_edge_moments(
+        const std::vector<moab::EntityHandle>& source_polygons,
+        const std::vector<moab::EntityHandle>& target_polygons,
+        int target_moment_order) const;
+
+  private:
+    moab::Core& mb_;
+    std::map<std::pair<moab::EntityHandle, std::size_t>, std::vector<double>> directed_source_moments_;
+    std::map<moab::EntityHandle, std::vector<Eigen::Vector2d>> source_cell_vector_moments_;
+    std::map<moab::EntityHandle, MomentReconstruction> reconstructions_;
 };
 
 }  // namespace mimetic

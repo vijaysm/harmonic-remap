@@ -12,9 +12,9 @@ dominating the manuscript.
 | Area | Files | Role |
 | --- | --- | --- |
 | Public API and data types | `include/mimetic/mimetic.hpp` | Geometry options, local polygon data, reconstruction coefficients, sparse projection types, global target-edge conforming projection types, and `MimeticInterpolator` interface. |
-| Numerical kernels | `src/mimetic.cpp` | Local geometry construction, harmonic basis evaluation, KKT reconstruction, clipped edge transfer, sparse operator assembly, global target-edge constrained projection, and MatrixMarket output. |
+| Numerical kernels | `src/mimetic.cpp` | Local geometry construction, harmonic basis evaluation, KKT reconstruction, high-order moment reconstruction, clipped edge transfer, sparse operator assembly, global target-edge constrained projection, and MatrixMarket output. |
 | Shared spherical test utilities | `tests/spherical_transfer_test_utils.hpp` | Cubed-sphere generators, manufactured spherical fields, edge quadrature, conservative edge-flux assignment, and diagnostic helpers. |
-| Planar validation | `tests/patch_test.cpp`, `tests/conservative_intersection_test.cpp`, `tests/voronoi_intersection_test.cpp`, `tests/convergence_validation_test.cpp`, `tests/hdiv_conforming_projection_test.cpp` | Constant patch, rectangular overlap, Voronoi n-gon, planar convergence, and global target-edge conforming-projection checks. |
+| Planar validation | `tests/patch_test.cpp`, `tests/conservative_intersection_test.cpp`, `tests/voronoi_intersection_test.cpp`, `tests/convergence_validation_test.cpp`, `tests/hdiv_conforming_projection_test.cpp`, `tests/high_order_edge_moment_test.cpp` | Constant patch, rectangular overlap, Voronoi n-gon, planar convergence, global target-edge conforming-projection checks, and higher-order edge-moment regression checks. |
 | Spherical validation | `tests/spherical_geometry_test.cpp`, `tests/spherical_quad_test.cpp`, `tests/spherical_voronoi_test.cpp`, `tests/spherical_scalar_test.cpp` | Spherical geometry primitives, structured cubed-sphere transfer, unstructured Voronoi transfer, and scalar control. |
 | Study scripts | `scripts/convergence_study.sh`, `scripts/plot_convergence.py` | Structured spherical convergence sweep and rate reporting. |
 
@@ -33,6 +33,7 @@ dominating the manuscript.
 | Direct edge transfer | `MimeticInterpolator::transfer_source_to_target_edges(...)` | Clips each directed target edge against candidate source cells and evaluates the source reconstruction on clipped segments. |
 | Sparse edge projection | `MimeticInterpolator::assemble_edge_projection_operator(...)` | Applies the same clipped-segment functional to local reconstruction matrices and assembles \(U_t = P U_s\). |
 | Global target-edge conforming projection | `ConformingEdgeTransferResult`, `project_target_fluxes_to_hdiv_conforming(...)` | Collapses directed target edges to unique geometric edges, assembles exact target-cell divergence constraints, and solves the constrained least-squares correction described in manuscript Algorithm 6. |
+| Higher-order planar moment reconstruction | `MomentMethodOptions`, `MomentReconstruction`, `PlanarMomentInterpolator` | Reconstructs a local vector polynomial from edge-normal Legendre moments and optional cell vector moments, then transfers target edge moments with the same clipping machinery used by the low-order remap. |
 | Matrix output | `write_matrix_market(...)`, `write_edge_map_csv(...)` | Writes the sparse directed edge operator and row/column maps. |
 
 ## Directed Edge Convention
@@ -79,6 +80,37 @@ The direct source-to-target path is:
 Coincident source-target edges on the sphere require deterministic ownership.
 The current code keeps the source cell on the target-cell-interior side of the
 directed target edge to avoid double counting.
+
+## Higher-Order Planar Moment Path
+
+The new higher-order kernel is intentionally separate from
+`MimeticInterpolator`.
+
+1. `PlanarMomentInterpolator::set_source_edge_moments(...)` stores one vector of
+   Legendre edge moments per directed source-cell edge.
+2. `set_source_cell_vector_moments(...)` stores optional interior vector
+   moments.
+3. `reconstruct_source_polygon(...)` builds a local vector-polynomial basis of
+   degree `p = edge_moment_order`, assembles edge and cell moment constraints,
+   and solves for the polynomial coefficients.
+4. `transfer_source_to_target_edge_moments(...)` clips every directed target
+   edge against all source cells and accumulates the corresponding target edge
+   moments.
+
+The implementation is currently a planar `H(div)`-style research kernel rather
+than a full polygonal VEM or generalized Whitney space.  It is exact for the
+current `p=2` manufactured polynomial regression because the source field lies
+in the reconstructed polynomial space and the source moments are integrated
+exactly.
+
+Two details matter:
+
+- The Duffy triangle map used for cell moments is implemented in
+  `integrate_triangle_duffy(...)`.  A wrong map here will silently corrupt the
+  higher-order moment constraints.
+- For fully or over-determined local systems the code solves the constraint
+  matrix directly with QR.  The KKT minimum-energy solve is only used when the
+  local system is under-determined.
 
 ## Sparse Projection Path
 

@@ -6,6 +6,7 @@
 #include <cmath>
 #include <complex>
 #include <fstream>
+#include <sstream>
 #include <stdexcept>
 
 namespace mimetic {
@@ -423,6 +424,244 @@ Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly,
     reconstruction.block(1, 0, N_h, N) = X;
 
     return reconstruction;
+}
+
+struct VectorBasisTerm {
+    int component = 0;
+    int a = 0;
+    int b = 0;
+};
+
+struct GaussLegendrePoint {
+    double x = 0.0;
+    double w = 0.0;
+};
+
+static const GaussLegendrePoint gauss4_rule[4] = {
+    {-0.8611363115940526, 0.3478548451374538},
+    {-0.3399810435848563, 0.6521451548625461},
+    { 0.3399810435848563, 0.6521451548625461},
+    { 0.8611363115940526, 0.3478548451374538},
+};
+
+static const GaussLegendrePoint gauss10_rule[10] = {
+    {-0.9739065285171717, 0.0666713443086881},
+    {-0.8650633666889845, 0.1494513491505806},
+    {-0.6794095682990244, 0.2190863625159820},
+    {-0.4333953941292472, 0.2692667193099963},
+    {-0.1488743389816312, 0.2955242247147529},
+    { 0.1488743389816312, 0.2955242247147529},
+    { 0.4333953941292472, 0.2692667193099963},
+    { 0.6794095682990244, 0.2190863625159820},
+    { 0.8650633666889845, 0.1494513491505806},
+    { 0.9739065285171717, 0.0666713443086881},
+};
+
+std::vector<GaussLegendrePoint> gauss_legendre_rule(const int quadrature_points)
+{
+    if (quadrature_points <= 4) {
+        return std::vector<GaussLegendrePoint>(gauss4_rule, gauss4_rule + 4);
+    }
+    return std::vector<GaussLegendrePoint>(gauss10_rule, gauss10_rule + 10);
+}
+
+double legendre_polynomial(const int degree, const double x)
+{
+    if (degree == 0) {
+        return 1.0;
+    }
+    if (degree == 1) {
+        return x;
+    }
+    double p_nm2 = 1.0;
+    double p_nm1 = x;
+    double p_n = x;
+    for (int n = 2; n <= degree; ++n) {
+        p_n = ((2.0 * n - 1.0) * x * p_nm1 - (n - 1.0) * p_nm2) / static_cast<double>(n);
+        p_nm2 = p_nm1;
+        p_nm1 = p_n;
+    }
+    return p_n;
+}
+
+template <typename Func>
+double integrate_edge_highorder_rule(const Eigen::Vector2d& a,
+                                     const Eigen::Vector2d& b,
+                                     const std::vector<GaussLegendrePoint>& rule,
+                                     const Func& func)
+{
+    const double length = (b - a).norm();
+    const Eigen::Vector2d mid = 0.5 * (a + b);
+    const Eigen::Vector2d half_delta = 0.5 * (b - a);
+    double sum = 0.0;
+    for (const GaussLegendrePoint& q : rule) {
+        sum += q.w * func(mid + q.x * half_delta);
+    }
+    return 0.5 * length * sum;
+}
+
+template <typename Func>
+double integrate_triangle_duffy(const Eigen::Vector2d& a,
+                                const Eigen::Vector2d& b,
+                                const Eigen::Vector2d& c,
+                                const std::vector<GaussLegendrePoint>& rule,
+                                const Func& func)
+{
+    const Eigen::Vector2d ab = b - a;
+    const Eigen::Vector2d bc = c - b;
+    const double det_j = std::abs(ab.x() * bc.y() - ab.y() * bc.x());
+    double sum = 0.0;
+
+    for (const GaussLegendrePoint& qu : rule) {
+        const double u = 0.5 * (qu.x + 1.0);
+        const double wu = 0.5 * qu.w;
+        for (const GaussLegendrePoint& qv : rule) {
+            const double v = 0.5 * (qv.x + 1.0);
+            const double wv = 0.5 * qv.w;
+            const Eigen::Vector2d p = a + u * ab + (u * v) * bc;
+            sum += wu * wv * u * func(p);
+        }
+    }
+
+    return det_j * sum;
+}
+
+template <typename Func>
+double integrate_polygon_scalar_duffy(const std::vector<LocalEdge>& edges,
+                                      const std::vector<GaussLegendrePoint>& rule,
+                                      const Func& func)
+{
+    const Eigen::Vector2d origin = Eigen::Vector2d::Zero();
+    double integral = 0.0;
+    for (const LocalEdge& edge : edges) {
+        integral += integrate_triangle_duffy(origin, edge.a, edge.b, rule, func);
+    }
+    return integral;
+}
+
+int scalar_monomial_basis_count(const int degree)
+{
+    return (degree + 1) * (degree + 2) / 2;
+}
+
+int vector_polynomial_basis_count(const int degree)
+{
+    return 2 * scalar_monomial_basis_count(degree);
+}
+
+int vector_moment_basis_count(const int degree)
+{
+    return scalar_monomial_basis_count(degree);
+}
+
+std::vector<VectorBasisTerm> build_vector_polynomial_basis(const int degree)
+{
+    std::vector<VectorBasisTerm> basis;
+    basis.reserve(static_cast<std::size_t>(vector_polynomial_basis_count(degree)));
+    for (int component = 0; component < 2; ++component) {
+        for (int total_degree = 0; total_degree <= degree; ++total_degree) {
+            for (int a = total_degree; a >= 0; --a) {
+                VectorBasisTerm term;
+                term.component = component;
+                term.a = a;
+                term.b = total_degree - a;
+                basis.push_back(term);
+            }
+        }
+    }
+    return basis;
+}
+
+double monomial_value(const int a, const int b, const Eigen::Vector2d& p)
+{
+    return std::pow(p.x(), a) * std::pow(p.y(), b);
+}
+
+Eigen::Vector2d vector_basis_value(const VectorBasisTerm& term, const Eigen::Vector2d& p)
+{
+    const double value = monomial_value(term.a, term.b, p);
+    if (term.component == 0) {
+        return Eigen::Vector2d(value, 0.0);
+    }
+    return Eigen::Vector2d(0.0, value);
+}
+
+int resolved_cell_moment_order(const int num_edges, const MomentMethodOptions& options)
+{
+    if (options.cell_moment_order >= 0) {
+        return options.cell_moment_order;
+    }
+
+    const int degree = std::max(0, options.edge_moment_order);
+    const int edge_constraints = num_edges * (degree + 1);
+    const int basis_count = vector_polynomial_basis_count(degree);
+    if (edge_constraints >= basis_count) {
+        return -1;
+    }
+
+    int q = 0;
+    while (edge_constraints + 2 * vector_moment_basis_count(q) < basis_count) {
+        ++q;
+    }
+    return q;
+}
+
+Eigen::Vector2d moment_velocity_value(const MomentReconstruction& reconstruction, const Eigen::Vector2d& p)
+{
+    const std::vector<VectorBasisTerm> basis = build_vector_polynomial_basis(reconstruction.vector_polynomial_degree);
+    if (basis.size() != reconstruction.coefficients.size()) {
+        throw std::runtime_error("Moment reconstruction basis size mismatch");
+    }
+
+    Eigen::Vector2d value = Eigen::Vector2d::Zero();
+    for (std::size_t i = 0; i < basis.size(); ++i) {
+        value += reconstruction.coefficients[i] * vector_basis_value(basis[i], p);
+    }
+    return value;
+}
+
+std::vector<double> basis_edge_moments(const VectorBasisTerm& term,
+                                       const LocalEdge& edge,
+                                       const int order,
+                                       const std::vector<GaussLegendrePoint>& quadrature)
+{
+    std::vector<double> moments(static_cast<std::size_t>(order + 1), 0.0);
+    const Eigen::Vector2d delta = edge.b - edge.a;
+    const double denom = delta.squaredNorm();
+    for (int degree = 0; degree <= order; ++degree) {
+        moments[degree] = integrate_edge_highorder_rule(edge.a, edge.b, quadrature, [&](const Eigen::Vector2d& p) {
+            const double t = (denom > kTolerance)
+                ? (2.0 * (p - edge.a).dot(delta) / denom - 1.0)
+                : 0.0;
+            return vector_basis_value(term, p).dot(edge.outward_normal) * legendre_polynomial(degree, t);
+        });
+    }
+    return moments;
+}
+
+std::vector<Eigen::Vector2d> basis_cell_vector_moments(const VectorBasisTerm& term,
+                                                       const std::vector<LocalEdge>& edges,
+                                                       const int degree,
+                                                       const std::vector<GaussLegendrePoint>& quadrature)
+{
+    std::vector<Eigen::Vector2d> moments;
+    if (degree < 0) {
+        return moments;
+    }
+    moments.reserve(static_cast<std::size_t>(vector_moment_basis_count(degree)));
+    for (int total_degree = 0; total_degree <= degree; ++total_degree) {
+        for (int a = total_degree; a >= 0; --a) {
+            const int b = total_degree - a;
+            const double moment_x = integrate_polygon_scalar_duffy(edges, quadrature, [&](const Eigen::Vector2d& p) {
+                return vector_basis_value(term, p).x() * monomial_value(a, b, p);
+            });
+            const double moment_y = integrate_polygon_scalar_duffy(edges, quadrature, [&](const Eigen::Vector2d& p) {
+                return vector_basis_value(term, p).y() * monomial_value(a, b, p);
+            });
+            moments.push_back(Eigen::Vector2d(moment_x, moment_y));
+        }
+    }
+    return moments;
 }
 
 struct DirectedTargetEdgeInfo {
@@ -1729,6 +1968,267 @@ ConformingEdgeTransferResult MimeticInterpolator::project_target_fluxes_to_hdiv_
         directed_target_flux_[std::make_pair(result.target_edges[i].polygon, result.target_edges[i].local_edge_index)] = flux;
         check_moab(mb_.tag_set_data(tag_target_flux_, &result.target_edges[i].edge, 1, &flux),
                    "Failed to write H(div)-conforming target flux tag");
+    }
+
+    return result;
+}
+
+PlanarMomentInterpolator::PlanarMomentInterpolator(moab::Core& moab_instance)
+    : mb_(moab_instance)
+{
+}
+
+void PlanarMomentInterpolator::set_source_edge_moments(const moab::EntityHandle polygon,
+                                                       const std::size_t local_edge_index,
+                                                       const std::vector<double>& moments)
+{
+    directed_source_moments_[std::make_pair(polygon, local_edge_index)] = moments;
+}
+
+std::vector<double> PlanarMomentInterpolator::source_edge_moments(const moab::EntityHandle polygon,
+                                                                  const std::size_t local_edge_index) const
+{
+    const auto it = directed_source_moments_.find(std::make_pair(polygon, local_edge_index));
+    if (it == directed_source_moments_.end()) {
+        throw std::runtime_error("Missing source edge moments");
+    }
+    return it->second;
+}
+
+void PlanarMomentInterpolator::set_source_cell_vector_moments(const moab::EntityHandle polygon,
+                                                              const std::vector<Eigen::Vector2d>& moments)
+{
+    source_cell_vector_moments_[polygon] = moments;
+}
+
+std::vector<Eigen::Vector2d> PlanarMomentInterpolator::source_cell_vector_moments(const moab::EntityHandle polygon) const
+{
+    const auto it = source_cell_vector_moments_.find(polygon);
+    if (it == source_cell_vector_moments_.end()) {
+        throw std::runtime_error("Missing source cell vector moments");
+    }
+    return it->second;
+}
+
+MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const moab::EntityHandle polygon,
+                                                                          const MomentMethodOptions& options)
+{
+    if (options.edge_moment_order < 0) {
+        throw std::runtime_error("Edge moment order must be non-negative");
+    }
+
+    const LocalPolygon poly = local_polygon(mb_, polygon);
+    const std::vector<LocalEdge> edges = local_edges(mb_, poly);
+    const std::vector<GaussLegendrePoint> quadrature = gauss_legendre_rule(options.quadrature_points);
+
+    const int vector_degree = options.edge_moment_order;
+    const std::vector<VectorBasisTerm> basis = build_vector_polynomial_basis(vector_degree);
+    const int B = static_cast<int>(basis.size());
+    const int cell_moment_order = resolved_cell_moment_order(static_cast<int>(edges.size()), options);
+    const int num_cell_scalar_moments =
+        (cell_moment_order >= 0) ? vector_moment_basis_count(cell_moment_order) : 0;
+    const int C = static_cast<int>(edges.size()) * (options.edge_moment_order + 1) +
+                  2 * num_cell_scalar_moments;
+
+    Eigen::MatrixXd G = Eigen::MatrixXd::Zero(B, B);
+    Eigen::MatrixXd A = Eigen::MatrixXd::Zero(C, B);
+    Eigen::VectorXd moments = Eigen::VectorXd::Zero(C);
+
+    for (int i = 0; i < B; ++i) {
+        for (int j = 0; j < B; ++j) {
+            G(i, j) = integrate_polygon_scalar_duffy(edges, quadrature, [&](const Eigen::Vector2d& p) {
+                return vector_basis_value(basis[i], p).dot(vector_basis_value(basis[j], p));
+            });
+        }
+    }
+
+    int row = 0;
+    for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+        const LocalEdge& edge = edges[edge_index];
+        const std::vector<double> edge_moments = source_edge_moments(polygon, edge_index);
+        if (static_cast<int>(edge_moments.size()) != options.edge_moment_order + 1) {
+            throw std::runtime_error("Source edge moments do not match requested moment order");
+        }
+        for (int degree = 0; degree <= options.edge_moment_order; ++degree, ++row) {
+            moments(row) = edge_moments[degree];
+        }
+        for (int col = 0; col < B; ++col) {
+            const std::vector<double> basis_moments =
+                basis_edge_moments(basis[col], edge, options.edge_moment_order, quadrature);
+            for (int degree = 0; degree <= options.edge_moment_order; ++degree) {
+                A(row - (options.edge_moment_order + 1) + degree, col) = basis_moments[degree];
+            }
+        }
+    }
+
+    if (cell_moment_order >= 0) {
+        const std::vector<Eigen::Vector2d> cell_moments = source_cell_vector_moments(polygon);
+        if (static_cast<int>(cell_moments.size()) != num_cell_scalar_moments) {
+            throw std::runtime_error("Source cell vector moments do not match requested cell moment order");
+        }
+        for (int total_degree = 0, moment_index = 0; total_degree <= cell_moment_order; ++total_degree) {
+            for (int a = total_degree; a >= 0; --a, ++moment_index) {
+                moments(row) = cell_moments[moment_index].x();
+                moments(row + 1) = cell_moments[moment_index].y();
+                for (int col = 0; col < B; ++col) {
+                    const std::vector<Eigen::Vector2d> basis_moments =
+                        basis_cell_vector_moments(basis[col], edges, cell_moment_order, quadrature);
+                    A(row, col) = basis_moments[moment_index].x();
+                    A(row + 1, col) = basis_moments[moment_index].y();
+                }
+                row += 2;
+            }
+        }
+    }
+
+    Eigen::VectorXd coeffs = Eigen::VectorXd::Zero(B);
+    double residual = 0.0;
+
+    if (C >= B) {
+        coeffs = A.colPivHouseholderQr().solve(moments);
+        residual = (A * coeffs - moments).lpNorm<Eigen::Infinity>();
+    } else {
+        const double scale = std::max(1.0, G.diagonal().cwiseAbs().maxCoeff());
+        G.diagonal().array() += options.regularization * scale;
+
+        Eigen::MatrixXd KKT = Eigen::MatrixXd::Zero(B + C, B + C);
+        KKT.block(0, 0, B, B) = G;
+        KKT.block(0, B, B, C) = A.transpose();
+        KKT.block(B, 0, C, B) = A;
+
+        Eigen::VectorXd rhs = Eigen::VectorXd::Zero(B + C);
+        rhs.segment(B, C) = moments;
+
+        Eigen::FullPivLU<Eigen::MatrixXd> lu(KKT);
+        const Eigen::VectorXd solution = lu.solve(rhs);
+        coeffs = solution.head(B);
+        residual = (A * coeffs - moments).lpNorm<Eigen::Infinity>();
+    }
+
+    if (!std::isfinite(residual) || residual > 1.0e-9) {
+        std::ostringstream oss;
+        oss << "High-order edge-moment reconstruction failed to satisfy constraints"
+            << " residual=" << residual
+            << " rows=" << C
+            << " cols=" << B;
+        throw std::runtime_error(oss.str());
+    }
+
+    MomentReconstruction reconstruction;
+    reconstruction.options = options;
+    reconstruction.options.cell_moment_order = cell_moment_order;
+    reconstruction.vector_polynomial_degree = vector_degree;
+    reconstruction.harmonic_degree = -1;
+    reconstruction.coefficients.assign(coeffs.data(), coeffs.data() + coeffs.size());
+
+    reconstructions_[polygon] = reconstruction;
+    return reconstruction;
+}
+
+Eigen::Vector2d PlanarMomentInterpolator::velocity(const MomentReconstruction& reconstruction,
+                                                   const Eigen::Vector2d& p) const
+{
+    return moment_velocity_value(reconstruction, p);
+}
+
+std::vector<double> PlanarMomentInterpolator::edge_moments(const MomentReconstruction& reconstruction,
+                                                           const Eigen::Vector2d& a,
+                                                           const Eigen::Vector2d& b,
+                                                           const int order) const
+{
+    const std::vector<GaussLegendrePoint> quadrature = gauss_legendre_rule(reconstruction.options.quadrature_points);
+    std::vector<double> moments(static_cast<std::size_t>(order + 1), 0.0);
+    const Eigen::Vector2d delta = b - a;
+    const double length = delta.norm();
+    if (length <= kTolerance) {
+        return moments;
+    }
+    const double denom = delta.squaredNorm();
+    const Eigen::Vector2d normal(delta.y(), -delta.x());
+    for (int degree = 0; degree <= order; ++degree) {
+        moments[degree] = integrate_edge_highorder_rule(a, b, quadrature, [&](const Eigen::Vector2d& p) {
+            const double t = 2.0 * (p - a).dot(delta) / denom - 1.0;
+            return velocity(reconstruction, p).dot(normal / length) * legendre_polynomial(degree, t);
+        });
+    }
+    return moments;
+}
+
+EdgeMomentTransferResult PlanarMomentInterpolator::transfer_source_to_target_edge_moments(
+    const std::vector<moab::EntityHandle>& source_polygons,
+    const std::vector<moab::EntityHandle>& target_polygons,
+    const int target_moment_order) const
+{
+    struct SourceCache {
+        moab::EntityHandle polygon;
+        LocalPolygon local;
+        std::vector<Eigen::Vector2d> absolute_points;
+        MomentReconstruction reconstruction;
+    };
+
+    std::vector<SourceCache> sources;
+    sources.reserve(source_polygons.size());
+    for (const moab::EntityHandle source_polygon : source_polygons) {
+        const auto reconstruction_it = reconstructions_.find(source_polygon);
+        if (reconstruction_it == reconstructions_.end()) {
+            throw std::runtime_error("Missing high-order reconstruction for source polygon");
+        }
+        const LocalPolygon local = local_polygon(mb_, source_polygon);
+        sources.push_back(SourceCache{
+            source_polygon,
+            local,
+            absolute_points(local),
+            reconstruction_it->second,
+        });
+    }
+
+    EdgeMomentTransferResult result;
+    const std::vector<GaussLegendrePoint> quadrature = gauss_legendre_rule(10);
+
+    for (const moab::EntityHandle target_polygon : target_polygons) {
+        const LocalPolygon target = local_polygon(mb_, target_polygon);
+        const std::vector<LocalEdge> target_edges = local_edges(mb_, target);
+
+        for (std::size_t edge_index = 0; edge_index < target_edges.size(); ++edge_index) {
+            const LocalEdge& target_edge = target_edges[edge_index];
+            const std::size_t target_dof = result.target_edges.size();
+            result.target_edges.push_back(DirectedEdgeDof{target_polygon, target_edge.handle, edge_index});
+            result.target_moments.push_back(std::vector<double>(static_cast<std::size_t>(target_moment_order + 1), 0.0));
+
+            const Eigen::Vector2d whole_a = target.centroid + target_edge.a;
+            const Eigen::Vector2d whole_b = target.centroid + target_edge.b;
+            const Eigen::Vector2d whole_delta = whole_b - whole_a;
+            const double whole_length = whole_delta.norm();
+            const double whole_denom = whole_delta.squaredNorm();
+            if (whole_length <= kTolerance) {
+                continue;
+            }
+            const Eigen::Vector2d whole_normal(whole_delta.y(), -whole_delta.x());
+
+            for (const SourceCache& source : sources) {
+                Eigen::Vector2d clipped_a;
+                Eigen::Vector2d clipped_b;
+                if (!clip_segment_to_convex_polygon(whole_a, whole_b, source.absolute_points, clipped_a, clipped_b)) {
+                    continue;
+                }
+                if (!target_interior_side_intersects_source(clipped_a, clipped_b,
+                                                            source.absolute_points,
+                                                            kTolerance)) {
+                    continue;
+                }
+
+                for (int degree = 0; degree <= target_moment_order; ++degree) {
+                    const double contribution = integrate_edge_highorder_rule(
+                        clipped_a, clipped_b, quadrature, [&](const Eigen::Vector2d& global_p) {
+                            const double t = 2.0 * (global_p - whole_a).dot(whole_delta) / whole_denom - 1.0;
+                            const Eigen::Vector2d local_p = global_p - source.local.centroid;
+                            return velocity(source.reconstruction, local_p).dot(whole_normal / whole_length) *
+                                   legendre_polynomial(degree, t);
+                        });
+                    result.target_moments[target_dof][degree] += contribution;
+                }
+            }
+        }
     }
 
     return result;
