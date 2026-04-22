@@ -270,6 +270,20 @@ void dump_mesh(const std::string& filename, moab::Core& mb, const std::vector<Ce
     }
 }
 
+void dump_edge_segments(const std::string& filename,
+                        const std::vector<std::pair<Eigen::Vector2d, Eigen::Vector2d>>& segments,
+                        const std::vector<double>& values,
+                        const std::vector<int>& multiplicity)
+{
+    std::ofstream out(filename);
+    if (!out) return;
+    for (std::size_t i = 0; i < segments.size(); ++i) {
+        out << segments[i].first.x() << " " << segments[i].first.y() << " "
+            << segments[i].second.x() << " " << segments[i].second.y() << " "
+            << values[i] << " " << multiplicity[i] << "\n";
+    }
+}
+
 struct ErrorMetrics {
     double l2_rel;
     double linf;
@@ -315,6 +329,8 @@ ErrorMetrics compute_transfer_errors(
     const std::vector<moab::EntityHandle> tgt_handles = get_handles(target_cells);
     const mimetic::EdgeTransferResult transfer =
         interpolator.transfer_source_to_target_edges(src_handles, tgt_handles);
+    const mimetic::ConformingEdgeTransferResult conforming =
+        interpolator.project_target_fluxes_to_hdiv_conforming(src_handles, tgt_handles, transfer);
 
     
     double l2_num = 0.0, l2_den = 0.0, linf = 0.0;
@@ -338,18 +354,35 @@ ErrorMetrics compute_transfer_errors(
 
     std::vector<double> tgt_values;
     std::vector<double> tgt_exact_values;
-
-
+    std::vector<double> tgt_conforming_values;
+    std::vector<std::pair<Eigen::Vector2d, Eigen::Vector2d>> unique_segments(conforming.unique_edge_fluxes.size());
+    std::vector<double> raw_edge_jump(conforming.unique_edge_fluxes.size(), 0.0);
+    std::vector<double> conforming_edge_jump(conforming.unique_edge_fluxes.size(), 0.0);
+    std::vector<int> edge_multiplicity(conforming.unique_edge_fluxes.size(), 0);
+    std::vector<std::vector<double>> raw_edge_values(conforming.unique_edge_fluxes.size());
+    std::vector<std::vector<double>> conforming_edge_values(conforming.unique_edge_fluxes.size());
 
     for (const CellInfo& tgt : target_cells) {
         const mimetic::LocalPolygon tgt_poly = mimetic::local_polygon(mb, tgt.handle);
         const std::vector<mimetic::LocalEdge> tgt_edges = mimetic::local_edges(mb, tgt_poly);
         double cell_flux_sum = 0.0;
+        double conforming_cell_flux_sum = 0.0;
         double exact_cell_flux_sum = 0.0;
 
         for (const mimetic::LocalEdge& edge : tgt_edges) {
             const Eigen::Vector2d a = tgt_poly.centroid + edge.a;
             const Eigen::Vector2d b = tgt_poly.centroid + edge.b;
+            const std::size_t unique = conforming.target_edge_to_unique[dof];
+            if (edge_multiplicity[unique] == 0) {
+                if (conforming.target_edge_signs[dof] >= 0) {
+                    unique_segments[unique] = std::make_pair(a, b);
+                } else {
+                    unique_segments[unique] = std::make_pair(b, a);
+                }
+            }
+            ++edge_multiplicity[unique];
+            raw_edge_values[unique].push_back(transfer.target_fluxes[dof]);
+            conforming_edge_values[unique].push_back(conforming.target_fluxes[dof]);
 
             const double exact = exact_directed_edge_flux(a, b, field);
             const double computed = transfer.target_fluxes[dof];
@@ -361,6 +394,7 @@ ErrorMetrics compute_transfer_errors(
 
 
             cell_flux_sum += computed;
+            conforming_cell_flux_sum += conforming.target_fluxes[dof];
             exact_cell_flux_sum += exact;
             ++dof;
         }
@@ -368,6 +402,7 @@ ErrorMetrics compute_transfer_errors(
         if (!prefix.empty()) {
             tgt_values.push_back(cell_flux_sum / tgt_poly.area);
             tgt_exact_values.push_back(exact_cell_flux_sum / tgt_poly.area);
+            tgt_conforming_values.push_back(conforming_cell_flux_sum / tgt_poly.area);
         }
     }
 
@@ -375,6 +410,16 @@ ErrorMetrics compute_transfer_errors(
         dump_mesh(prefix + "_source.txt", mb, source_cells, src_values);
         dump_mesh(prefix + "_target.txt", mb, target_cells, tgt_values);
         dump_mesh(prefix + "_target_exact.txt", mb, target_cells, tgt_exact_values);
+        dump_mesh(prefix + "_target_conforming.txt", mb, target_cells, tgt_conforming_values);
+        for (std::size_t unique = 0; unique < raw_edge_values.size(); ++unique) {
+            if (raw_edge_values[unique].size() == 2) {
+                raw_edge_jump[unique] = raw_edge_values[unique][0] + raw_edge_values[unique][1];
+                conforming_edge_jump[unique] =
+                    conforming_edge_values[unique][0] + conforming_edge_values[unique][1];
+            }
+        }
+        dump_edge_segments(prefix + "_raw_edge_jump.txt", unique_segments, raw_edge_jump, edge_multiplicity);
+        dump_edge_segments(prefix + "_conforming_edge_jump.txt", unique_segments, conforming_edge_jump, edge_multiplicity);
     }
 
 
