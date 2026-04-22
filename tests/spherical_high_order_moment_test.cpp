@@ -125,7 +125,7 @@ void set_source_moments(moab::Core& mb,
         for (std::size_t edge_index = 0; edge_index < poly.vertices.size(); ++edge_index) {
             interpolator.set_source_edge_moments(cell, edge_index, exact_surface_edge_moments(mb, cell, edge_index, order));
         }
-        interpolator.set_source_cell_vector_moments(cell, exact_surface_cell_vector_moments(mb, cell, std::max(0, order - 1)));
+        interpolator.set_source_cell_vector_moments(cell, exact_surface_cell_vector_moments(mb, cell, std::max(1, order - 1)));
     }
 }
 
@@ -148,7 +148,7 @@ CaseMetrics run_case(const int source_n,
 
     mimetic::MomentMethodOptions options;
     options.edge_moment_order = order;
-    options.cell_moment_order = std::max(0, order - 1);
+    options.cell_moment_order = std::max(1, order - 1);
     options.quadrature_points = 10;
     options.regularization = 1.0e-12;
     options.exact_constraints = false;
@@ -207,12 +207,20 @@ int main()
     try {
         std::cout << "--- Spherical High-Order Edge Moment Transfer Test ---\n";
 
+        const CaseMetrics p1_coarse = run_case(4, 6, 1);
+        const CaseMetrics p1_fine = run_case(6, 8, 1);
         const CaseMetrics p2_coarse = run_case(4, 6, 2);
         const CaseMetrics p2_fine = run_case(6, 8, 2);
         const CaseMetrics p3_coarse = run_case(4, 6, 3);
         const CaseMetrics p3_fine = run_case(6, 8, 3);
 
         std::cout << std::scientific << std::setprecision(6)
+                  << "p1 coarse l2_m0=" << p1_coarse.l2_moment0_rel
+                  << " l2_all=" << p1_coarse.l2_all_rel
+                  << " conf_div=" << p1_coarse.max_conforming_divergence_residual << "\n"
+                  << "p1 fine   l2_m0=" << p1_fine.l2_moment0_rel
+                  << " l2_all=" << p1_fine.l2_all_rel
+                  << " conf_div=" << p1_fine.max_conforming_divergence_residual << "\n"
                   << "p2 coarse l2_m0=" << p2_coarse.l2_moment0_rel
                   << " l2_all=" << p2_coarse.l2_all_rel
                   << " conf_div=" << p2_coarse.max_conforming_divergence_residual << "\n"
@@ -227,6 +235,10 @@ int main()
                   << " conf_div=" << p3_fine.max_conforming_divergence_residual << "\n";
 
         bool ok = true;
+        ok = mimetic::test::near(p1_coarse.max_conforming_divergence_residual, 0.0, 5.0e-13,
+                                 "p1 coarse spherical conforming divergence") && ok;
+        ok = mimetic::test::near(p1_fine.max_conforming_divergence_residual, 0.0, 5.0e-13,
+                                 "p1 fine spherical conforming divergence") && ok;
         ok = mimetic::test::near(p2_coarse.max_conforming_divergence_residual, 0.0, 5.0e-13,
                                  "p2 coarse spherical conforming divergence") && ok;
         ok = mimetic::test::near(p2_fine.max_conforming_divergence_residual, 0.0, 5.0e-13,
@@ -236,8 +248,10 @@ int main()
         ok = mimetic::test::near(p3_fine.max_conforming_divergence_residual, 0.0, 5.0e-13,
                                  "p3 fine spherical conforming divergence") && ok;
 
-        if (!(p2_fine.l2_moment0_rel < p2_coarse.l2_moment0_rel &&
+        if (!(p1_fine.l2_moment0_rel < p1_coarse.l2_moment0_rel &&
+              p2_fine.l2_moment0_rel < p2_coarse.l2_moment0_rel &&
               p3_fine.l2_moment0_rel < p3_coarse.l2_moment0_rel &&
+              p2_fine.l2_moment0_rel < p1_fine.l2_moment0_rel &&
               p3_fine.l2_moment0_rel < p2_fine.l2_moment0_rel)) {
             throw std::runtime_error("Spherical high-order moment errors did not improve under refinement/order increase");
         }

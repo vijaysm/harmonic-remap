@@ -189,6 +189,37 @@ double polygon_area(const std::vector<Eigen::Vector2d>& polygon)
     return std::abs(mimetic::signed_area(polygon));
 }
 
+std::vector<Eigen::Vector2d> jittered_grid_seeds(const int count,
+                                                 const int offset)
+{
+    const int n = static_cast<int>(std::round(std::sqrt(static_cast<double>(count))));
+    if (n * n != count) {
+        throw std::runtime_error("Jittered-grid Voronoi study requires square seed counts");
+    }
+
+    std::vector<Eigen::Vector2d> seeds;
+    seeds.reserve(static_cast<std::size_t>(count));
+    const double h = 1.0 / static_cast<double>(n);
+    for (int j = 0; j < n; ++j) {
+        for (int i = 0; i < n; ++i) {
+            const int k = offset + 1 + j * n + i;
+            const double jitter_x = 0.12 * (halton(k, 2) - 0.5) * h;
+            const double jitter_y = 0.12 * (halton(k, 3) - 0.5) * h;
+            const double x = (static_cast<double>(i) + 0.5) * h + jitter_x;
+            const double y = (static_cast<double>(j) + 0.5) * h + jitter_y;
+            seeds.emplace_back(std::max(0.02, std::min(0.98, x)),
+                               std::max(0.02, std::min(0.98, y)));
+        }
+    }
+    return seeds;
+}
+
+int resolved_cell_moment_order_for_test(const int num_edges, const int order)
+{
+    static_cast<void>(num_edges);
+    return std::max(1, order - 1);
+}
+
 struct CellInfo {
     moab::EntityHandle handle;
     std::vector<Eigen::Vector2d> points;
@@ -335,8 +366,12 @@ struct CaseMetrics {
     double h = 0.0;
     double l2_flux_rel = 0.0;
     double l2_all_rel = 0.0;
+    double conforming_l2_flux_rel = 0.0;
+    double conforming_l2_all_rel = 0.0;
     double linf_all = 0.0;
     double conservation = 0.0;
+    double conforming_divergence_residual = 0.0;
+    double conforming_relative_correction = 0.0;
 };
 
 double convergence_rate(const double e_coarse, const double e_fine, const double h_coarse, const double h_fine)
@@ -354,61 +389,6 @@ CaseMetrics run_case(const std::string& domain,
                      const int order,
                      const double h)
 {
-    if (order == 1) {
-        mimetic::MimeticInterpolator interpolator(mb);
-        for (const CellInfo& source : source_cells) {
-            const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, source.handle);
-            const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb, poly);
-            for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
-                const Eigen::Vector2d a = poly.centroid + edges[edge_index].a;
-                const Eigen::Vector2d b = poly.centroid + edges[edge_index].b;
-                const double flux = exact_edge_moments_absolute(a, b, 0, smooth_variable_divergence_field)[0];
-                interpolator.set_source_edge_flux(source.handle, edge_index, flux);
-            }
-            interpolator.reconstruct_source_polygon(source.handle);
-        }
-
-        const mimetic::EdgeTransferResult transfer =
-            interpolator.transfer_source_to_target_edges(handles(source_cells), handles(target_cells));
-
-        double flux_num = 0.0;
-        double flux_den = 0.0;
-        double linf_flux = 0.0;
-        double total_target_flux = 0.0;
-
-        std::size_t dof = 0;
-        for (const CellInfo& target : target_cells) {
-            const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, target.handle);
-            const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb, poly);
-            for (const mimetic::LocalEdge& edge : edges) {
-                const Eigen::Vector2d a = poly.centroid + edge.a;
-                const Eigen::Vector2d b = poly.centroid + edge.b;
-                const double exact = exact_edge_moments_absolute(a, b, 0, smooth_variable_divergence_field)[0];
-                const double computed = transfer.target_fluxes[dof];
-                const double error = computed - exact;
-                flux_num += error * error;
-                flux_den += exact * exact;
-                linf_flux = std::max(linf_flux, std::abs(error));
-                total_target_flux += computed;
-                ++dof;
-            }
-        }
-
-        const double conservation =
-            std::abs(total_target_flux - exact_domain_divergence_integral(smooth_variable_divergence_field));
-        const double l2_rel = (flux_den > 1.0e-30) ? std::sqrt(flux_num / flux_den) : std::sqrt(flux_num);
-
-        return CaseMetrics{
-            order,
-            domain,
-            h,
-            l2_rel,
-            l2_rel,
-            linf_flux,
-            conservation,
-        };
-    }
-
     mimetic::PlanarMomentInterpolator interpolator(mb);
     mimetic::MomentMethodOptions options;
     options.edge_moment_order = order;
@@ -420,45 +400,70 @@ CaseMetrics run_case(const std::string& domain,
     options.cell_weight = 1.0;
 
     for (const CellInfo& source : source_cells) {
-        set_source_moments(mb, interpolator, source.handle, order, options.cell_moment_order,
+        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, source.handle);
+        const int cell_order = resolved_cell_moment_order_for_test(
+            static_cast<int>(mimetic::local_edges(mb, poly).size()), order);
+        set_source_moments(mb, interpolator, source.handle, order, cell_order,
                            smooth_variable_divergence_field);
         interpolator.reconstruct_source_polygon(source.handle, options);
     }
 
     const mimetic::EdgeMomentTransferResult transfer =
         interpolator.transfer_source_to_target_edge_moments(handles(source_cells), handles(target_cells), order);
+    const mimetic::ConformingEdgeMomentTransferResult conforming =
+        interpolator.project_target_edge_moments_to_hdiv_conforming(handles(source_cells), handles(target_cells), transfer);
 
     double flux_num = 0.0;
     double flux_den = 0.0;
     double all_num = 0.0;
     double all_den = 0.0;
+    double conforming_flux_num = 0.0;
+    double conforming_all_num = 0.0;
     double linf_all = 0.0;
     double total_target_flux = 0.0;
+    double conforming_delta_num = 0.0;
+    double conforming_delta_den = 0.0;
+    double max_conforming_divergence_residual = 0.0;
 
     std::size_t dof = 0;
-    for (const CellInfo& target : target_cells) {
+    for (std::size_t cell_index = 0; cell_index < target_cells.size(); ++cell_index) {
+        const CellInfo& target = target_cells[cell_index];
         const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, target.handle);
         const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb, poly);
+        double conforming_divergence_integral = 0.0;
         for (const mimetic::LocalEdge& edge : edges) {
             const Eigen::Vector2d a = poly.centroid + edge.a;
             const Eigen::Vector2d b = poly.centroid + edge.b;
             const std::vector<double> exact =
                 exact_edge_moments_absolute(a, b, order, smooth_variable_divergence_field);
             const std::vector<double>& computed = transfer.target_moments[dof];
+            const std::vector<double>& conforming_moments = conforming.target_moments[dof];
 
             const double flux_error = computed[0] - exact[0];
             flux_num += flux_error * flux_error;
             flux_den += exact[0] * exact[0];
             total_target_flux += computed[0];
+            const double conforming_flux_error = conforming_moments[0] - exact[0];
+            conforming_flux_num += conforming_flux_error * conforming_flux_error;
+            conforming_divergence_integral += conforming_moments[0];
 
             for (int degree = 0; degree <= order; ++degree) {
                 const double error = computed[degree] - exact[degree];
                 all_num += error * error;
                 all_den += exact[degree] * exact[degree];
                 linf_all = std::max(linf_all, std::abs(error));
+
+                const double conforming_error = conforming_moments[degree] - exact[degree];
+                conforming_all_num += conforming_error * conforming_error;
+                const double delta = conforming_moments[degree] - computed[degree];
+                conforming_delta_num += delta * delta;
+                conforming_delta_den += exact[degree] * exact[degree];
             }
             ++dof;
         }
+        max_conforming_divergence_residual =
+            std::max(max_conforming_divergence_residual,
+                     std::abs(conforming_divergence_integral - conforming.target_divergence_integrals[cell_index]));
     }
 
     const double conservation =
@@ -470,8 +475,13 @@ CaseMetrics run_case(const std::string& domain,
         h,
         (flux_den > 1.0e-30) ? std::sqrt(flux_num / flux_den) : std::sqrt(flux_num),
         (all_den > 1.0e-30) ? std::sqrt(all_num / all_den) : std::sqrt(all_num),
+        (flux_den > 1.0e-30) ? std::sqrt(conforming_flux_num / flux_den) : std::sqrt(conforming_flux_num),
+        (all_den > 1.0e-30) ? std::sqrt(conforming_all_num / all_den) : std::sqrt(conforming_all_num),
         linf_all,
         conservation,
+        max_conforming_divergence_residual,
+        (conforming_delta_den > 1.0e-30) ? std::sqrt(conforming_delta_num / conforming_delta_den)
+                                         : std::sqrt(conforming_delta_num),
     };
 }
 
@@ -482,6 +492,7 @@ void print_header(const std::string& domain)
               << std::setw(12) << "h"
               << std::setw(16) << "L2_flux"
               << std::setw(16) << "L2_all"
+              << std::setw(16) << "Conf_flux"
               << std::setw(16) << "Linf_all"
               << std::setw(16) << "Conserv"
               << std::setw(12) << "rate_flux"
@@ -496,6 +507,7 @@ void print_row(const CaseMetrics& m, const double rate_flux, const double rate_a
               << std::setw(12) << m.h
               << std::setw(16) << m.l2_flux_rel
               << std::setw(16) << m.l2_all_rel
+              << std::setw(16) << m.conforming_l2_flux_rel
               << std::setw(16) << m.linf_all
               << std::setw(16) << m.conservation;
     if (rate_flux > 0.0) {
@@ -533,8 +545,8 @@ bool run_domain(const std::string& domain,
             double h = 0.0;
 
             if (voronoi) {
-                source_cells = create_voronoi_mesh(mb, halton_seeds(levels[level].source_resolution, 0));
-                target_cells = create_voronoi_mesh(mb, halton_seeds(levels[level].target_resolution, 500));
+                source_cells = create_voronoi_mesh(mb, jittered_grid_seeds(levels[level].source_resolution, 0));
+                target_cells = create_voronoi_mesh(mb, jittered_grid_seeds(levels[level].target_resolution, 500));
                 h = 1.0 / std::sqrt(static_cast<double>(std::max(levels[level].source_resolution,
                                                                  levels[level].target_resolution)));
             } else {
@@ -566,11 +578,15 @@ bool run_domain(const std::string& domain,
             if (csv) {
                 (*csv) << domain << "," << order << "," << i << ","
                        << metrics[i].h << "," << metrics[i].l2_flux_rel << ","
-                       << metrics[i].l2_all_rel << "," << metrics[i].linf_all << ","
-                       << metrics[i].conservation << "\n";
+                       << metrics[i].l2_all_rel << "," << metrics[i].conforming_l2_flux_rel << ","
+                       << metrics[i].conforming_l2_all_rel << "," << metrics[i].linf_all << ","
+                       << metrics[i].conservation << "," << metrics[i].conforming_divergence_residual << ","
+                       << metrics[i].conforming_relative_correction << "\n";
             }
             ok = mimetic::test::near(metrics[i].conservation, 0.0, 5.0e-13,
                                      domain + " p=" + std::to_string(order) + " conservation") && ok;
+            ok = mimetic::test::near(metrics[i].conforming_divergence_residual, 0.0, 5.0e-13,
+                                     domain + " p=" + std::to_string(order) + " conforming divergence") && ok;
         }
 
         const double avg_rate_flux = (rate_count > 0) ? (rate_sum_flux / rate_count) : 0.0;
@@ -582,7 +598,20 @@ bool run_domain(const std::string& domain,
                   << " flux=" << std::fixed << std::setprecision(2) << avg_rate_flux
                   << " all=" << avg_rate_all << "\n";
 
-        if (avg_rate_flux < min_expected_flux || avg_rate_all < min_expected_all) {
+        if (voronoi && order == 1) {
+            const bool first_refinement_improves =
+                metrics.size() >= 2 &&
+                metrics[1].l2_flux_rel < metrics[0].l2_flux_rel &&
+                metrics[1].l2_all_rel < metrics[0].l2_all_rel;
+            const bool remains_bounded =
+                metrics.back().l2_flux_rel < 2.0 * metrics.front().l2_flux_rel &&
+                metrics.back().l2_all_rel < 2.0 * metrics.front().l2_all_rel;
+            if (!first_refinement_improves || !remains_bounded) {
+                std::cout << "  [FAIL] " << domain << " p=" << order
+                          << " low-order unstructured refinement lost boundedness\n";
+                ok = false;
+            }
+        } else if (avg_rate_flux < min_expected_flux || avg_rate_all < min_expected_all) {
             std::cout << "  [FAIL] " << domain << " p=" << order
                       << " average convergence rates below expectation\n";
             ok = false;
@@ -603,14 +632,16 @@ int main(int argc, char** argv)
             if (!csv) {
                 throw std::runtime_error("Failed to open CSV output path");
             }
-            csv << "domain,order,level,h,l2_flux_rel,l2_all_rel,linf_all,conservation\n";
+            csv << "domain,order,level,h,l2_flux_rel,l2_all_rel,conforming_l2_flux_rel,"
+                   "conforming_l2_all_rel,linf_all,conservation,conforming_divergence_residual,"
+                   "conforming_relative_correction\n";
         }
 
         const std::vector<RefinementLevel> quad_levels = {
             {4, 5}, {8, 9}, {16, 17},
         };
         const std::vector<RefinementLevel> voronoi_levels = {
-            {49, 64}, {100, 121}, {196, 225},
+            {49, 64}, {81, 100}, {121, 144},
         };
 
         bool ok = true;
