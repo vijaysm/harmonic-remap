@@ -11,10 +11,10 @@ dominating the manuscript.
 
 | Area | Files | Role |
 | --- | --- | --- |
-| Public API and data types | `include/mimetic/mimetic.hpp` | Geometry options, local polygon data, reconstruction coefficients, sparse projection types, and `MimeticInterpolator` interface. |
-| Numerical kernels | `src/mimetic.cpp` | Local geometry construction, harmonic basis evaluation, KKT reconstruction, clipped edge transfer, sparse operator assembly, and MatrixMarket output. |
+| Public API and data types | `include/mimetic/mimetic.hpp` | Geometry options, local polygon data, reconstruction coefficients, sparse projection types, global target-edge conforming projection types, and `MimeticInterpolator` interface. |
+| Numerical kernels | `src/mimetic.cpp` | Local geometry construction, harmonic basis evaluation, KKT reconstruction, clipped edge transfer, sparse operator assembly, global target-edge constrained projection, and MatrixMarket output. |
 | Shared spherical test utilities | `tests/spherical_transfer_test_utils.hpp` | Cubed-sphere generators, manufactured spherical fields, edge quadrature, conservative edge-flux assignment, and diagnostic helpers. |
-| Planar validation | `tests/patch_test.cpp`, `tests/conservative_intersection_test.cpp`, `tests/voronoi_intersection_test.cpp`, `tests/convergence_validation_test.cpp` | Constant patch, rectangular overlap, Voronoi n-gon, and planar convergence checks. |
+| Planar validation | `tests/patch_test.cpp`, `tests/conservative_intersection_test.cpp`, `tests/voronoi_intersection_test.cpp`, `tests/convergence_validation_test.cpp`, `tests/hdiv_conforming_projection_test.cpp` | Constant patch, rectangular overlap, Voronoi n-gon, planar convergence, and global target-edge conforming-projection checks. |
 | Spherical validation | `tests/spherical_geometry_test.cpp`, `tests/spherical_quad_test.cpp`, `tests/spherical_voronoi_test.cpp`, `tests/spherical_scalar_test.cpp` | Spherical geometry primitives, structured cubed-sphere transfer, unstructured Voronoi transfer, and scalar control. |
 | Study scripts | `scripts/convergence_study.sh`, `scripts/plot_convergence.py` | Structured spherical convergence sweep and rate reporting. |
 
@@ -32,6 +32,7 @@ dominating the manuscript.
 | Source reconstruction matrix | `source_reconstruction_matrix(...)` in `src/mimetic.cpp` | Builds the local linear map from source edge fluxes to reconstruction coefficients for sparse projection assembly, using the same option-controlled spherical metric as the direct reconstruction path. |
 | Direct edge transfer | `MimeticInterpolator::transfer_source_to_target_edges(...)` | Clips each directed target edge against candidate source cells and evaluates the source reconstruction on clipped segments. |
 | Sparse edge projection | `MimeticInterpolator::assemble_edge_projection_operator(...)` | Applies the same clipped-segment functional to local reconstruction matrices and assembles \(U_t = P U_s\). |
+| Global target-edge conforming projection | `ConformingEdgeTransferResult`, `project_target_fluxes_to_hdiv_conforming(...)` | Collapses directed target edges to unique geometric edges, assembles exact target-cell divergence constraints, and solves the constrained least-squares correction described in manuscript Algorithm 6. |
 | Matrix output | `write_matrix_market(...)`, `write_edge_map_csv(...)` | Writes the sparse directed edge operator and row/column maps. |
 
 ## Directed Edge Convention
@@ -90,6 +91,29 @@ clipped target-edge segment then contributes a row functional
 The acceptance criterion is that applying the sparse matrix to the source
 edge-flux vector reproduces direct transfer to the conservation tolerance.
 
+## Global Target-Edge Conforming Projection
+
+The global `H(div)` postprocess is deliberately separate from the raw transfer:
+
+1. `transfer_source_to_target_edges(...)` computes the raw directed target-edge
+   fluxes.
+2. `build_directed_target_edges(...)` re-enumerates the target directed edges
+   and records absolute endpoint coordinates.
+3. `collapse_target_edges(...)` groups opposite cell-local orientations of the
+   same geometric target edge into one unique flux unknown.
+4. `target_divergence_rhs(...)` reuses the source-target overlap clipping to
+   assemble one exact divergence integral per target cell,
+   \(b_t=\sum_s d_s |K_t\cap K_s|\).
+5. `project_target_fluxes_to_hdiv_conforming(...)` solves the constrained
+   least-squares problem from manuscript Eq. (H(div) projection) through its
+   Schur complement and writes the corrected directed target-edge fluxes back to
+   the target-flux tag.
+
+This produces a conforming target-edge skeleton field: one unique signed flux
+per geometric target edge and exact target-cell divergence constraints.  It does
+not yet build a single globally conforming cell-interior vector field on the
+target mesh.
+
 ## Diagnostics and VTK Output
 
 `tests/spherical_quad_test.cpp` writes target-cell diagnostic tags:
@@ -110,6 +134,22 @@ The edge-flux norms printed by the test are edge-integral norms, not vector
 field norms.  Therefore a small `edge_flux_l2_rel` does not imply identical
 global bounds for `TARGET_FIELD_RECON` and `TARGET_FIELD_EXACT`, even though
 they are now evaluated as the same physical quantity.
+
+## Planar Visualization Figures
+
+The PNG figures generated by `tests/dump_visuals.cpp` and `scripts/visualize.py`
+do not show the vector field itself. They plot the scalar cell-divergence
+diagnostic
+
+\[
+\frac{1}{|K|}\sum_{e\subset\partial K} U_e,
+\]
+
+for source and target cells, where `U_e` is the directed edge flux. This is why
+the divergence-free manufactured field in Figure 6 has exact source and exact
+target panels that are zero to roundoff, while the reconstructed target panel
+can still be nonzero on coarse or irregular meshes: that panel reflects local
+target-cell flux-closure error, not the value of the exact vector solution.
 
 ## Current Numerical Caveats
 

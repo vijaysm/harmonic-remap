@@ -429,6 +429,158 @@ V_{ii} \leftarrow V_{ii} + 1.0 \times 10^2 |A_K| \quad \text{for } i \ge 4
 where \(|A_K|\) is the polygon area.  The penalty is not part of the
 conservation proof; it is a conditioning safeguard for higher modes.
 
+\subsection{Why the Raw Nonmatching Transfer Can Lose Target-Cell Closure}
+
+The local reconstruction on each source cell is RT-like in the sense that its
+divergence is constant:
+\[
+  \nabla\cdot {\uh}_s = d_s .
+\]
+Therefore, if the source edge fluxes close on \(K_s\), then the source-cell
+reconstruction is exactly divergence-free whenever \(d_s=0\).  This does
+\emph{not} imply that the \emph{raw transferred target edges} close on every
+nonmatching target cell.  The distinction is essential.
+
+Let \(K_t\) be one target cell and let \(\Gamma_s^\circ\) denote the union of
+interior source-cell interfaces.  Summing the overlap balances over all source
+cells that intersect \(K_t\) gives
+\begin{equation}
+  \sum_{e\subset \partial K_t} U^{\mathrm{raw}}_e
+  =
+  \sum_{K_s} d_s |K_t\cap K_s|
+  -
+  \sum_{\gamma \subset K_t \cap \Gamma_s^\circ}
+  \int_\gamma \bigl[\!\bigl[ \uh \cdot \n_\gamma \bigr]\!\bigr] \, ds .
+  \label{eq:target_balance_with_jumps}
+\end{equation}
+The first term is the desired target-cell divergence integral inherited from the
+source reconstructions.  The second term is a jump contribution across interior
+source interfaces.  It vanishes only when adjacent source-cell reconstructions
+induce the same normal trace on their shared edge.
+
+This explains the behavior seen in the divergence-free Voronoi figures.  Each
+source reconstruction can satisfy \(d_s=0\) exactly, yet the target-cell edge
+sum can still be nonzero if neighboring source cells agree only on the
+\emph{integrated} source-edge flux and not on the full pointwise normal trace.
+Conversely, the quad-to-quad harmonic-exact case is nearly exact because the
+manufactured field lies in the reproduced space, so adjacent source-cell
+reconstructions collapse to the same global field and the jump term in
+Eq.~\eqref{eq:target_balance_with_jumps} disappears to roundoff.
+
+The same mechanism can be monitored directly on the target skeleton.  For one
+interior geometric target edge \(g\) shared by two target cells \(K_t^-\) and
+\(K_t^+\), define the raw edge-jump defect
+\begin{equation}
+  J_g^{\mathrm{raw}}
+  =
+  U_{g,-}^{\mathrm{raw}} + U_{g,+}^{\mathrm{raw}},
+  \label{eq:raw-edge-jump}
+\end{equation}
+where both edge fluxes are oriented with the outward normals of their
+respective target cells.  A discrete \(H(\mathrm{div})\)-conforming target edge
+field satisfies \(J_g=0\) on every interior edge because the two outward
+normals are opposite.  In the present implementation, once coincident target
+vertices are merged, the raw transfer already satisfies \(J_g^{\mathrm{raw}}=0\)
+to roundoff because each shared target edge is integrated geometrically and then
+seen from two opposite target-cell orientations.  This is an important
+distinction: the nonzero target-cell divergence residual in
+Eq.~\eqref{eq:target_balance_with_jumps} is therefore \emph{not} caused by a
+two-sided target-edge skeleton.
+
+The relevant raw compatibility defect is instead the target-cell balance
+residual
+\begin{equation}
+  r_t^{\mathrm{raw}}
+  =
+  \sum_{e\subset\partial K_t} U_e^{\mathrm{raw}} - b_t .
+  \label{eq:raw-target-balance-residual}
+\end{equation}
+The global constrained solve sets this residual to zero while preserving a
+single-valued target-edge flux field.  Under smooth-field, shape-regular
+refinement, adjacent source-cell reconstructions become more consistent
+approximations to the same continuum normal trace, so the source-interface jump
+term in Eq.~\eqref{eq:target_balance_with_jumps}, the balance residual
+\(r_t^{\mathrm{raw}}\), and the size of the global correction all decrease.
+The convergence is therefore toward the same continuum edge-normal flux and the
+same continuum cell-balance constraints, not toward a spatially homogeneous
+field.
+
+\subsection{Global H(div)-Conforming Target-Skeleton Projection}
+
+To remove the jump-induced target-cell closure defect without changing the local
+source reconstruction, a second global stage is added on the \emph{target
+skeleton}.  The unknowns are no longer directed target-cell edges; instead, one
+unique flux \(x_g\) is introduced for each geometric target edge \(g\).  A
+canonical orientation is chosen for each geometric edge, and every directed
+target-cell edge \(e\) is related to the unique flux through a sign
+\(\sigma_e\in\{-1,+1\}\).
+
+Let \(u^{\mathrm{raw}}\in\mathbb{R}^{N_d}\) be the vector of raw directed
+target-edge fluxes, let \(x\in\mathbb{R}^{N_g}\) be the vector of unique target
+edge fluxes, and let \(B\in\{-1,0,1\}^{N_d\times N_g}\) map unique edges to
+directed edges.  Then
+\[
+  u^{\mathrm{conf}} = Bx .
+\]
+Let \(A\in\{-1,0,1\}^{N_t\times N_g}\) be the target cell-edge incidence
+matrix, so that \(Ax\) is the vector of target-cell divergence integrals.  The
+desired right-hand side is assembled directly from the source reconstructions:
+\begin{equation}
+  b_t = \sum_{K_s} d_s |K_t \cap K_s| .
+  \label{eq:target_divergence_rhs}
+\end{equation}
+Here \(|K_t \cap K_s|\) is the overlap area in the same chart measure used by
+the local source reconstruction.  For divergence-free source reconstructions,
+\(b_t=0\) for every target cell.
+
+The conforming target-edge field is defined by the constrained least-squares
+problem
+\begin{equation}
+  \min_{x\in\mathbb{R}^{N_g}} \frac{1}{2}\|Bx-u^{\mathrm{raw}}\|_2^2
+  \qquad\text{subject to}\qquad
+  Ax=b .
+  \label{eq:hdiv_projection_problem}
+\end{equation}
+Thus the corrected target fluxes stay as close as possible to the raw transfer
+in the directed edge-DOF norm while enforcing one exact divergence constraint
+per target cell.
+
+The KKT equations are
+\begin{equation}
+  \begin{bmatrix}
+    H & A^T \\
+    A & 0
+  \end{bmatrix}
+  \begin{bmatrix}
+    x \\
+    \lambda
+  \end{bmatrix}
+  =
+  \begin{bmatrix}
+    g \\
+    b
+  \end{bmatrix},
+  \qquad
+  H=B^T B,\quad g=B^T u^{\mathrm{raw}} .
+  \label{eq:hdiv_projection_kkt}
+\end{equation}
+Because every unique target edge is seen by one boundary cell or by two
+adjacent cells, \(H\) is diagonal.  The implementation therefore uses the Schur
+complement
+\begin{equation}
+  A H^{-1} A^T \lambda = A H^{-1} g - b,
+  \qquad
+  x = H^{-1}(g - A^T \lambda).
+  \label{eq:hdiv_projection_schur}
+\end{equation}
+On closed surfaces, \(AH^{-1}A^T\) has the expected one-dimensional nullspace
+associated with the globally redundant divergence constraint; the implementation
+solves Eq.~\eqref{eq:hdiv_projection_schur} with a rank-revealing
+pseudoinverse-style dense solve.  The output \(u^{\mathrm{conf}}=Bx\) is a
+globally conforming target-edge flux field in the discrete lowest-order
+\(H(\mathrm{div})\) sense: every geometric target edge carries a single flux,
+and every target cell satisfies its divergence constraint exactly.
+
 \section{Why Wachspress Coordinates Are Not a Drop-In Replacement}
 
 One of the original alternatives considered for polygonal patches was to use a
@@ -618,6 +770,24 @@ The practical conclusion is therefore:
         direct-vs-sparse equality with absolute tolerance \(5\times10^{-13}\).
 \end{enumerate}
 
+\subsection*{Algorithm 6: Global H(div)-Conforming Target Projection}
+\begin{enumerate}
+  \item Compute the raw directed target-edge transfer with Algorithm 4 or
+        Algorithm 5.
+  \item Collapse directed target edges to unique geometric target edges by
+        matching endpoint coordinates and assigning one canonical orientation.
+  \item Assemble the target divergence right-hand side \(b\) from
+        Eq.~\eqref{eq:target_divergence_rhs} using the same source-target overlap
+        clipping already used for cell averages.
+  \item Form the directed-edge map \(B\), the target cell-edge incidence matrix
+        \(A\), and the diagonal matrix \(H=B^TB\).
+  \item Solve the constrained least-squares problem in
+        Eq.~\eqref{eq:hdiv_projection_problem} via the Schur complement in
+        Eq.~\eqref{eq:hdiv_projection_schur}.
+  \item Recover the directed conforming target-edge fluxes
+        \(u^{\mathrm{conf}}=Bx\) and verify \(\|Ax-b\|_\infty\le 5\times10^{-13}\).
+\end{enumerate}
+
 \section{Algorithmic Analysis}
 
 Let \(n_K\) be the number of sides of one polygon and let \(q=4\) be the number
@@ -655,6 +825,18 @@ Each source cell stores \(O(q)\) reconstruction coefficients and each directed
 edge stores one flux value.  The local dense matrices are \(q\times q\), and the
 sparse projection stores one nonzero block contribution for each source-cell
 segment that intersects a directed target edge.
+
+\paragraph{Global target-edge projection.}
+Let \(N_g\) be the number of unique geometric target edges and \(N_t\) the
+number of target cells.  Collapsing directed target edges to unique edges is
+\(O(E_t)\) once endpoint keys are available.  Assembly of \(A\), \(B\), and the
+right-hand side \(b\) is linear in the number of directed target edges plus the
+existing overlap-clipping cost.  In the present serial prototype,
+Eq.~\eqref{eq:hdiv_projection_schur} is solved with a dense rank-revealing
+factorization on the \(N_t\times N_t\) Schur complement, so the additional solve
+cost is \(O(N_t^3)\) and the storage cost is \(O(N_t^2)\).  This is acceptable
+for the present verification problems but should be replaced by a sparse graph
+solver for large target meshes.
 
 \section{Results and Discussion}
 
@@ -778,19 +960,24 @@ target edge agrees with the analytic global linear field integral to roundoff,
 and every target cell satisfies the same edge-flux divergence check
 \(\sum U^t_{e_t}=2|K_t|\).
 
-\subsection{Edge Error and Divergence Visualizations}
+\subsection{Edge Error and Cell-Divergence Visualizations}
 
 The quantitative convergence diagnostics are edge-based: for each directed
 target edge \(e\), the transferred flux is compared with the manufactured
-integral \(\int_e \mathbf{u}_{\mathrm{exact}}\cdot\n\,ds\).  The visual
-diagnostics show a complementary cell quantity, the target-cell averaged
-divergence
+integral \(\int_e \mathbf{u}_{\mathrm{exact}}\cdot\n\,ds\).  Figures
+\ref{fig:error_quad}--\ref{fig:error_vv} do not plot the vector solution
+\(\mathbf{u}\) itself.  They show a complementary scalar cell quantity, the
+cell-averaged divergence recovered from the directed edge fluxes,
 \[
   \frac{1}{|K|}\sum_{e\subset\partial K} U^t_e .
 \]
 This distinction matters.  Edge errors assess the transferred H(div) degrees of
-freedom, while divergence plots show how the conservative edge fluxes assemble
-into macroscopic cell balances.
+freedom, while these plots show how the conservative edge fluxes assemble into
+macroscopic cell balances.  In particular, a divergence-free manufactured field
+can have exact source and exact target panels that are zero to roundoff, while
+the reconstructed target panel is nonzero on coarse or irregular cells because
+the transferred edge fluxes do not close exactly on each target cell.  That is
+a local flux-balance defect, not a pointwise vector-field value.
 
 Figure~\ref{fig:error_quad} shows a harmonic field transferred from a source
 quad mesh to a refined target quad mesh.  Figures~\ref{fig:error_vq} and
@@ -800,30 +987,160 @@ Voronoi-to-Voronoi configurations.
 \begin{figure}[htbp]
     \centering
     \includegraphics[width=\textwidth]{vis_quad_quad_A__harmonic_exact.png}
-    \caption{Quad-to-quad transfer for a manufactured harmonic field.  Panels
-    show the source analytical projection, the exact target-cell projection, the
-    harmonic target projection, and the target-cell error profile.}
+    \caption{Quad-to-quad cell-divergence diagnostic for a manufactured harmonic
+    field.  Panels show exact source cell divergence, exact target cell
+    divergence, reconstructed target cell divergence from transferred edge
+    fluxes, and the target cell-divergence error.}
     \label{fig:error_quad}
 \end{figure}
 
 \begin{figure}[htbp]
     \centering
     \includegraphics[width=\textwidth]{vis_voronoi_quad_C__quad_vardiv.png}
-    \caption{Voronoi-to-quad transfer for a variable-divergence manufactured
-    field, with exact target projection and target error profile shown
-    explicitly.}
+    \caption{Voronoi-to-quad cell-divergence diagnostic for a
+    variable-divergence manufactured field, with exact and reconstructed target
+    cell divergence shown explicitly.}
     \label{fig:error_vq}
 \end{figure}
 
 \begin{figure}[htbp]
     \centering
     \includegraphics[width=\textwidth]{vis_voronoi_voronoi_B__sincos_divfree.png}
-    \caption{Voronoi-to-Voronoi transfer for a smooth divergence-free
-    manufactured field on independent seed configurations.  The error panel
-    confirms that the visual discrepancy tracks the same small residuals
-    reported by the edge-based norms.}
+    \caption{Voronoi-to-Voronoi cell-divergence diagnostic for a smooth
+    divergence-free manufactured field on independent seed configurations.  The
+    exact source and exact target panels are zero to roundoff; the nonzero
+    reconstructed panel therefore measures local target-cell flux-closure error,
+    not the value of the vector solution itself.}
     \label{fig:error_vv}
 \end{figure}
+
+Figure~\ref{fig:error_vv_hdiv} adds the new globally constrained target-edge
+postprocess to the same Voronoi-to-Voronoi divergence-free case.  Before the
+solve, coincident target vertices are merged to \(10^{-12}\) so that target
+cells share a genuine MOAB edge topology rather than paired duplicate
+vertices. Figure~\ref{fig:error_vv} already shows the raw local target-cell
+imbalance and its error. Figure~\ref{fig:error_vv_hdiv} therefore focuses only
+on what is new: the globally constrained target divergence field and its error.
+The local transfer still shows visible target-cell imbalance on the coarse
+mesh, but the global constrained solve removes that imbalance to roundoff while
+staying close to the raw directed edge field.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{vis_voronoi_voronoi_B__sincos_divfree_hdiv_compare.png}
+    \caption{Voronoi-to-Voronoi globally constrained target-edge projection for
+    the smooth divergence-free manufactured field.  Figure~\ref{fig:error_vv}
+    already provides the raw local target divergence and its error.  The four
+    panels shown here therefore retain the exact source and exact target
+    divergence for context, then show only the globally constrained target
+    divergence and the globally constrained target-divergence error.  The
+    constrained solve eliminates the coarse-mesh target-cell closure defect
+    visible in Figure~\ref{fig:error_vv}.}
+    \label{fig:error_vv_hdiv}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{vis_voronoi_voronoi_B__sincos_divfree_edge_jump.png}
+    \caption{Voronoi-to-Voronoi target-edge jump diagnostic for the same smooth
+    divergence-free manufactured field.  Left: raw interior-edge jump defect
+    \(J_g^{\mathrm{raw}} = U_{g,-}^{\mathrm{raw}} + U_{g,+}^{\mathrm{raw}}\).
+    Right: edge jump after the global constrained target-edge projection.  The
+    merged-target implementation is already single-valued to roundoff on the raw
+    target skeleton, and the globally constrained field preserves that property.
+    The figure therefore confirms that Figures~\ref{fig:error_vv} and
+    \ref{fig:error_vv_hdiv} differ in target-cell balance compatibility, not in
+    target-edge continuity.}
+    \label{fig:error_vv_edge_jump}
+\end{figure}
+
+\subsection{Global H(div)-Conforming Target Projection}
+
+The new global target-skeleton correction was validated on the same planar
+Voronoi-to-Voronoi family that exposes the raw target-cell closure defect most
+clearly.  Two manufactured fields were used:
+\begin{enumerate}
+  \item the exact linear field \(\mathbf{u}(x,y)=(x,y)\), for which the source
+        reconstruction and target-cell divergence right-hand side are exact; and
+  \item the smooth divergence-free field
+        \(\mathbf{u}(x,y)=(\sin(\pi x)\cos(\pi y),-\cos(\pi x)\sin(\pi y))\),
+        for which the raw nonmatching transfer is not globally conforming on
+        coarse Voronoi meshes.
+\end{enumerate}
+
+For the exact linear field, the raw transfer already satisfies the target-cell
+divergence constraints to roundoff, and the conforming correction is therefore
+negligible.  The maximum raw target-cell residual is
+\(2.01\times10^{-16}\), the maximum corrected residual is
+\(5.55\times10^{-17}\), and the relative correction norm is
+\(4.50\times10^{-16}\).  The assembled target divergence right-hand side agrees
+with the exact value \(2|K_t|\) to \(1.18\times10^{-16}\).  The maximum raw
+interior-edge jump defect is already only \(1.39\times10^{-16}\), and the
+constrained field preserves that single-valued target skeleton.
+
+For the smooth divergence-free field, the raw target-cell closure defect is
+substantial on coarse Voronoi meshes but decreases under refinement.  The new
+global projection removes that defect to roundoff at every resolution while
+changing the directed edge field only modestly.  In fact, the corrected edge
+field slightly reduces the directed edge-flux error in this study because the
+least-squares correction removes low-order target-cell imbalance.  The
+visual comparison in Figure~\ref{fig:error_vv_hdiv} makes the same point
+geometrically: the raw local transfer carries a visible cell-balance defect on
+the target patch, whereas the constrained skeleton solve collapses that defect
+to values indistinguishable from roundoff on the same mesh.  Figure
+\ref{fig:error_vv_edge_jump} shows that this is not an edge-continuity issue:
+the merged-target raw transfer already has interior-edge jumps at roundoff, and
+the global solve preserves that single-valued target-edge skeleton while
+correcting the target-cell balance residual.  In the present Voronoi sequence,
+the maximum raw interior-edge jump stays between \(8.67\times10^{-17}\) and
+\(1.11\times10^{-16}\), while the maximum constrained jump is zero to printed
+precision.
+
+\begin{table}[t]
+  \centering
+  \small
+  \resizebox{\textwidth}{!}{%
+  \begin{tabular}{@{}L{0.23\linewidth}L{0.15\linewidth}L{0.15\linewidth}L{0.15\linewidth}L{0.14\linewidth}L{0.14\linewidth}@{}}
+  \toprule
+  Case & \(\max | \sum U^{\mathrm{raw}}_e - b_t |\) &
+  \(\max | \sum U^{\mathrm{conf}}_e - b_t |\) &
+  \(\|u^{\mathrm{conf}}-u^{\mathrm{raw}}\|_2 / \|u^{\mathrm{conf}}\|_2\) &
+  raw edge \(L^2_{\mathrm{rel}}\) &
+  conf. edge \(L^2_{\mathrm{rel}}\) \\
+  \midrule
+  Linear exact, \(16\to25\) &
+  \(2.01\times10^{-16}\) &
+  \(5.55\times10^{-17}\) &
+  \(4.50\times10^{-16}\) &
+  \(3.91\times10^{-16}\) &
+  \(5.33\times10^{-16}\) \\
+  Divergence-free, coarse \(16\to25\) &
+  \(4.80\times10^{-2}\) &
+  \(4.02\times10^{-17}\) &
+  \(6.72\times10^{-2}\) &
+  \(1.49\times10^{-1}\) &
+  \(1.35\times10^{-1}\) \\
+  Divergence-free, medium \(36\to49\) &
+  \(1.68\times10^{-2}\) &
+  \(3.82\times10^{-17}\) &
+  \(2.00\times10^{-2}\) &
+  \(6.70\times10^{-2}\) &
+  \(6.42\times10^{-2}\) \\
+  Divergence-free, fine \(64\to81\) &
+  \(7.68\times10^{-3}\) &
+  \(3.08\times10^{-17}\) &
+  \(1.27\times10^{-2}\) &
+  \(4.23\times10^{-2}\) &
+  \(4.04\times10^{-2}\) \\
+  \bottomrule
+  \end{tabular}
+  }
+  \caption{Planar Voronoi validation of the global target-edge
+  \(H(\mathrm{div})\)-conforming projection.  The corrected field enforces exact
+  target-cell divergence constraints while the raw transfer approaches the
+  conforming field under refinement.}
+  \label{tab:hdiv-projection}
+\end{table}
 
 \subsection{Spherical Structured and Unstructured Tests}
 
@@ -851,6 +1168,15 @@ Hodge/Piola-consistent spherical Gram matrix, the relative edge-flux error is
 \(6.51\times10^{-2}\) on \(4\to6\), \(3.37\times10^{-2}\) on \(6\to4\), and
 \(3.05\times10^{-2}\) on \(6\to8\), while preserving the same machine-precision
 conservation checks.
+
+The same structured cases were also passed through the new global target-edge
+\(H(\mathrm{div})\) projection.  The maximum corrected target-cell divergence
+residual is \(2.22\times10^{-16}\) on the identity case,
+\(1.25\times10^{-16}\) on \(4\to6\), \(1.11\times10^{-16}\) on \(6\to4\), and
+\(8.33\times10^{-17}\) on \(6\to8\).  The relative correction norm decreases
+from \(1.28\times10^{-2}\) on \(4\to6\) to \(5.75\times10^{-3}\) on \(6\to8\),
+so the spherical raw transfer also approaches the globally conforming target
+skeleton under refinement.
 
 To quantify refinement beyond the default acceptance cases, an additional sweep
 was run on \((3\to5), (4\to6), (6\to8), (8\to10), (12\to14), (16\to18)\)
@@ -910,11 +1236,16 @@ to \(5.08\times10^{-3}\).
   Nine source cells, 14 target cells, 36 overlaps, 23 n-gon to n-gon overlaps &
   Same overlap invariant plus 71 directed target edge fluxes &
   \(4.44\times10^{-16}\) \\
+  Global target-edge \(H(\mathrm{div})\) projection &
+  Planar Voronoi-to-Voronoi raw transfer corrected on the target skeleton &
+  Exact target-cell divergence constraints and refinement convergence of the raw
+  transfer toward the conforming field &
+  \(4.02\times10^{-17}\) corrected, \(6.72\times10^{-2}\to1.27\times10^{-2}\) correction \\
   Spherical cubed-sphere &
   \(4\to4\), \(4\to6\), \(6\to4\), and \(6\to8\) great-circle quad meshes &
   Global conservation, target KKT re-integration, direct-vs-sparse equality,
-  and identity transfer &
-  \(4.36\times10^{-15}\) global, \(2.78\times10^{-16}\) sparse \\
+  identity transfer, and conforming target-cell closure &
+  \(4.36\times10^{-15}\) global, \(2.78\times10^{-16}\) sparse, \(8.33\times10^{-17}\) conforming \\
   Spherical Voronoi patch &
   Deterministic n-sided source and target great-circle polygons &
   Global conservation, direct-vs-sparse equality, and edge-error convergence &
@@ -945,6 +1276,20 @@ intersections involve n-gons on both sides.  The exact overlap identity holds on
 each of those intersections, and the directed-edge checks verify that the
 remapped edge data themselves, not only overlap-cell diagnostics, reproduce the
 analytic target edge integrals.
+
+The new global target-edge correction resolves the specific limitation exposed
+by Fig.~\ref{fig:error_vv}.  Equation~\eqref{eq:target_balance_with_jumps}
+shows that the raw nonmatching target-cell edge sum is contaminated by source
+interface jumps unless adjacent source-cell reconstructions induce the same
+normal trace on their shared edge.  Table~\ref{tab:hdiv-projection} confirms
+the expected behavior.  For the exact linear field, the correction is
+effectively zero because the raw transfer is already globally compatible.  For
+the smooth divergence-free Voronoi sequence, the raw target-cell closure defect
+decreases under refinement, and the conforming correction drives it to roundoff
+without destroying the directed edge accuracy.  This is the right interpretation
+of convergence toward a globally conforming target skeleton: the local harmonic
+source reconstruction stays unchanged, while the target-edge field approaches
+the globally constrained solution as the mesh is refined.
 
 The spherical results show that the same idea extends to curved manifolds when
 the geometry is handled in a source-cell chart and the Piola map is used for
@@ -1004,6 +1349,10 @@ agreement at \(5\times10^{-13}\).
         edge-flux remap accuracy.
   \item The sparse projection currently uses directed cell-edge DOFs.  Shared
         mesh-edge collapse requires explicit orientation metadata.
+  \item The new global correction is a conforming \emph{target-edge skeleton}
+        projection.  It does not yet construct a single globally conforming
+        target-cell interior vector field; target-cell reconstruction still
+        proceeds cell by cell from the corrected edge data.
   \item MPI, distributed ownership, ghosting, and parallel I/O are intentionally
         out of scope for this phase.
 \end{itemize}
@@ -1041,6 +1390,16 @@ mimetic basis is therefore the better primary method.  Wachspress-based
 compatible vector constructions should be kept as future work only when
 formulated as genuine H(div) spaces, such as generalized Whitney forms or mixed
 virtual elements.
+
+The added global target-edge projection changes the practical scope of the
+method.  The local harmonic reconstruction remains the source-side engine for
+exact edge-flux recovery and clipped-edge evaluation.  The new constrained
+target solve then converts the raw directed target-edge field into a discrete
+globally conforming \(H(\mathrm{div})\) flux field with exact target-cell
+divergence constraints.  For divergence-free source reconstructions this means
+that every target cell is also divergence-free to machine precision after the
+projection, even on coarse nonmatching Voronoi meshes where the raw transfer can
+show visible closure defects.
 
 \subsection*{Future Research Directions}
 Building on the verified serial planar and spherical framework, the following
