@@ -22,6 +22,8 @@ edge-moment transfer:
 - optional cell vector moments
 - exact nonmatching patch tests for a `p=2` variable-divergence polynomial on
   quads and Voronoi polygons
+- a refinement study for `p=1,2,3` on quad-to-quad and Voronoi-to-Voronoi
+  nonmatching meshes
 
 ## What The Code Does
 
@@ -159,6 +161,11 @@ The current implementation uses:
 - a vector-polynomial basis of degree `p`,
 - Legendre moments on each polygon edge,
 - exact clipping-based transfer of target edge moments,
+- a projected constrained solve in which the zeroth edge moment on every source
+  edge is enforced exactly and the higher edge moments and cell moments are fit
+  in weighted least squares,
+- local basis scaling by a cell length scale to stabilize `p=2` and `p=3`
+  reconstructions on refined or irregular polygons,
 - QR solves when the local constraint matrix is fully or over-determined,
 - KKT minimum-energy fallback when the local system is under-determined.
 
@@ -168,12 +175,35 @@ current verified scope is:
 
 - exact recovery of a `p=2` variable-divergence polynomial field,
 - exact transfer of target edge moments on nonmatching quad and Voronoi meshes,
-- regression coverage in `tests/high_order_edge_moment_test.cpp`.
+- regression coverage in `tests/high_order_edge_moment_test.cpp`,
+- conservative refinement studies for `p=1,2,3` in
+  `tests/high_order_hdiv_convergence_test.cpp`.
+
+In the current refinement study:
+
+- `p=1` is the validated low-order harmonic `MimeticInterpolator` baseline,
+- `p=2` and `p=3` use the projected `PlanarMomentInterpolator` path,
+- the moment-0 edge flux is preserved exactly to the repository conservation
+  tolerance, and
+- higher moments are used to drive asymptotic accuracy.
+
+The current convergence study reports:
+
+- quad-to-quad average relative edge-flux rates of approximately
+  `2.26`, `3.39`, and `4.46` for `p=1,2,3`,
+- Voronoi-to-Voronoi average relative edge-flux rates of approximately
+  `1.90`, `2.77`, and `3.34` for `p=1,2,3`,
+- conservation residuals at roundoff, typically `1e-15` to `1e-16`.
 
 Run it with:
 
 ```bash
 ctest --test-dir build -R high_order_edge_moment_test --output-on-failure
+ctest --test-dir build -R high_order_hdiv_convergence_test --output-on-failure
+./build/high_order_hdiv_convergence_test docs/high_order_hdiv_convergence.csv
+conda run -n climate-vis python scripts/plot_high_order_hdiv_convergence.py \
+  docs/high_order_hdiv_convergence.csv \
+  docs/figures/high_order_hdiv_convergence.png
 ```
 
 The planar rectangular test exercises this on a nonmatching mesh.  The assembled
