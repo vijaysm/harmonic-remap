@@ -554,6 +554,24 @@ int vector_moment_basis_count(const int degree)
     return scalar_monomial_basis_count(degree);
 }
 
+int scalar_monomial_index(const int degree, const int a, const int b)
+{
+    if (degree < 0 || a < 0 || b < 0 || a + b > degree) {
+        return -1;
+    }
+
+    int index = 0;
+    for (int total_degree = 0; total_degree <= degree; ++total_degree) {
+        for (int ax = total_degree; ax >= 0; --ax, ++index) {
+            const int by = total_degree - ax;
+            if (ax == a && by == b) {
+                return index;
+            }
+        }
+    }
+    return -1;
+}
+
 std::vector<VectorBasisTerm> build_vector_polynomial_basis(const int degree)
 {
     std::vector<VectorBasisTerm> basis;
@@ -570,6 +588,220 @@ std::vector<VectorBasisTerm> build_vector_polynomial_basis(const int degree)
         }
     }
     return basis;
+}
+
+int vector_basis_index(const std::vector<VectorBasisTerm>& basis,
+                       const int component,
+                       const int a,
+                       const int b)
+{
+    for (std::size_t i = 0; i < basis.size(); ++i) {
+        if (basis[i].component == component && basis[i].a == a && basis[i].b == b) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+double binomial_coefficient(const int n, const int k)
+{
+    if (k < 0 || k > n) {
+        return 0.0;
+    }
+    if (k == 0 || k == n) {
+        return 1.0;
+    }
+    double value = 1.0;
+    for (int i = 1; i <= k; ++i) {
+        value *= static_cast<double>(n - (k - i));
+        value /= static_cast<double>(i);
+    }
+    return value;
+}
+
+Eigen::MatrixXd orthonormal_column_basis(const Eigen::MatrixXd& matrix, const double tolerance)
+{
+    if (matrix.cols() == 0) {
+        return Eigen::MatrixXd::Zero(matrix.rows(), 0);
+    }
+
+    const Eigen::JacobiSVD<Eigen::MatrixXd> svd(matrix, Eigen::ComputeThinU | Eigen::ComputeThinV);
+    Eigen::Index rank = 0;
+    for (Eigen::Index i = 0; i < svd.singularValues().size(); ++i) {
+        if (svd.singularValues()(i) > tolerance) {
+            ++rank;
+        }
+    }
+    return svd.matrixU().leftCols(rank);
+}
+
+Eigen::MatrixXd nullspace_basis(const Eigen::MatrixXd& matrix, const double tolerance)
+{
+    if (matrix.rows() == 0) {
+        return Eigen::MatrixXd::Identity(matrix.cols(), matrix.cols());
+    }
+
+    const Eigen::JacobiSVD<Eigen::MatrixXd> svd(matrix, Eigen::ComputeFullV);
+    Eigen::Index rank = 0;
+    for (Eigen::Index i = 0; i < svd.singularValues().size(); ++i) {
+        if (svd.singularValues()(i) > tolerance) {
+            ++rank;
+        }
+    }
+    return svd.matrixV().rightCols(matrix.cols() - rank);
+}
+
+struct SplitMomentBasis {
+    Eigen::MatrixXd raw_coordinates;
+    int divergence_mode_count = 0;
+    int harmonic_mode_count = 0;
+    int bubble_mode_count = 0;
+};
+
+Eigen::VectorXd divergence_particular_mode_physical(const std::vector<VectorBasisTerm>& raw_basis,
+                                                    const int a,
+                                                    const int b)
+{
+    Eigen::VectorXd mode = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(raw_basis.size()));
+    const int index = vector_basis_index(raw_basis, 0, a + 1, b);
+    if (index < 0) {
+        throw std::runtime_error("Failed to build divergence particular mode");
+    }
+    mode(index) = 1.0 / static_cast<double>(a + 1);
+    return mode;
+}
+
+Eigen::VectorXd harmonic_gradient_mode_physical(const std::vector<VectorBasisTerm>& raw_basis,
+                                                const int harmonic_degree,
+                                                const bool imaginary)
+{
+    Eigen::VectorXd mode = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(raw_basis.size()));
+    for (int y_degree = 0; y_degree <= harmonic_degree; ++y_degree) {
+        const int x_degree = harmonic_degree - y_degree;
+        const bool contributes_to_real = (y_degree % 2 == 0);
+        if (imaginary == contributes_to_real) {
+            continue;
+        }
+
+        const double sign = contributes_to_real
+            ? ((y_degree / 2) % 2 == 0 ? 1.0 : -1.0)
+            : ((((y_degree - 1) / 2) % 2 == 0) ? 1.0 : -1.0);
+        const double coeff = sign * binomial_coefficient(harmonic_degree, y_degree);
+
+        if (x_degree > 0) {
+            const int index_x = vector_basis_index(raw_basis, 0, x_degree - 1, y_degree);
+            if (index_x >= 0) {
+                mode(index_x) += coeff * static_cast<double>(x_degree);
+            }
+        }
+        if (y_degree > 0) {
+            const int index_y = vector_basis_index(raw_basis, 1, x_degree, y_degree - 1);
+            if (index_y >= 0) {
+                mode(index_y) += coeff * static_cast<double>(y_degree);
+            }
+        }
+    }
+    return mode;
+}
+
+Eigen::MatrixXd divergence_operator_physical(const int degree,
+                                             const std::vector<VectorBasisTerm>& raw_basis)
+{
+    if (degree <= 0) {
+        return Eigen::MatrixXd::Zero(0, static_cast<Eigen::Index>(raw_basis.size()));
+    }
+
+    const int scalar_dim = scalar_monomial_basis_count(degree - 1);
+    Eigen::MatrixXd divergence = Eigen::MatrixXd::Zero(scalar_dim, static_cast<Eigen::Index>(raw_basis.size()));
+    for (std::size_t col = 0; col < raw_basis.size(); ++col) {
+        const VectorBasisTerm& term = raw_basis[col];
+        if (term.component == 0 && term.a > 0) {
+            const int row = scalar_monomial_index(degree - 1, term.a - 1, term.b);
+            divergence(row, static_cast<Eigen::Index>(col)) += static_cast<double>(term.a);
+        } else if (term.component == 1 && term.b > 0) {
+            const int row = scalar_monomial_index(degree - 1, term.a, term.b - 1);
+            divergence(row, static_cast<Eigen::Index>(col)) += static_cast<double>(term.b);
+        }
+    }
+    return divergence;
+}
+
+SplitMomentBasis build_split_moment_basis(const int degree,
+                                          const int harmonic_degree_option,
+                                          const std::vector<VectorBasisTerm>& raw_basis,
+                                          const double scale)
+{
+    const double tolerance = 1.0e-12;
+    const Eigen::Index raw_dim = static_cast<Eigen::Index>(raw_basis.size());
+
+    Eigen::MatrixXd divergence_modes = Eigen::MatrixXd::Zero(raw_dim,
+                                                             std::max(0, scalar_monomial_basis_count(degree - 1)));
+    int divergence_col = 0;
+    for (int total_degree = 0; total_degree <= degree - 1; ++total_degree) {
+        for (int a = total_degree; a >= 0; --a, ++divergence_col) {
+            const int b = total_degree - a;
+            divergence_modes.col(divergence_col) = divergence_particular_mode_physical(raw_basis, a, b);
+        }
+    }
+    const Eigen::MatrixXd divergence_block = orthonormal_column_basis(divergence_modes, tolerance);
+
+    const int harmonic_degree = (harmonic_degree_option > 0)
+        ? std::min(harmonic_degree_option, degree + 1)
+        : (degree + 1);
+    Eigen::MatrixXd harmonic_modes = Eigen::MatrixXd::Zero(raw_dim, 2 * harmonic_degree);
+    int harmonic_col = 0;
+    for (int k = 1; k <= harmonic_degree; ++k) {
+        harmonic_modes.col(harmonic_col++) = harmonic_gradient_mode_physical(raw_basis, k, false);
+        harmonic_modes.col(harmonic_col++) = harmonic_gradient_mode_physical(raw_basis, k, true);
+    }
+    const Eigen::MatrixXd harmonic_block = orthonormal_column_basis(harmonic_modes, tolerance);
+
+    const Eigen::MatrixXd divergence_operator = divergence_operator_physical(degree, raw_basis);
+    Eigen::MatrixXd bubble_candidates = nullspace_basis(divergence_operator, tolerance);
+    if (harmonic_block.cols() > 0 && bubble_candidates.cols() > 0) {
+        bubble_candidates -= harmonic_block * (harmonic_block.transpose() * bubble_candidates);
+    }
+    const Eigen::MatrixXd bubble_block = orthonormal_column_basis(bubble_candidates, tolerance);
+
+    Eigen::MatrixXd basis = Eigen::MatrixXd::Zero(raw_dim,
+                                                  divergence_block.cols() + harmonic_block.cols() + bubble_block.cols());
+    basis.block(0, 0, raw_dim, divergence_block.cols()) = divergence_block;
+    basis.block(0, divergence_block.cols(), raw_dim, harmonic_block.cols()) = harmonic_block;
+    basis.block(0, divergence_block.cols() + harmonic_block.cols(), raw_dim, bubble_block.cols()) = bubble_block;
+
+    if (basis.cols() != raw_dim) {
+        std::ostringstream oss;
+        oss << "Unified split basis dimension mismatch"
+            << " raw_dim=" << raw_dim
+            << " divergence=" << divergence_block.cols()
+            << " harmonic=" << harmonic_block.cols()
+            << " bubble=" << bubble_block.cols();
+        throw std::runtime_error(oss.str());
+    }
+
+    for (std::size_t row = 0; row < raw_basis.size(); ++row) {
+        const int total_degree = raw_basis[row].a + raw_basis[row].b;
+        basis.row(static_cast<Eigen::Index>(row)) *= std::pow(scale, total_degree);
+    }
+
+    for (Eigen::Index col = 0; col < basis.cols(); ++col) {
+        const double norm = basis.col(col).norm();
+        if (norm > tolerance) {
+            basis.col(col) /= norm;
+        }
+    }
+
+    const Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(basis);
+    if (qr.rank() != raw_dim) {
+        throw std::runtime_error("Unified split basis is rank-deficient");
+    }
+
+    SplitMomentBasis split;
+    split.raw_coordinates = basis;
+    split.divergence_mode_count = static_cast<int>(divergence_block.cols());
+    split.harmonic_mode_count = static_cast<int>(harmonic_block.cols());
+    split.bubble_mode_count = static_cast<int>(bubble_block.cols());
+    return split;
 }
 
 double local_length_scale(const LocalPolygon& poly)
@@ -2210,24 +2442,27 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
     const double scale_length = local_length_scale(poly);
 
     const int vector_degree = options.edge_moment_order;
-    const std::vector<VectorBasisTerm> basis = build_vector_polynomial_basis(vector_degree);
-    const int B = static_cast<int>(basis.size());
+    const std::vector<VectorBasisTerm> raw_basis = build_vector_polynomial_basis(vector_degree);
+    const int raw_dim = static_cast<int>(raw_basis.size());
     const int cell_moment_order = resolved_cell_moment_order(static_cast<int>(edges.size()), options);
     const int num_cell_scalar_moments =
         (cell_moment_order >= 0) ? vector_moment_basis_count(cell_moment_order) : 0;
     const int C = static_cast<int>(edges.size()) * (options.edge_moment_order + 1) +
                   2 * num_cell_scalar_moments;
+    const SplitMomentBasis split_basis =
+        build_split_moment_basis(vector_degree, options.harmonic_degree, raw_basis, scale_length);
+    const int B = static_cast<int>(split_basis.raw_coordinates.cols());
 
-    Eigen::MatrixXd G = Eigen::MatrixXd::Zero(B, B);
-    Eigen::MatrixXd A = Eigen::MatrixXd::Zero(C, B);
+    Eigen::MatrixXd G_raw = Eigen::MatrixXd::Zero(raw_dim, raw_dim);
+    Eigen::MatrixXd A_raw = Eigen::MatrixXd::Zero(C, raw_dim);
     Eigen::VectorXd moments = Eigen::VectorXd::Zero(C);
     Eigen::VectorXd row_weights = Eigen::VectorXd::Ones(C);
 
-    for (int i = 0; i < B; ++i) {
-        for (int j = 0; j < B; ++j) {
-            G(i, j) = integrate_polygon_scalar_duffy(edges, quadrature, [&](const Eigen::Vector2d& p) {
-                return vector_basis_value(basis[i], p, scale_length).dot(
-                    vector_basis_value(basis[j], p, scale_length));
+    for (int i = 0; i < raw_dim; ++i) {
+        for (int j = 0; j < raw_dim; ++j) {
+            G_raw(i, j) = integrate_polygon_scalar_duffy(edges, quadrature, [&](const Eigen::Vector2d& p) {
+                return vector_basis_value(raw_basis[i], p, scale_length).dot(
+                    vector_basis_value(raw_basis[j], p, scale_length));
             });
         }
     }
@@ -2243,12 +2478,12 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
             moments(row) = edge_moments[degree];
             row_weights(row) = options.edge_weight;
         }
-        for (int col = 0; col < B; ++col) {
+        for (int col = 0; col < raw_dim; ++col) {
             const std::vector<double> basis_moments =
-                basis_edge_moments(basis[col], poly, edge_index, edge, options.edge_moment_order,
+                basis_edge_moments(raw_basis[col], poly, edge_index, edge, options.edge_moment_order,
                                    quadrature, scale_length, options_);
             for (int degree = 0; degree <= options.edge_moment_order; ++degree) {
-                A(row - (options.edge_moment_order + 1) + degree, col) = basis_moments[degree];
+                A_raw(row - (options.edge_moment_order + 1) + degree, col) = basis_moments[degree];
             }
         }
     }
@@ -2264,16 +2499,19 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
                 moments(row + 1) = cell_moments[moment_index].y();
                 row_weights(row) = options.cell_weight;
                 row_weights(row + 1) = options.cell_weight;
-                for (int col = 0; col < B; ++col) {
+                for (int col = 0; col < raw_dim; ++col) {
                     const std::vector<Eigen::Vector2d> basis_moments =
-                        basis_cell_vector_moments(basis[col], edges, cell_moment_order, quadrature, scale_length);
-                    A(row, col) = basis_moments[moment_index].x();
-                    A(row + 1, col) = basis_moments[moment_index].y();
+                        basis_cell_vector_moments(raw_basis[col], edges, cell_moment_order, quadrature, scale_length);
+                    A_raw(row, col) = basis_moments[moment_index].x();
+                    A_raw(row + 1, col) = basis_moments[moment_index].y();
                 }
                 row += 2;
             }
         }
     }
+
+    Eigen::MatrixXd G = split_basis.raw_coordinates.transpose() * G_raw * split_basis.raw_coordinates;
+    const Eigen::MatrixXd A = A_raw * split_basis.raw_coordinates;
 
     Eigen::VectorXd coeffs = Eigen::VectorXd::Zero(B);
     double residual = 0.0;
@@ -2344,7 +2582,7 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
         residual = (A * coeffs - moments).lpNorm<Eigen::Infinity>();
     } else {
         const double scale = std::max(1.0, G.diagonal().cwiseAbs().maxCoeff());
-        G.diagonal().array() += options.regularization * scale;
+        G.diagonal() = G.diagonal().array() + options.regularization * scale;
 
         Eigen::MatrixXd KKT = Eigen::MatrixXd::Zero(B + C, B + C);
         KKT.block(0, 0, B, B) = G;
@@ -2374,9 +2612,15 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
     reconstruction.options = options;
     reconstruction.options.cell_moment_order = cell_moment_order;
     reconstruction.vector_polynomial_degree = vector_degree;
-    reconstruction.harmonic_degree = -1;
+    reconstruction.harmonic_degree = (options.harmonic_degree > 0)
+        ? std::min(options.harmonic_degree, vector_degree + 1)
+        : (vector_degree + 1);
+    reconstruction.divergence_mode_count = split_basis.divergence_mode_count;
+    reconstruction.harmonic_mode_count = split_basis.harmonic_mode_count;
+    reconstruction.bubble_mode_count = split_basis.bubble_mode_count;
     reconstruction.length_scale = scale_length;
-    reconstruction.coefficients.assign(coeffs.data(), coeffs.data() + coeffs.size());
+    const Eigen::VectorXd raw_coeffs = split_basis.raw_coordinates * coeffs;
+    reconstruction.coefficients.assign(raw_coeffs.data(), raw_coeffs.data() + raw_coeffs.size());
 
     reconstructions_[polygon] = reconstruction;
     return reconstruction;

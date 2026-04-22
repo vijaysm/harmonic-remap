@@ -281,6 +281,9 @@ struct MomentReconstruction {
     MomentMethodOptions options;
     int vector_polynomial_degree = 0;
     int harmonic_degree = -1;
+    int divergence_mode_count = 0;
+    int harmonic_mode_count = 0;
+    int bubble_mode_count = 0;
     double length_scale = 1.0;
     std::vector<double> coefficients;
 };
@@ -444,15 +447,17 @@ class MimeticInterpolator {
 };
 
 /**
- * Planar higher-order edge-moment reconstruction.
+ * Higher-order edge-moment reconstruction in planar or spherical source charts.
  *
- * The prototype reconstructs one planar vector polynomial per cell from
- * directed edge-normal moments and optional cell vector moments. The edge
- * moment order controls the polynomial degree of the reconstructed field.
+ * The local solve uses a unified polynomial H(div)-style hierarchy:
+ * 1. polynomial-divergence particular fields,
+ * 2. harmonic-gradient divergence-free fields,
+ * 3. divergence-free completion modes ("bubble" modes).
  *
- * This is a verified planar research kernel for higher-order edge-to-edge
- * transfer. The `harmonic_degree` option is reserved for future divergence-free
- * enrichment but is not used by the current implementation.
+ * Source edge-normal Legendre moments are enforced exactly at degree zero and
+ * fitted at higher degree with optional cell vector moments to stabilize the
+ * interior completion. In spherical mode the same hierarchy is assembled in a
+ * gnomonic source chart.
  */
 class PlanarMomentInterpolator {
   public:
