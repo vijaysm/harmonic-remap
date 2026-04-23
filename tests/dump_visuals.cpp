@@ -801,6 +801,174 @@ void compute_order_comparison(const std::string& prefix,
     std::cout << "  Order comparison dumped: " << prefix << "\n";
 }
 
+// Forward declarations for functions defined later in the file.
+std::vector<moab::EntityHandle> generate_latlon_grid(moab::Core& mb, int nlon, int nlat);
+
+/// Dump cells in Mercator projection: (lon, lat) -> (lon, ln(tan(pi/4 + lat/2)))
+void dump_mercator_mesh(const std::string& filename, moab::Core& mb,
+                        const std::vector<moab::EntityHandle>& cells,
+                        const std::vector<double>& values)
+{
+    std::ofstream out(filename);
+    if (!out) return;
+    auto to_mercator = [](const Eigen::Vector3d& p3) -> Eigen::Vector2d {
+        const Eigen::Vector3d u = p3.normalized();
+        const double lon = std::atan2(u.y(), u.x());
+        double lat = std::asin(std::max(-1.0, std::min(1.0, u.z())));
+        lat = std::max(-85.0 * PI / 180.0, std::min(85.0 * PI / 180.0, lat));
+        const double y = std::log(std::tan(PI / 4.0 + lat / 2.0));
+        return Eigen::Vector2d(lon, y);
+    };
+    for (std::size_t i = 0; i < cells.size(); ++i) {
+        const moab::EntityHandle* conn = nullptr;
+        int nv = 0;
+        mimetic::check_moab(mb.get_connectivity(cells[i], conn, nv), "get conn");
+        if (nv < 3) continue;
+        std::vector<Eigen::Vector2d> projected;
+        bool skip = false;
+        for (int v = 0; v < nv; ++v) {
+            double xyz[3];
+            mimetic::check_moab(mb.get_coords(&conn[v], 1, xyz), "get coords");
+            const Eigen::Vector3d p(xyz[0], xyz[1], xyz[2]);
+            if (std::abs(p.normalized().z()) > std::sin(85.0 * PI / 180.0)) { skip = true; break; }
+            projected.push_back(to_mercator(p));
+        }
+        if (skip || projected.size() < 3) continue;
+        // Fix longitude wrapping
+        double lon_avg = 0;
+        for (const auto& q : projected) lon_avg += q.x();
+        lon_avg /= projected.size();
+        for (auto& q : projected) {
+            if (q.x() - lon_avg > PI) q.x() -= 2 * PI;
+            if (q.x() - lon_avg < -PI) q.x() += 2 * PI;
+        }
+        Eigen::Vector2d centroid = Eigen::Vector2d::Zero();
+        for (const auto& q : projected) centroid += q;
+        centroid /= projected.size();
+        out << centroid.x() << " " << centroid.y() << " " << values[i]
+            << " " << projected.size();
+        for (const auto& q : projected) out << " " << q.x() << " " << q.y();
+        out << "\n";
+    }
+}
+
+/// Generate quasi-uniform Voronoi cells from Halton seeds on a gnomonic chart.
+std::vector<moab::EntityHandle> generate_voronoi_sphere(moab::Core& mb, int target_count)
+{
+    std::vector<Eigen::Vector2d> seeds;
+    const double extent = 1.2;
+    for (int i = 1; i <= target_count; ++i) {
+        seeds.emplace_back(-extent + 2.0 * extent * halton(i, 2),
+                           -extent + 2.0 * extent * halton(i, 3));
+    }
+    std::vector<moab::EntityHandle> cells;
+    for (const Eigen::Vector2d& seed : seeds) {
+        std::vector<Eigen::Vector2d> polygon = {{-extent, -extent}, {extent, -extent},
+                                                 {extent, extent}, {-extent, extent}};
+        for (const Eigen::Vector2d& other : seeds) {
+            if ((other - seed).squaredNorm() < 1e-24) continue;
+            const Eigen::Vector2d normal = 2.0 * (other - seed);
+            const double offset = other.squaredNorm() - seed.squaredNorm();
+            polygon = clip_by_halfplane(polygon, normal, offset);
+            if (polygon.size() < 3) break;
+        }
+        if (polygon.size() < 3 || std::abs(mimetic::signed_area(polygon)) < 1e-12) continue;
+        cells.push_back(mimetic::test_sphere::create_chart_polygon(mb, polygon));
+    }
+    return cells;
+}
+
+/// Compute p=1 round-trip divergence: source → intermediate → source.
+std::vector<double> roundtrip_p1(moab::Core& mb,
+                                 const std::vector<moab::EntityHandle>& source_cells,
+                                 const std::vector<moab::EntityHandle>& inter_cells,
+                                 const mimetic::GeometryOptions& spherical)
+{
+    using namespace mimetic::test_sphere;
+    mimetic::MimeticInterpolator fwd(mb);
+    fwd.set_geometry_options(spherical);
+    set_conservative_source_fluxes(fwd, mb, source_cells, spherical_harmonic_gradient);
+    for (const moab::EntityHandle cell : source_cells) fwd.reconstruct_source_polygon(cell);
+    const mimetic::EdgeTransferResult fwd_xfer = fwd.transfer_source_to_target_edges(source_cells, inter_cells);
+
+    mimetic::MimeticInterpolator bwd(mb);
+    bwd.set_geometry_options(spherical);
+    std::size_t dof = 0;
+    for (const moab::EntityHandle cell : inter_cells) {
+        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, cell, spherical);
+        for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++dof)
+            bwd.set_source_edge_flux(cell, i, fwd_xfer.target_fluxes[dof]);
+    }
+    for (const moab::EntityHandle cell : inter_cells) bwd.reconstruct_source_polygon(cell);
+    const mimetic::EdgeTransferResult bwd_xfer = bwd.transfer_source_to_target_edges(inter_cells, source_cells);
+
+    std::vector<double> result;
+    dof = 0;
+    for (const moab::EntityHandle cell : source_cells) {
+        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, cell, spherical);
+        double flux = 0.0;
+        for (std::size_t e = 0; e < poly.vertices.size(); ++e, ++dof)
+            flux += bwd_xfer.target_fluxes[dof];
+        result.push_back(flux / poly.area);
+    }
+    return result;
+}
+
+/// Compute exact cell-averaged divergence from manufactured field.
+std::vector<double> exact_cell_divergence(moab::Core& mb,
+                                          const std::vector<moab::EntityHandle>& cells,
+                                          const mimetic::GeometryOptions& spherical)
+{
+    using namespace mimetic::test_sphere;
+    std::vector<double> result;
+    for (const moab::EntityHandle cell : cells) {
+        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, cell, spherical);
+        const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb, poly);
+        double div = 0.0;
+        for (std::size_t i = 0; i < edges.size(); ++i)
+            div += exact_chart_edge_flux(mb, cell, i, spherical_harmonic_gradient);
+        result.push_back(div / poly.area);
+    }
+    return result;
+}
+
+void compute_mercator_roundtrip(const std::string& prefix,
+                                int nlon, int nlat, int cs_n, int voronoi_n)
+{
+    mimetic::GeometryOptions spherical;
+    spherical.mode = mimetic::GeometryMode::SphericalGnomonic;
+    spherical.metric_weighted = true;
+
+    moab::Core mb;
+    const std::vector<moab::EntityHandle> ll_cells = generate_latlon_grid(mb, nlon, nlat);
+    const std::vector<moab::EntityHandle> cs_cells =
+        mimetic::test_sphere::generate_cubed_sphere(mb, cs_n);
+
+    std::cout << "  lat/lon: " << ll_cells.size() << " cells, CS: " << cs_cells.size() << " cells\n";
+
+    const std::vector<double> ll_exact = exact_cell_divergence(mb, ll_cells, spherical);
+
+    std::cout << "  Computing CS p=1 round-trip...\n";
+    const std::vector<double> ll_cs_p1 = roundtrip_p1(mb, ll_cells, cs_cells, spherical);
+
+    // Dump in Mercator
+    dump_mercator_mesh(prefix + "_source_exact.txt", mb, ll_cells, ll_exact);
+    dump_mercator_mesh(prefix + "_cs_p1.txt", mb, ll_cells, ll_cs_p1);
+
+    std::vector<double> cs_p1_err;
+    double max_cs = 0;
+    for (std::size_t i = 0; i < ll_exact.size(); ++i) {
+        cs_p1_err.push_back(ll_cs_p1[i] - ll_exact[i]);
+        max_cs = std::max(max_cs, std::abs(cs_p1_err.back()));
+    }
+    dump_mercator_mesh(prefix + "_cs_p1_error.txt", mb, ll_cells, cs_p1_err);
+
+    std::cout << "  CS p=1 round-trip max error: " << max_cs << "\n";
+    std::cout << "  Mercator round-trip dumped: " << prefix << "\n";
+}
+
+// Old gnomonic comparison functions kept for backward compatibility
+// but no longer called from main().
 void dump_spherical_mesh(const std::string& filename, moab::Core& mb,
                         const std::vector<moab::EntityHandle>& cells,
                         const std::vector<double>& values,
@@ -1273,13 +1441,9 @@ int main()
             compute_order_comparison("vis_order_compare_voronoi_E: oscillating_div", mb, src, tgt, field_E);
         }
 
-        // Spherical order comparison: cubed-sphere, p=1 vs p=3
-        std::cout << "\n=== Spherical Order Comparison: Y_2^0 gradient ===\n";
-        compute_spherical_order_comparison("vis_order_compare_spherical", 8, 12);
-
-        // Round-trip test: lat/lon → cubed-sphere → lat/lon
-        std::cout << "\n=== Round-Trip: lat/lon -> cubed-sphere -> lat/lon ===\n";
-        compute_roundtrip_comparison("vis_roundtrip_latlon_cs", 36, 18, 10);
+        // Mercator round-trip: lat/lon → CS → lat/lon
+        std::cout << "\n=== Mercator Round-Trip: lat/lon -> CS -> lat/lon ===\n";
+        compute_mercator_roundtrip("vis_mercator_roundtrip", 72, 36, 8, 0);
 
         std::cout << "\n[SUCCESS] All convergence and exact recovery checks passed.\n";
         return 0;

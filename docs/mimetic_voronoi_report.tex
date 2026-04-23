@@ -1117,9 +1117,7 @@ qualitatively but has a maximum error of \(O(1)\), while the \(p=3\)
 reconstruction reduces the maximum error to \(O(10^{-3})\).
 Figure~\ref{fig:order-compare-voronoi} shows the same field on a
 \(64\to100\)-cell Voronoi-to-Voronoi transfer; the \(p=3\) error drops from
-\(O(1)\) to \(O(10^{-1})\) on the irregular mesh.  The same order-of-magnitude
-improvement is observed on the sphere
-(Figure~\ref{fig:order-compare-spherical}).
+\(O(1)\) to \(O(10^{-1})\) on the irregular mesh.
 
 \begin{figure}[htbp]
   \centering
@@ -1143,44 +1141,25 @@ improvement is observed on the sphere
   \label{fig:order-compare-voronoi}
 \end{figure}
 
-Figure~\ref{fig:order-compare-spherical} extends the comparison to the unit
-sphere using a \(8\to12\) cubed-sphere transfer of
-\(\mathbf{u}=\nabla_S Y_2^0\).  The cells are shown in a gnomonic chart
-centered at the north pole.  The \(p=3\) reconstruction reduces the maximum
-divergence error from \(3.3\times10^{-1}\) to \(2.8\times10^{-2}\), an order
-of magnitude improvement consistent with the planar results.
+Figure~\ref{fig:mercator-roundtrip} shows a round-trip transfer on the full
+sphere: an exact \(\nabla_S Y_2^0\) field is set on a \(72\times36\)
+regular lat/lon grid (great-circle edges with triangular polar caps),
+transferred to a cubed-sphere (\(n=8\), 384 cells) intermediate, reconstructed
+there, and transferred back to the original lat/lon grid.  The Mercator
+projection provides a natural global view.  The round-trip error
+(max~\(6.2\times10^{-1}\)) shows the imprint of the cubed-sphere face
+boundaries where the intermediate mesh changes chart alignment.
 
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=\textwidth]{vis_order_compare_spherical_order_compare.png}
-  \caption{Cubed-sphere order comparison for the surface gradient of \(Y_2^0\),
-  shown in gnomonic chart coordinates.  Top row: source exact divergence,
-  \(p=1\) reconstruction, and \(p=1\) error.  Bottom row: target exact
-  divergence, \(p=3\) reconstruction, and \(p=3\) error.  The gnomonic
-  distortion is visible at the chart edges; the \(p=3\) error is concentrated
-  there while the interior cells are resolved to near roundoff.}
-  \label{fig:order-compare-spherical}
-\end{figure}
-
-Figure~\ref{fig:roundtrip} shows a round-trip transfer test: an exact
-\(\nabla_S Y_2^0\) field is set on a regular \(36\times18\) lat/lon grid,
-transferred to a cubed-sphere (\(n=10\)) intermediate mesh, reconstructed
-there, and transferred back to the original lat/lon grid.  The stereographic
-projection (from the south pole) provides a natural 2D view of the full
-sphere.  The round-trip error (max \(2.15\times10^{-1}\)) is concentrated
-at the poles (where lat/lon cells become degenerate triangles) and at
-cubed-sphere face boundaries (where the intermediate mesh changes chart
-alignment).
-
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=\textwidth]{vis_roundtrip_latlon_cs_roundtrip.png}
+  \includegraphics[width=\textwidth]{vis_mercator_roundtrip_mercator.png}
   \caption{Round-trip transfer: lat/lon \(\to\) cubed-sphere \(\to\) lat/lon
-  in stereographic projection.  Left: source exact divergence.  Center:
+  in Mercator projection.  Left: source exact divergence.  Center:
   round-tripped divergence after two \(p=1\) transfers through a cubed-sphere
-  intermediate.  Right: round-trip error.  The lat/lon cells are great-circle
-  quadrilaterals with triangular polar caps.}
-  \label{fig:roundtrip}
+  intermediate.  Right: round-trip error, showing the cubed-sphere face
+  boundary imprint.  Polar caps (\(|\mathrm{lat}|>85^\circ\)) are excluded
+  from the Mercator view.}
+  \label{fig:mercator-roundtrip}
 \end{figure}
 
 \subsection{High-Order Split-Moment Convergence}
