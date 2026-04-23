@@ -944,24 +944,21 @@ also passes conservation to \(4.44\times10^{-16}\).
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=0.70\linewidth]{voronoi_patch.pdf}
-  \caption{Nonmatching bounded Voronoi patch.  Blue polygons are source cells
-  and dashed orange polygons are target cells.  The numbers mark source cells
-  with \(n>4\) sides.}
+  \begin{minipage}[t]{0.48\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{voronoi_patch.pdf}
+  \end{minipage}%
+  \hfill
+  \begin{minipage}[t]{0.48\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{voronoi_overlap_detail.pdf}
+  \end{minipage}
+  \caption{Left: nonmatching bounded Voronoi patch.  Blue polygons are source
+  cells and dashed orange polygons are target cells; numbers mark source cells
+  with \(n>4\) sides.  Right: selected n-gon to n-gon overlaps.  The
+  conservative diagnostic integrates the reconstructed source field around each
+  intersection boundary (green) and compares it with \(d_s|O|\).}
   \label{fig:voronoi-patch}
-\end{figure}
-
-Figure~\ref{fig:voronoi-overlap-detail} highlights selected source-target pairs
-where both cells are general n-gons.  The conservative flux check is performed
-on every nonempty overlap.
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=0.68\linewidth]{voronoi_overlap_detail.pdf}
-  \caption{Selected n-gon to n-gon overlaps.  The conservative diagnostic
-  integrates the reconstructed source field around each intersection boundary
-  (highlighted in green) and compares it with \(d_s|O|\).}
-  \label{fig:voronoi-overlap-detail}
 \end{figure}
 
 \subsection{Edge Error and Cell-Divergence Visualizations}
