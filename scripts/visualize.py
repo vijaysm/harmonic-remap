@@ -214,13 +214,86 @@ def render_edge_jump(source_file: Path, output_dir: Path):
     print(f"Wrote {output_path}")
 
 
+def render_order_comparison(source_file: Path, output_dir: Path):
+    """Render 4-panel comparison: source exact, target p=1, target p=3, p=3 error."""
+    base_name = source_file.name.replace("_source.txt", "")
+    target_p1_file = source_file.with_name(base_name + "_target_p1.txt")
+    target_p3_file = source_file.with_name(base_name + "_target_p3.txt")
+    target_exact_file = source_file.with_name(base_name + "_target_exact.txt")
+    if not all(f.exists() for f in [target_p1_file, target_p3_file, target_exact_file]):
+        return
+
+    src_polys, src_vals = read_mesh(source_file)
+    tgt_p1_polys, tgt_p1_vals = read_mesh(target_p1_file)
+    tgt_p3_polys, tgt_p3_vals = read_mesh(target_p3_file)
+    _, tgt_exact_vals = read_mesh(target_exact_file)
+    p1_error = tgt_p1_vals - tgt_exact_vals
+    p3_error = tgt_p3_vals - tgt_exact_vals
+
+    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+
+    vmin = min(src_vals.min(), tgt_p1_vals.min(), tgt_p3_vals.min(), tgt_exact_vals.min())
+    vmax = max(src_vals.max(), tgt_p1_vals.max(), tgt_p3_vals.max(), tgt_exact_vals.max())
+    err_max = max(np.abs(p1_error).max(), np.abs(p3_error).max(), 1.0e-16)
+
+    # Top row: source exact, target exact, target p=1
+    panels_top = [
+        (axes[0, 0], src_polys, src_vals, "viridis", (vmin, vmax), "Source Exact Divergence"),
+        (axes[0, 1], tgt_p1_polys, tgt_p1_vals, "viridis", (vmin, vmax), r"Target Recon. Divergence ($p=1$)"),
+        (axes[0, 2], tgt_p1_polys, p1_error, "RdBu_r", (-err_max, err_max),
+         f"$p=1$ Error (max: {np.abs(p1_error).max():.2e})"),
+    ]
+    # Bottom row: target exact, target p=3, p=3 error
+    panels_bot = [
+        (axes[1, 0], tgt_p3_polys, tgt_exact_vals, "viridis", (vmin, vmax), "Target Exact Divergence"),
+        (axes[1, 1], tgt_p3_polys, tgt_p3_vals, "viridis", (vmin, vmax), r"Target Recon. Divergence ($p=3$)"),
+        (axes[1, 2], tgt_p3_polys, p3_error, "RdBu_r", (-err_max, err_max),
+         f"$p=3$ Error (max: {np.abs(p3_error).max():.2e})"),
+    ]
+
+    value_mappable = None
+    error_mappable = None
+    for ax, polys, values, cmap, clim, title in panels_top + panels_bot:
+        coll = PolyCollection(polys, array=values, cmap=cmap, edgecolors="k", linewidths=0.3)
+        coll.set_clim(*clim)
+        ax.add_collection(coll)
+        ax.set_xlim(0.0, 1.0)
+        ax.set_ylim(0.0, 1.0)
+        ax.set_aspect("equal")
+        ax.set_title(title, fontsize=11)
+        if cmap == "viridis":
+            value_mappable = coll
+        else:
+            error_mappable = coll
+
+    if value_mappable is not None:
+        fig.colorbar(value_mappable, ax=[axes[0, 0], axes[0, 1], axes[1, 0], axes[1, 1]],
+                     orientation="vertical", fraction=0.04, pad=0.02)
+    if error_mappable is not None:
+        fig.colorbar(error_mappable, ax=[axes[0, 2], axes[1, 2]],
+                     orientation="vertical", fraction=0.04, pad=0.02)
+
+    display_name = base_name.replace("vis_order_compare_", "").replace("_", " ")
+    output_name = base_name.replace(": ", "__").replace(" ", "_")
+    fig.suptitle(f"Order comparison: {display_name}", fontsize=14, y=0.98)
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{output_name}_order_compare.png"
+    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Wrote {output_path}")
+
+
 def main():
     input_dir = Path(sys.argv[1]) if len(sys.argv) >= 2 else Path.cwd()
     output_dir = Path(sys.argv[2]) if len(sys.argv) >= 3 else input_dir
     for source_file in sorted(input_dir.glob("vis_*_source.txt")):
-        render_triplet(source_file, output_dir)
-        render_hdiv_comparison(source_file, output_dir)
-        render_edge_jump(source_file, output_dir)
+        if "order_compare" in source_file.name:
+            render_order_comparison(source_file, output_dir)
+        else:
+            render_triplet(source_file, output_dir)
+            render_hdiv_comparison(source_file, output_dir)
+            render_edge_jump(source_file, output_dir)
 
 
 if __name__ == "__main__":

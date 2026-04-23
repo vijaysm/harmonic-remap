@@ -1097,6 +1097,50 @@ target-cell balance residual.
   \label{tab:hdiv-projection}
 \end{table}
 
+\subsection{Low-Order versus High-Order Divergence Reconstruction}
+
+To illustrate the practical value of the higher-order method, we compare the
+\(p=1\) (harmonic baseline) and \(p=3\) (split-moment enrichment)
+reconstructions on a manufactured field with highly oscillating divergence,
+\begin{equation}
+  \mathbf{u}(x,y) =
+  \bigl(\sin(2\pi x)\sin(\pi y),\; \cos(\pi x)\sin(2\pi y)\bigr),
+  \label{eq:oscillating-div-field}
+\end{equation}
+whose divergence
+\(\nabla\cdot\mathbf{u} = 2\pi\cos(2\pi x)\sin(\pi y) + 2\pi\cos(\pi x)\cos(2\pi y)\)
+oscillates over the unit square with \(O(1)\) magnitude variations.
+
+Figure~\ref{fig:order-compare-quad} shows the \(8\to11\) quad-to-quad case.
+The \(p=1\) reconstruction recovers the cell-averaged divergence pattern
+qualitatively but has a maximum error of \(O(1)\), while the \(p=3\)
+reconstruction reduces the maximum error to \(O(10^{-3})\).
+Figure~\ref{fig:order-compare-voronoi} shows the same field on a
+\(64\to100\)-cell Voronoi-to-Voronoi transfer; the \(p=3\) error drops from
+\(O(1)\) to \(O(10^{-1})\) on the irregular mesh.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{vis_order_compare_quad_E__oscillating_div_order_compare.png}
+  \caption{Quad-to-quad order comparison for the oscillating-divergence field
+  in Eq.~\eqref{eq:oscillating-div-field}.  Top row: source exact divergence,
+  \(p=1\) reconstruction, and \(p=1\) error.  Bottom row: target exact
+  divergence, \(p=3\) reconstruction, and \(p=3\) error.  The \(p=3\) maximum
+  error is \(\sim260\times\) smaller than \(p=1\).}
+  \label{fig:order-compare-quad}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{vis_order_compare_voronoi_E__oscillating_div_order_compare.png}
+  \caption{Voronoi-to-Voronoi order comparison for the same
+  oscillating-divergence field.  The \(p=3\) split-moment enrichment captures
+  the oscillating pattern significantly better than the \(p=1\) harmonic
+  baseline, reducing the maximum error by an order of magnitude even on
+  irregular n-sided polygons.}
+  \label{fig:order-compare-voronoi}
+\end{figure}
+
 \subsection{High-Order Split-Moment Convergence}
 
 The high-order study applies Algorithm~\ref{alg:high-order-transfer} with a

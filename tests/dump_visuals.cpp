@@ -82,6 +82,15 @@ Eigen::Vector2d field_D(const Eigen::Vector2d& p)
                            std::exp(p.x()) * std::cos(p.y()));
 }
 
+// u_E = (sin(2*pi*x)*sin(pi*y), cos(pi*x)*sin(2*pi*y)):
+//   div = 2*pi*cos(2*pi*x)*sin(pi*y) + 2*pi*cos(pi*x)*cos(2*pi*y)
+// Highly oscillating divergence with O(1) magnitude variations.
+Eigen::Vector2d field_E(const Eigen::Vector2d& p)
+{
+    return Eigen::Vector2d(std::sin(2 * PI * p.x()) * std::sin(PI * p.y()),
+                           std::cos(PI * p.x()) * std::sin(2 * PI * p.y()));
+}
+
 using FieldFunc = Eigen::Vector2d(*)(const Eigen::Vector2d&);
 
 struct TestField {
@@ -584,6 +593,213 @@ bool run_refinement_study(const std::string& domain_label,
     return all_ok;
 }
 
+void set_source_edge_moments_highorder(moab::Core& mb,
+                                       mimetic::PlanarMomentInterpolator& interpolator,
+                                       const moab::EntityHandle polygon,
+                                       FieldFunc field,
+                                       int order)
+{
+    const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, polygon);
+    const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb, poly);
+    for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+        const mimetic::LocalEdge& edge = edges[edge_index];
+        const Eigen::Vector2d a_abs = poly.centroid + edge.a;
+        const Eigen::Vector2d b_abs = poly.centroid + edge.b;
+        const Eigen::Vector2d delta = b_abs - a_abs;
+        const double length = delta.norm();
+        const Eigen::Vector2d normal(delta.y(), -delta.x());
+        const double denom = delta.squaredNorm();
+        std::vector<double> moments(static_cast<std::size_t>(order + 1), 0.0);
+        for (int degree = 0; degree <= order; ++degree) {
+            moments[degree] = integrate_edge_highorder(a_abs, b_abs, [&](const Eigen::Vector2d& p) {
+                const double t = 2.0 * (p - a_abs).dot(delta) / denom - 1.0;
+                double Lm = 1.0;
+                if (degree == 1) Lm = t;
+                else if (degree == 2) Lm = 0.5 * (3.0 * t * t - 1.0);
+                else if (degree == 3) Lm = 0.5 * (5.0 * t * t * t - 3.0 * t);
+                else if (degree > 3) {
+                    double p_nm2 = 1.0, p_nm1 = t;
+                    for (int n = 2; n <= degree; ++n) {
+                        Lm = ((2.0 * n - 1.0) * t * p_nm1 - (n - 1.0) * p_nm2) / n;
+                        p_nm2 = p_nm1;
+                        p_nm1 = Lm;
+                    }
+                }
+                return field(p).dot(normal / length) * Lm;
+            });
+        }
+        interpolator.set_source_edge_moments(polygon, edge_index, moments);
+    }
+}
+
+void set_source_cell_moments_highorder(moab::Core& mb,
+                                       mimetic::PlanarMomentInterpolator& interpolator,
+                                       const moab::EntityHandle polygon,
+                                       FieldFunc field,
+                                       int cell_order)
+{
+    if (cell_order < 0) return;
+    const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, polygon);
+    const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb, poly);
+    std::vector<Eigen::Vector2d> moments;
+    for (int total_degree = 0; total_degree <= cell_order; ++total_degree) {
+        for (int a = total_degree; a >= 0; --a) {
+            const int b = total_degree - a;
+            double mx = 0.0, my = 0.0;
+            for (const mimetic::LocalEdge& edge : edges) {
+                const Eigen::Vector2d origin(0, 0);
+                // Triangle fan integration: origin, edge.a, edge.b (centroid-relative)
+                auto triangle_integrate = [&](auto func) {
+                    // 7-point symmetric rule
+                    const double a1 = 0.4701420641051151, b1 = 1.0 - 2.0*a1, w1 = 0.1323941527885062;
+                    const double a2 = 0.1012865073234563, b2 = 1.0 - 2.0*a2, w2 = 0.1259391805448271;
+                    struct Pt { double w, u, v, wb; };
+                    const Pt pts[7] = {
+                        {0.225, 1.0/3.0, 1.0/3.0, 1.0/3.0},
+                        {w1, a1, a1, b1}, {w1, a1, b1, a1}, {w1, b1, a1, a1},
+                        {w2, a2, a2, b2}, {w2, a2, b2, a2}, {w2, b2, a2, a2}
+                    };
+                    const Eigen::Vector2d e0 = origin, e1 = edge.a, e2 = edge.b;
+                    double s2a = (e1-e0).x()*(e2-e0).y() - (e1-e0).y()*(e2-e0).x();
+                    double area = 0.5 * std::abs(s2a);
+                    double sum = 0.0;
+                    for (int i = 0; i < 7; ++i) {
+                        sum += pts[i].w * func(pts[i].u*e0 + pts[i].v*e1 + pts[i].wb*e2);
+                    }
+                    return area * sum;
+                };
+                mx += triangle_integrate([&](const Eigen::Vector2d& p) {
+                    return field(p + poly.centroid).x() * std::pow(p.x(), a) * std::pow(p.y(), b);
+                });
+                my += triangle_integrate([&](const Eigen::Vector2d& p) {
+                    return field(p + poly.centroid).y() * std::pow(p.x(), a) * std::pow(p.y(), b);
+                });
+            }
+            moments.push_back(Eigen::Vector2d(mx, my));
+        }
+    }
+    interpolator.set_source_cell_vector_moments(polygon, moments);
+}
+
+void compute_order_comparison(const std::string& prefix,
+                              moab::Core& mb,
+                              const std::vector<CellInfo>& source_cells,
+                              const std::vector<CellInfo>& target_cells,
+                              FieldFunc field)
+{
+    const std::vector<moab::EntityHandle> src_handles = get_handles(source_cells);
+    const std::vector<moab::EntityHandle> tgt_handles = get_handles(target_cells);
+
+    // Compute source exact divergence
+    std::vector<double> src_values;
+    for (const CellInfo& src : source_cells) {
+        const mimetic::LocalPolygon src_poly = mimetic::local_polygon(mb, src.handle);
+        const std::vector<mimetic::LocalEdge> src_edges = mimetic::local_edges(mb, src_poly);
+        double src_div = 0.0;
+        for (const mimetic::LocalEdge& edge : src_edges) {
+            src_div += exact_directed_edge_flux(src_poly.centroid + edge.a, src_poly.centroid + edge.b, field);
+        }
+        src_values.push_back(src_div / src_poly.area);
+    }
+
+    // Target exact divergence
+    std::vector<double> tgt_exact_values;
+    for (const CellInfo& tgt : target_cells) {
+        const mimetic::LocalPolygon tgt_poly = mimetic::local_polygon(mb, tgt.handle);
+        const std::vector<mimetic::LocalEdge> tgt_edges = mimetic::local_edges(mb, tgt_poly);
+        double exact_div = 0.0;
+        for (const mimetic::LocalEdge& edge : tgt_edges) {
+            exact_div += exact_directed_edge_flux(tgt_poly.centroid + edge.a, tgt_poly.centroid + edge.b, field);
+        }
+        tgt_exact_values.push_back(exact_div / tgt_poly.area);
+    }
+
+    // p=1: low-order mimetic transfer
+    {
+        mimetic::MimeticInterpolator interpolator(mb);
+        for (const CellInfo& src : source_cells) {
+            set_source_fluxes_highorder(mb, interpolator, src.handle, field);
+            interpolator.reconstruct_source_polygon(src.handle);
+        }
+        const mimetic::EdgeTransferResult transfer =
+            interpolator.transfer_source_to_target_edges(src_handles, tgt_handles);
+
+        std::vector<double> tgt_p1_values;
+        std::size_t dof = 0;
+        for (const CellInfo& tgt : target_cells) {
+            const mimetic::LocalPolygon tgt_poly = mimetic::local_polygon(mb, tgt.handle);
+            const std::vector<mimetic::LocalEdge> tgt_edges = mimetic::local_edges(mb, tgt_poly);
+            double cell_flux = 0.0;
+            for (std::size_t e = 0; e < tgt_edges.size(); ++e, ++dof) {
+                cell_flux += transfer.target_fluxes[dof];
+            }
+            tgt_p1_values.push_back(cell_flux / tgt_poly.area);
+        }
+        dump_mesh(prefix + "_target_p1.txt", mb, target_cells, tgt_p1_values);
+    }
+
+    // p=3: high-order moment transfer
+    {
+        moab::Core mb3;
+        // Recreate meshes in a fresh MOAB instance to avoid tag conflicts
+        std::vector<CellInfo> src3, tgt3;
+        for (const CellInfo& c : source_cells) {
+            src3.push_back(CellInfo{mimetic::create_polygon(mb3, c.points), c.points});
+        }
+        {
+            std::vector<moab::EntityHandle> handles;
+            for (const CellInfo& c : src3) handles.push_back(c.handle);
+            mimetic::merge_polygon_vertices(mb3, handles);
+        }
+        for (const CellInfo& c : target_cells) {
+            tgt3.push_back(CellInfo{mimetic::create_polygon(mb3, c.points), c.points});
+        }
+        {
+            std::vector<moab::EntityHandle> handles;
+            for (const CellInfo& c : tgt3) handles.push_back(c.handle);
+            mimetic::merge_polygon_vertices(mb3, handles);
+        }
+
+        mimetic::PlanarMomentInterpolator interpolator3(mb3);
+        mimetic::MomentMethodOptions options;
+        options.edge_moment_order = 3;
+        options.cell_moment_order = 2;
+        options.quadrature_points = 10;
+        options.regularization = 1.0e-12;
+        options.exact_constraints = false;
+
+        const std::vector<moab::EntityHandle> src3_handles = get_handles(src3);
+        const std::vector<moab::EntityHandle> tgt3_handles = get_handles(tgt3);
+
+        for (const CellInfo& src : src3) {
+            set_source_edge_moments_highorder(mb3, interpolator3, src.handle, field, 3);
+            set_source_cell_moments_highorder(mb3, interpolator3, src.handle, field, 2);
+            interpolator3.reconstruct_source_polygon(src.handle, options);
+        }
+
+        const mimetic::EdgeMomentTransferResult transfer3 =
+            interpolator3.transfer_source_to_target_edge_moments(src3_handles, tgt3_handles, 3);
+
+        std::vector<double> tgt_p3_values;
+        std::size_t dof = 0;
+        for (const CellInfo& tgt : tgt3) {
+            const mimetic::LocalPolygon tgt_poly = mimetic::local_polygon(mb3, tgt.handle);
+            const std::vector<mimetic::LocalEdge> tgt_edges = mimetic::local_edges(mb3, tgt_poly);
+            double cell_flux = 0.0;
+            for (std::size_t e = 0; e < tgt_edges.size(); ++e, ++dof) {
+                cell_flux += transfer3.target_moments[dof][0]; // zeroth moment = flux
+            }
+            tgt_p3_values.push_back(cell_flux / tgt_poly.area);
+        }
+        dump_mesh(prefix + "_target_p3.txt", mb3, tgt3, tgt_p3_values);
+    }
+
+    dump_mesh(prefix + "_source.txt", mb, source_cells, src_values);
+    dump_mesh(prefix + "_target_exact.txt", mb, target_cells, tgt_exact_values);
+
+    std::cout << "  Order comparison dumped: " << prefix << "\n";
+}
+
 }  // namespace
 
 int main()
@@ -626,6 +842,27 @@ int main()
         if (!ok) {
             std::cout << "\n[FAILED] Some convergence checks did not pass.\n";
             return 1;
+        }
+
+        // Order comparison: field E (oscillating divergence), p=1 vs p=3
+        std::cout << "\n=== Order Comparison: Field E (oscillating divergence) ===\n";
+        {
+            moab::Core mb;
+            auto src = create_quad_mesh(mb, 8, 8);
+            auto tgt = create_quad_mesh(mb, 11, 11);
+            compute_order_comparison("vis_order_compare_quad_E: oscillating_div", mb, src, tgt, field_E);
+        }
+        {
+            moab::Core mb;
+            auto src_seeds = halton_seeds(64);
+            std::vector<Eigen::Vector2d> tgt_seeds;
+            for (int i = 65; i <= 165; ++i) {
+                tgt_seeds.emplace_back(0.05 + 0.90 * halton(i, 2),
+                                       0.05 + 0.90 * halton(i, 3));
+            }
+            auto src = create_voronoi_mesh(mb, src_seeds);
+            auto tgt = create_voronoi_mesh(mb, tgt_seeds);
+            compute_order_comparison("vis_order_compare_voronoi_E: oscillating_div", mb, src, tgt, field_E);
         }
 
         std::cout << "\n[SUCCESS] All convergence and exact recovery checks passed.\n";
