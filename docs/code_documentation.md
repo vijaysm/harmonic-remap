@@ -322,21 +322,46 @@ The Voronoi patches confirm this: they subtend a smaller solid angle
 variation constant by ~(0.55/1.57)^2 ≈ 0.12, which pushes the crossover
 to finer meshes and allows p=3 rates of ~3.46 to be observed.
 
-### Path Forward
+### Degree-Elevated Basis for Spherical p >= 3
 
-To achieve O(h^{p+1}) convergence for arbitrary p on large spherical
-cells, the basis must be enriched with metric-correction terms.  Two
-approaches are viable:
+The basis span limitation was resolved by **degree elevation**: for p >= 3
+in spherical mode, the vector polynomial degree is raised from p to p+2.
+A degree-(p+2) polynomial in the chart coordinates (x,y) spans all
+products `|ξ|^2 × (degree-p monomial)`, which captures the leading
+rational correction from the Piola mapping.
 
-1. **Metric-augmented polynomial basis**: add modes of the form
-   `|ξ|^2 v_j(ξ)` that capture the leading-order rational correction.
-   This increases the basis dimension by a factor of ~2 but extends the
-   polynomial approximation to rational functions.
+The implementation is a conditional elevation in
+`reconstruct_source_polygon()`:
 
-2. **Surface-harmonic basis**: replace flat P_k, Q_k with projections of
-   spherical harmonics onto the gnomonic chart.  This gives exact
-   surface-harmonic modes at the chart center and O(h^k) accuracy at
-   distance h for a k-term expansion.
+```cpp
+const int degree_elevation = (use_surface_metric && options.edge_moment_order >= 3) ? 2 : 0;
+const int vector_degree = options.edge_moment_order + degree_elevation;
+```
+
+The edge moment constraints remain at order p (from the source data).
+The system becomes under-determined (B > C), and the extra degrees of
+freedom are resolved by the minimum-energy solve with the metric-weighted
+Gram matrix and Tikhonov regularization.  The constrained least-squares
+solver (KKT with hard zeroth-moment and soft higher-moment constraints)
+handles this naturally.
+
+For p <= 2, no elevation is applied because the O(h^{p+1}) asymptotic
+term is comparable to or larger than the O(h^3) Piola crime.
+
+Results after degree elevation:
+
+| Domain | p | Before | After |
+|--------|---|--------|-------|
+| Cubed-sphere | 1 | 1.75 | 1.75 |
+| Cubed-sphere | 2 | 3.08 | 3.08 |
+| Cubed-sphere | 3 | **1.77** | **4.57** |
+| Voronoi-patch | 1 | 2.05 | 2.05 |
+| Voronoi-patch | 2 | 2.52 | 2.52 |
+| Voronoi-patch | 3 | 3.46 | **3.62** |
+
+The cubed-sphere p=3 fine-pair rate is 5.52, indicating the degree-elevated
+basis captures the Piola correction well enough that the actual convergence
+approaches O(h^5).  Conservation residuals remain at machine precision.
 
 ## Current Numerical Caveats
 
@@ -348,8 +373,6 @@ The main remaining numerical caveats are:
 2. The spherical higher-order study currently covers structured cubed-sphere
    transfers and deterministic Voronoi chart patches.  It does not yet cover
    larger mixed-topology or production spherical meshes.
-3. The cubed-sphere p=3 convergence is pre-asymptotic at current resolutions
-   due to the Euclidean-basis variational crime on gnomonic charts (see above).
 
 ## Build and Validation Commands
 
