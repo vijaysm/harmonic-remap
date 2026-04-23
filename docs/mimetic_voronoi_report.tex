@@ -7,6 +7,8 @@
 \usepackage{hyperref}
 \usepackage{array}
 \newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\usepackage{algorithm}
+\usepackage{algorithmic}
 
 \emergencystretch=2em
 
@@ -749,82 +751,105 @@ polygonal bases \cite{GilletteRandBajaj2016}.
 
 \section{Discrete Algorithms}
 
-\subsection*{Algorithm 1: Source-Cell Reconstruction}
-\begin{enumerate}
-  \item Orient the source polygon counter-clockwise in its local chart.
-  \item Construct local edge coordinates and outward normals.  In spherical
-        mode, first build the source-cell gnomonic chart and project the
-        great-circle vertices into that chart.
-  \item Read the directed source edge flux vector \(U_f\).
-  \item Compute \(d\) from Eq.~\eqref{eq:divergence}.
-  \item Assemble \(V\) using Eq.~\eqref{eq:gram}; in spherical mode, replace
-        \(\nabla H_i\cdot\nabla H_j\) with the Hodge-weighted form from
-        Eq.~\eqref{eq:piola_hodge}.
-  \item Assemble \(r\) using Eq.~\eqref{eq:rhs}.
-  \item Solve the constrained local system and retain the coefficients
-        \((d,a_1,b_1,a_2,b_2)\).
-\end{enumerate}
+\begin{algorithm}[t]
+\caption{Source-Cell Reconstruction}
+\label{alg:source-reconstruction}
+\begin{algorithmic}[1]
+\REQUIRE Source polygon \(K\) with directed edge fluxes \(U_f\)
+\ENSURE  Reconstruction coefficients \((d, a_1, b_1, a_2, b_2)\)
+\STATE Orient \(K\) counter-clockwise in its local chart
+\STATE Construct local edge coordinates and outward normals
+\IF{spherical mode}
+  \STATE Build source-cell gnomonic frame; project great-circle vertices
+\ENDIF
+\STATE \(d \leftarrow \sum_f U_f / |K|\) \hfill\COMMENT{Eq.~\eqref{eq:divergence}}
+\STATE Assemble Gram matrix \(V_{ij} = \int_K \nabla H_i \cdot \nabla H_j \, dA\) \hfill\COMMENT{Eq.~\eqref{eq:gram}}
+\IF{spherical mode}
+  \STATE Replace integrand with Hodge-weighted form \(\nabla H_i^T (J^T J / |J|) \nabla H_j\) \hfill\COMMENT{Eq.~\eqref{eq:piola_hodge}}
+\ENDIF
+\STATE Assemble moment RHS \(r\) \hfill\COMMENT{Eq.~\eqref{eq:rhs}}
+\STATE Solve KKT system for \(\alpha = (a_1, b_1, a_2, b_2)^T\)
+\end{algorithmic}
+\end{algorithm}
 
-\subsection*{Algorithm 2: Directed Edge Transfer and Sparse Projection}
-\begin{enumerate}
-  \item Enumerate directed source-cell edge DOFs and directed target-cell edge
-        DOFs.
-  \item For each source cell, build \(B_{K_s}\) from
-        Eq.~\eqref{eq:local_reconstruction_matrix}.
-  \item For each directed target edge, clip the target segment against every
-        source polygon.
-  \item For direct transfer, evaluate Eq.~\eqref{eq:edge_transfer} on each
-        clipped segment and sum into the target edge flux.
-  \item For matrix assembly, apply the segment functional to \(B_{K_s}\) and add
-        triplets to the global sparse matrix \(P\) in Eq.~\eqref{eq:sparse_projection}.
-  \item Verify that applying \(P\) to the source edge-flux vector reproduces the
-        direct transfer.
-\end{enumerate}
+\begin{algorithm}[t]
+\caption{Directed Edge Transfer and Sparse Projection Assembly}
+\label{alg:edge-transfer}
+\begin{algorithmic}[1]
+\REQUIRE Reconstructed source cells \(\{K_s\}\), target cells \(\{K_t\}\)
+\ENSURE  Target edge fluxes \(U^t_e\) and sparse matrix \(P\) such that \(U_t = P U_s\)
+\STATE Enumerate directed source-cell and target-cell edge DOFs
+\FOR{each source cell \(K_s\)}
+  \STATE Build local reconstruction matrix \(B_{K_s}\) \hfill\COMMENT{Eq.~\eqref{eq:local_reconstruction_matrix}}
+\ENDFOR
+\FOR{each directed target edge \(e_t\)}
+  \FOR{each source cell \(K_s\)}
+    \STATE Clip \(e_t\) against \(K_s\) \(\to\) clipped segment \(\gamma\)
+    \IF{\(\gamma\) is non-empty}
+      \STATE \(U^t_{e_t} \mathrel{+}= \int_\gamma \uh_{K_s} \cdot \n_t \, ds\) \hfill\COMMENT{Eq.~\eqref{eq:edge_transfer}}
+      \STATE \(P(e_t, :) \mathrel{+}= L_{\gamma,K_s} B_{K_s}\) \hfill\COMMENT{Eq.~\eqref{eq:sparse_projection}}
+    \ENDIF
+  \ENDFOR
+\ENDFOR
+\STATE Verify \(\|P U_s - U_t^{\mathrm{direct}}\|_\infty \le 5\times10^{-13}\)
+\end{algorithmic}
+\end{algorithm}
 
-\subsection*{Algorithm 3: Spherical Source-Chart Edge Transfer}
-\begin{enumerate}
-  \item For each source cell, normalize mesh vertices, construct a gnomonic
-        frame, and project the great-circle polygon into the source chart.
-  \item Pull manufactured source fields into the chart with
-        Eq.~\eqref{eq:piola_pullback}; for shared manufactured edges, assign one
-        conservative geometric flux and the opposite sign to the reversed
-        directed neighbor.
-  \item Reconstruct source chart coefficients with Algorithm 1.
-  \item For each directed target great-circle edge, project both endpoints into
-        each source chart.  Since great circles project to straight lines, clip
-        this segment against the projected source polygon.
-  \item Apply the direct segment functional for transfer, or apply the same
-        functional to the source reconstruction matrix for sparse projection.
-  \item Verify global conservation, target-cell KKT re-integration, and
-        direct-vs-sparse equality with absolute tolerance \(5\times10^{-13}\).
-\end{enumerate}
+\begin{algorithm}[t]
+\caption{Spherical Source-Chart Edge Transfer}
+\label{alg:spherical-transfer}
+\begin{algorithmic}[1]
+\REQUIRE Source/target cells as great-circle polygons on \(S^2\)
+\ENSURE  Directed target-edge fluxes in source-cell gnomonic charts
+\FOR{each source cell \(K_s\)}
+  \STATE Normalize vertices; construct gnomonic frame \(\{\mathbf{e}_1,\mathbf{e}_2,\mathbf{c}\}\)
+  \STATE Project great-circle polygon into chart \hfill\COMMENT{Eq.~\eqref{eq:gnomonic}}
+  \STATE Pull back manufactured field via Piola \hfill\COMMENT{Eq.~\eqref{eq:piola_pullback}}
+  \STATE Reconstruct chart coefficients via Algorithm~\ref{alg:source-reconstruction}
+\ENDFOR
+\FOR{each directed target great-circle edge \(e_t\)}
+  \FOR{each source chart where \(e_t\) is visible}
+    \STATE Project endpoints into source chart (great circles \(\to\) straight lines)
+    \STATE Clip projected segment against projected source polygon
+    \STATE Evaluate segment functional for transfer or sparse assembly
+  \ENDFOR
+\ENDFOR
+\STATE Verify conservation, KKT re-integration, and direct-vs-sparse at \(5\times10^{-13}\)
+\end{algorithmic}
+\end{algorithm}
 
-\subsection*{Algorithm 4: Global H(div)-Conforming Target Projection}
-\begin{enumerate}
-  \item Compute the raw directed target-edge transfer with Algorithm 4 or
-        Algorithm 5.
-  \item Collapse directed target edges to unique geometric target edges by
-        matching endpoint coordinates and assigning one canonical orientation.
-  \item Assemble the target divergence right-hand side \(b\) from
-        Eq.~\eqref{eq:target_divergence_rhs} using the same source-target overlap
-        clipping already used for cell averages.
-  \item Form the directed-edge map \(B\), the target cell-edge incidence matrix
-        \(A\), and the diagonal matrix \(H=B^TB\).
-  \item Solve the constrained least-squares problem in
-        Eq.~\eqref{eq:hdiv_projection_problem} via the Schur complement in
-        Eq.~\eqref{eq:hdiv_projection_schur}.
-  \item Recover the directed conforming target-edge fluxes
-        \(u^{\mathrm{conf}}=Bx\) and verify \(\|Ax-b\|_\infty\le 5\times10^{-13}\).
-\end{enumerate}
+\begin{algorithm}[t]
+\caption{Global \(H(\mathrm{div})\)-Conforming Target Projection}
+\label{alg:hdiv-projection}
+\begin{algorithmic}[1]
+\REQUIRE Raw directed target-edge transfer \(u^{\mathrm{raw}}\) from Algorithm~\ref{alg:edge-transfer} or~\ref{alg:spherical-transfer}
+\ENSURE  Conforming target-edge fluxes \(u^{\mathrm{conf}}\) with exact cell divergence
+\STATE Collapse directed target edges to unique geometric edges; assign canonical orientations \(\sigma_e \in \{-1,+1\}\)
+\STATE Form directed-edge map \(B\), cell-edge incidence \(A\), diagonal \(H = B^T B\)
+\STATE Assemble divergence RHS: \(b_t = \sum_{K_s} d_s |K_t \cap K_s|\) \hfill\COMMENT{Eq.~\eqref{eq:target_divergence_rhs}}
+\STATE Solve via Schur complement: \(A H^{-1} A^T \lambda = A H^{-1} g - b\) \hfill\COMMENT{Eq.~\eqref{eq:hdiv_projection_schur}}
+\STATE \(x \leftarrow H^{-1}(g - A^T \lambda)\); \quad \(u^{\mathrm{conf}} \leftarrow Bx\)
+\STATE Verify \(\|Ax - b\|_\infty \le 5\times10^{-13}\)
+\end{algorithmic}
+\end{algorithm}
 
-\subsection*{Algorithm 5: High-Order Projected Edge-Moment Transfer}
-For edge moment order~\(p\): compute Legendre moments
-\(\mu_{e,m}\) from Eq.~\eqref{eq:edge-moment-dofs} and optional cell moments
-from Eq.~\eqref{eq:cell-vector-moments} on each source cell; build the
-scaled split basis in Eq.~\eqref{eq:scaled-local-coordinates}; solve the
-constrained problem~\eqref{eq:projected-moment-problem} with hard zeroth-moment
-rows; transfer target edge moments by clipping and integrating on subsegments;
-verify zeroth-moment conservation at \(5\times10^{-13}\).
+\begin{algorithm}[t]
+\caption{High-Order Projected Edge-Moment Transfer}
+\label{alg:high-order-transfer}
+\begin{algorithmic}[1]
+\REQUIRE Source cells with edge moments \(\mu_{e,m}\) for \(m = 0,\ldots,p\); optional cell moments \(\mathbf{c}_{ab}\)
+\ENSURE  Transferred target-edge moments with exact zeroth-moment conservation
+\FOR{each source cell \(K\)}
+  \STATE Build scaled split basis \(\{\boldsymbol{\phi}^{\mathrm{div}}, \boldsymbol{\phi}^{\mathrm{harm}}, \boldsymbol{\phi}^{\mathrm{bub}}\}\) \hfill\COMMENT{Eq.~\eqref{eq:split-moment-field}}
+  \STATE Assemble hard rows \(A_0\) (zeroth moments) and soft rows \(A_+\) (higher moments)
+  \STATE Solve constrained LS: \(\min \tfrac{1}{2}\|W(A_+\alpha - m_+)\|^2 + \tfrac{\lambda}{2}\alpha^T G \alpha\) s.t.\ \(A_0 \alpha = m_0\) \hfill\COMMENT{Eq.~\eqref{eq:projected-moment-problem}}
+\ENDFOR
+\FOR{each directed target edge \(e_t\)}
+  \STATE Clip against source cells; integrate reconstructed moments on subsegments
+\ENDFOR
+\STATE Verify zeroth-moment conservation at \(5\times10^{-13}\)
+\end{algorithmic}
+\end{algorithm}
 
 \section{Algorithmic Analysis}
 
@@ -907,11 +932,13 @@ errors against manufactured fields, and direct-vs-sparse projection agreement.
 Figure~\ref{fig:voronoi-patch} shows the nonmatching polygonal test geometry:
 two bounded Voronoi meshes with different seeds.  The source mesh has 9 cells
 including pentagons and hexagons; the target has 14 cells with similar mixed
-topology.  The source-target clipping produces 36 nonempty overlaps, including
-23 n-gon to n-gon pairs.  Every overlap satisfies
-Eq.~\eqref{eq:overlap_conservation} and each target cell is covered to
-roundoff, with largest residual \(4.44\times10^{-16}\).  The edge-wise transfer
-computes 71 directed target edge fluxes, all matching the analytic field
+topology.  Using Algorithm~\ref{alg:source-reconstruction} for reconstruction
+and Algorithm~\ref{alg:edge-transfer} for transfer, the source-target clipping
+produces 36 nonempty overlaps, including 23 n-gon to n-gon pairs.  Every
+overlap satisfies Eq.~\eqref{eq:overlap_conservation} and each target cell is
+covered to roundoff, with largest residual \(4.44\times10^{-16}\).  The
+edge-wise transfer computes 71 directed target edge fluxes, all matching the
+analytic field
 integral to roundoff.  A preliminary \(2\times2\to3\times3\) rectangular overlay
 also passes conservation to \(4.44\times10^{-16}\).
 
@@ -1018,9 +1045,9 @@ staying close to the raw directed edge field.
 
 \subsection{Global H(div)-Conforming Target Projection}
 
-The new global target-skeleton correction was validated on the same planar
-Voronoi-to-Voronoi family that exposes the raw target-cell closure defect most
-clearly.  Two manufactured fields were used:
+The global target-skeleton correction (Algorithm~\ref{alg:hdiv-projection}) was
+validated on the same planar Voronoi-to-Voronoi family that exposes the raw
+target-cell closure defect most clearly.  Two manufactured fields were used:
 \begin{enumerate}
   \item the exact linear field \(\mathbf{u}(x,y)=(x,y)\), for which the source
         reconstruction and target-cell divergence right-hand side are exact; and
@@ -1103,8 +1130,8 @@ target-cell balance residual.
 
 \subsection{High-Order Split-Moment Convergence}
 
-The high-order study uses a smooth variable-divergence manufactured field on
-the unit square,
+The high-order study applies Algorithm~\ref{alg:high-order-transfer} with a
+smooth variable-divergence manufactured field on the unit square,
 \begin{equation}
   \mathbf{u}(x,y)=
   \begin{bmatrix}
@@ -1187,8 +1214,8 @@ gnomonic project/inverse round trip, the fact that a great-circle midpoint lies
 on the projected straight segment, and source-cell KKT re-integration of all
 input edge fluxes to \(5\times10^{-13}\).
 
-The structured spherical transfer test uses cubed-sphere meshes and the smooth
-surface field
+The structured spherical transfer test applies Algorithm~\ref{alg:spherical-transfer}
+to cubed-sphere meshes with the smooth surface field
 \[
   f(x,y,z)=\frac{1}{2}(3z^2-1),\qquad
   \mathbf{u}=\nabla_S f.
