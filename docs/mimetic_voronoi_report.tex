@@ -707,7 +707,7 @@ space are explicitly separated.
 \paragraph{Metric-corrected orthogonalization.}
 In the spherical gnomonic backend, the local vector-polynomial mass matrix~\(G\)
 in~\eqref{eq:projected-moment-problem} is assembled with the Hodge/Piola metric
-\(J^T\!J / |J|\) from~\eqref{eq:hodge-piola-metric}.  When this
+\(J^T\!J / |J|\) from~\eqref{eq:piola_hodge}.  When this
 metric-weighted~\(G\) is available, the split basis
 in~\eqref{eq:split-moment-field} is orthonormalized against~\(G\) rather than
 against the Euclidean identity.  Concretely, each block of mode vectors~\(M\) is
@@ -741,120 +741,11 @@ The extra degrees of freedom are resolved by the minimum-energy regularization
 in~\eqref{eq:projected-moment-problem}, which selects the smoothest
 chart-coordinate field consistent with the physical moment data.
 
-\section{Why Wachspress Coordinates Are Not a Drop-In Replacement}
-
-One of the original alternatives considered for polygonal patches was to use a
-Wachspress basis.  This is natural: Wachspress coordinates are rational
-generalized barycentric coordinates on convex polygons, reproduce affine
-functions, form a partition of unity, and have been used successfully in
-conforming polygonal finite elements \cite{Wachspress1975,SukumarTabarraei2004,
-GilletteRandBajaj2012}.  The difficulty is not that Wachspress coordinates are
-inaccurate.  The difficulty is that the native scalar basis has the wrong
-degrees of freedom and the wrong differential structure for this edge-flux
-transfer problem.
-
-\subsection{Compatible Flux Transfer Requires an RT-like Structure}
-
-The lowest-order RT analogy has two separate ingredients:
-\begin{enumerate}
-  \item the cell divergence is constant, \(\nabla\cdot\uh=d_K\), and
-  \item the normal trace on each cell edge is represented by one edge flux
-        degree of freedom.
-\end{enumerate}
-On triangles these properties are built into RT0 \cite{RaviartThomas1977,
-BoffiBrezziFortin2013}; the RT0 normal component is constant on each edge.
-The harmonic mimetic reconstruction uses a slightly different polygonal
-realization: the \(\frac{d}{2}\x\) term supplies constant divergence, while
-the harmonic gradient part is divergence-free and is fitted to the integrated
-edge fluxes through the KKT constraints.  The pointwise edge-normal trace may
-vary when higher harmonic modes are present, but the edge flux degree of
-freedom is enforced exactly.  Thus, for every clipped subregion \(O\subset K\),
-\begin{equation}
-  \int_{\partial O}\uh\cdot\n\,ds
-  =
-  d_K |O|.
-  \label{eq:rt_like_overlap}
-\end{equation}
-Equation~\eqref{eq:rt_like_overlap} is the invariant used by the conservative
-overlap and target-cell balance tests.
-
-\begin{proposition}[Obstruction for componentwise Wachspress flux transfer]
-Let \(K\) be a convex polygon with at least one non-affine Wachspress coordinate
-\(\lambda_i\).  A componentwise vector interpolant
-\[
-  \mathbf{v}_W(\x)=\sum_{i=1}^{n}\mathbf{c}_i\lambda_i(\x),
-  \qquad \mathbf{c}_i\in\R^2,
-\]
-does not define an RT0-like edge-flux space: its divergence is generically
-nonconstant in \(K\), and its normal trace is generically nonconstant along an
-edge.
-\end{proposition}
-
-\begin{proof}
-The divergence is
-\[
-  \nabla\cdot\mathbf{v}_W
-  =
-  \sum_{i=1}^{n}\mathbf{c}_i\cdot\nabla\lambda_i .
-\]
-If \(\mathbf{v}_W\) had constant divergence for every choice of vector
-coefficients, then each directional derivative of each coordinate function
-would have to lie in the constants.  That would make every \(\lambda_i\)
-affine.  Wachspress coordinates are affine only in the simplex case and in
-special degenerate affine cases; for general \(n>3\) polygons they are rational
-and non-affine \cite{Wachspress1975,FloaterHormannKos2006}.  Choosing all
-coefficients zero except, for example, \(\mathbf{c}_i=(1,0)^T\) gives
-\(\nabla\cdot\mathbf{v}_W=\partial_x\lambda_i\), which is nonconstant whenever
-\(\lambda_i\) is non-affine.
-
-On an edge \(e=[x_j,x_{j+1}]\), the only nonzero scalar Wachspress coordinates
-are \(\lambda_j\) and \(\lambda_{j+1}\), and they vary linearly along the edge.
-The normal trace is therefore
-\[
-  \mathbf{v}_W\cdot\n_e
-  =
-  (\mathbf{c}_j\cdot\n_e)\lambda_j
-  +
-  (\mathbf{c}_{j+1}\cdot\n_e)\lambda_{j+1},
-\]
-which is constant only if the two endpoint normal components are equal.  A
-single integrated edge flux does not enforce that pointwise equality.  Thus the
-componentwise scalar Wachspress interpolant does not have the constant
-edge-normal trace associated with lowest-order RT flux degrees of freedom.
-\end{proof}
-
-\begin{remark}
-The statement above is about the direct componentwise use of scalar Wachspress
-coordinates.  It does not rule out vector-valued generalized barycentric
-constructions.  In particular, generalized Whitney forms can produce H(div)
-spaces on convex polytopes \cite{GilletteRandBajaj2016}.  Such a method should
-be studied as a new compatible finite element discretization with its own
-normal-trace basis, mass matrix, Piola map, and quadrature rules.
-\end{remark}
-
-\subsection{Consequences for This Transfer Problem}
-
-For conservative edge transfer, matching only the total flux on a source edge is
-not enough.  A target edge can cut through a source cell and can use only a
-subsegment of the source boundary or interior.  The line functional applied to
-that clipped segment must be consistent with the same source-cell divergence
-used by the surrounding overlap balance.  The harmonic mimetic form gives this
-consistency analytically through Eq.~\eqref{eq:line_integral} and
-Eq.~\eqref{eq:rt_like_overlap}.  A componentwise Wachspress vector fit would
-require additional constraints or quadrature to control the nonconstant
-divergence and edge-normal trace.  Even then, the reconstruction would no
-longer be determined naturally by edge flux degrees of freedom alone.
-
-The practical conclusion is therefore:
-\begin{itemize}
-  \item scalar Wachspress coordinates are appropriate for scalar H1 polygonal
-        interpolation and displacement-like unknowns;
-  \item componentwise Wachspress vector interpolation is not a better
-        replacement for the current conservative edge-flux transfer; and
-  \item Wachspress-adjacent H(div) spaces, especially generalized Whitney-form
-        or mixed virtual element constructions, are credible future work but
-        should be evaluated as a separate method.
-\end{itemize}
+Appendix~\ref{app:wachspress} shows that a componentwise Wachspress vector
+interpolant does not reproduce the constant cell divergence or native edge-flux
+DOF structure required by this transfer.  Generalized Whitney forms or mixed
+virtual elements remain the credible alternative for \(H(\mathrm{div})\)-compatible
+polygonal bases \cite{GilletteRandBajaj2016}.
 
 \section{Discrete Algorithms}
 
@@ -874,29 +765,7 @@ The practical conclusion is therefore:
         \((d,a_1,b_1,a_2,b_2)\).
 \end{enumerate}
 
-\subsection*{Algorithm 2: Conservative Evaluation on a Target or Overlap Edge}
-\begin{enumerate}
-  \item Convert target or overlap vertices into the source-cell local frame.
-  \item For line integrals use Eq.~\eqref{eq:line_integral}.
-  \item For overlap conservation, integrate each directed overlap boundary edge
-        with the outward normal implied by counter-clockwise order.
-  \item Sum edge contributions and compare to \(d_s |O|\).
-\end{enumerate}
-
-\subsection*{Algorithm 3: Voronoi Patch Verification}
-\begin{enumerate}
-  \item Generate source and target bounded Voronoi cells by clipping the unit
-        square with perpendicular bisectors.
-  \item Retain all nondegenerate convex cells.
-  \item Set analytic source edge fluxes from \(\mathbf{u}(x,y)=(x,y)\).
-  \item Reconstruct every source cell using Algorithm 1.
-  \item Clip each source-target pair using convex polygon clipping.
-  \item For every nonempty overlap, check Eq.~\eqref{eq:overlap_conservation}.
-  \item For every target cell, check that source overlaps cover the target area
-        and that the overlap-summed conservative integral equals \(2|K_t|\).
-\end{enumerate}
-
-\subsection*{Algorithm 4: Directed Edge Transfer and Sparse Projection}
+\subsection*{Algorithm 2: Directed Edge Transfer and Sparse Projection}
 \begin{enumerate}
   \item Enumerate directed source-cell edge DOFs and directed target-cell edge
         DOFs.
@@ -912,7 +781,7 @@ The practical conclusion is therefore:
         direct transfer.
 \end{enumerate}
 
-\subsection*{Algorithm 5: Spherical Source-Chart Edge Transfer}
+\subsection*{Algorithm 3: Spherical Source-Chart Edge Transfer}
 \begin{enumerate}
   \item For each source cell, normalize mesh vertices, construct a gnomonic
         frame, and project the great-circle polygon into the source chart.
@@ -930,7 +799,7 @@ The practical conclusion is therefore:
         direct-vs-sparse equality with absolute tolerance \(5\times10^{-13}\).
 \end{enumerate}
 
-\subsection*{Algorithm 6: Global H(div)-Conforming Target Projection}
+\subsection*{Algorithm 4: Global H(div)-Conforming Target Projection}
 \begin{enumerate}
   \item Compute the raw directed target-edge transfer with Algorithm 4 or
         Algorithm 5.
@@ -948,26 +817,14 @@ The practical conclusion is therefore:
         \(u^{\mathrm{conf}}=Bx\) and verify \(\|Ax-b\|_\infty\le 5\times10^{-13}\).
 \end{enumerate}
 
-\subsection*{Algorithm 7: High-Order Projected Edge-Moment Transfer}
-\begin{enumerate}
-  \item Choose an edge moment order \(p\) and cell moment order \(r=p-1\).
-  \item On each source edge, compute the Legendre moments
-        \(\mu_{e,m}\) from Eq.~\eqref{eq:edge-moment-dofs}; optionally compute
-        the cell vector moments from Eq.~\eqref{eq:cell-vector-moments}.
-  \item Build the scaled vector-polynomial basis
-        \(\boldsymbol{\psi}_j(\x/h_K)\) from
-        Eq.~\eqref{eq:scaled-local-coordinates}.
-  \item Assemble the hard zeroth-moment block \(A_0\), the soft higher-moment
-        block \(A_+\), the mass matrix \(G\), and the weights \(W\).
-  \item Solve the constrained projected problem
-        Eq.~\eqref{eq:projected-moment-problem}; for exact polynomial patch
-        tests, solve all rows as exact constraints instead.
-  \item For each directed target edge, clip the segment against all source
-        polygons and integrate the reconstructed polynomial moments on each
-        clipped subsegment.
-  \item Verify exact conservation of the zeroth target edge moment and measure
-        the higher-moment target-edge error under refinement.
-\end{enumerate}
+\subsection*{Algorithm 5: High-Order Projected Edge-Moment Transfer}
+For edge moment order~\(p\): compute Legendre moments
+\(\mu_{e,m}\) from Eq.~\eqref{eq:edge-moment-dofs} and optional cell moments
+from Eq.~\eqref{eq:cell-vector-moments} on each source cell; build the
+scaled split basis in Eq.~\eqref{eq:scaled-local-coordinates}; solve the
+constrained problem~\eqref{eq:projected-moment-problem} with hard zeroth-moment
+rows; transfer target edge moments by clipping and integrating on subsegments;
+verify zeroth-moment conservation at \(5\times10^{-13}\).
 
 \section{Algorithmic Analysis}
 
@@ -1045,30 +902,18 @@ the planar and spherical invariants is \(5\times10^{-13}\).  The tests separate
 three quantities: exact conservation identities, directed target-edge flux
 errors against manufactured fields, and direct-vs-sparse projection agreement.
 
-\subsection{Visualization of the Overlap Geometry}
+\subsection{Overlap Geometry and Patch Validation}
 
-Figure~\ref{fig:rectangular-overlap} shows the simplest nonmatching transfer
-geometry.  The source mesh has four cells, the target mesh has nine cells, and
-their overlay creates 16 nonempty source-target intersections.  This case is
-useful because every clipped region is a rectangle, so area and boundary flux
-can be checked independently of any complicated polygon clipping.
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=0.68\linewidth]{rectangular_overlap.pdf}
-  \caption{Rectangular source-target overlay.  Blue cells are the \(2\times2\)
-  source mesh, dashed orange cells are the nonmatching \(3\times3\) target mesh,
-  and the green rectangle is one clipped source-target intersection.}
-  \label{fig:rectangular-overlap}
-\end{figure}
-
-Figure~\ref{fig:voronoi-patch} shows the more relevant polygonal case: two
-bounded Voronoi meshes with different seeds and different side counts.  The
-source mesh contains seven cells with more than four sides; those cells are
-marked by their side count.  The target mesh contains ten cells with more than
-four sides.  The visual point of this test is that the reconstruction and
-conservative reduction are exercised on genuine n-sided polygons rather than on
-quadrilateral cells.
+Figure~\ref{fig:voronoi-patch} shows the nonmatching polygonal test geometry:
+two bounded Voronoi meshes with different seeds.  The source mesh has 9 cells
+including pentagons and hexagons; the target has 14 cells with similar mixed
+topology.  The source-target clipping produces 36 nonempty overlaps, including
+23 n-gon to n-gon pairs.  Every overlap satisfies
+Eq.~\eqref{eq:overlap_conservation} and each target cell is covered to
+roundoff, with largest residual \(4.44\times10^{-16}\).  The edge-wise transfer
+computes 71 directed target edge fluxes, all matching the analytic field
+integral to roundoff.  A preliminary \(2\times2\to3\times3\) rectangular overlay
+also passes conservation to \(4.44\times10^{-16}\).
 
 \begin{figure}[t]
   \centering
@@ -1079,85 +924,18 @@ quadrilateral cells.
   \label{fig:voronoi-patch}
 \end{figure}
 
-Figure~\ref{fig:voronoi-overlap-detail} highlights selected source-target pairs in different
-parts of the domain where both intersecting cells are general n-gons ($n>4$). The green polygons
-represent the clipped intersections ($O=K_s\cap K_t$). The conservative flux
-check is performed on these and every other nonempty overlap.
+Figure~\ref{fig:voronoi-overlap-detail} highlights selected source-target pairs
+where both cells are general n-gons.  The conservative flux check is performed
+on every nonempty overlap.
 
 \begin{figure}[t]
   \centering
   \includegraphics[width=0.68\linewidth]{voronoi_overlap_detail.pdf}
   \caption{Selected n-gon to n-gon overlaps.  The conservative diagnostic
-  integrates the reconstructed source field around each intersection boundary 
+  integrates the reconstructed source field around each intersection boundary
   (highlighted in green) and compares it with \(d_s|O|\).}
   \label{fig:voronoi-overlap-detail}
 \end{figure}
-
-\subsection{Constant-Field Patch Test}
-
-The patch test uses a unit-square source cell and an interior nonmatching target
-quadrilateral.  With analytic field \(\mathbf{u}=(1,1)\), the reconstruction
-recovers
-\[
-  d=0,\qquad a_1=1,\qquad b_1=1,\qquad a_2=b_2=0
-\]
-to roundoff.  The interior line integral from
-\((-0.2,-0.3)\) to \((0.4,0.2)\) in source-local coordinates is exactly \(1.1\).
-The target edge fluxes are \((-0.55,0.55,0.55,-0.55)\), and their sum is zero.
-The maximum printed absolute error in the coefficient, line-integral, and target
-edge checks is zero at the displayed precision.
-
-\subsection{Rectangular Nonmatching Mesh Test}
-
-The rectangular test uses a \(2\times2\) source grid and a nonmatching \(3\times3\)
-target grid over the same unit square.  The analytic source field is
-\(\mathbf{u}=(x,y)\), so \(\nabla\cdot\mathbf{u}=2\).  The test checks every one
-of the 16 source-target rectangular intersections.  Each overlap satisfies
-Eq.~\eqref{eq:overlap_conservation} to roundoff.  The aggregate overlap area is
-1 and the aggregate divergence integral is 2.
-The largest printed per-overlap boundary-flux error is
-\(2.78\times10^{-17}\).  The aggregate source-target area error is
-\(2.22\times10^{-16}\), and the aggregate integral error relative to
-\(\int_\Omega\nabla\cdot(x,y)\,dA=2\) is \(4.44\times10^{-16}\).
-The edge-wise transfer then computes 36 directed target edge fluxes.  Each
-target edge agrees with the analytic integral of \(\mathbf{u}(x,y)=(x,y)\) to
-roundoff, and each target cell satisfies
-\[
-  \sum_{e_t\subset\partial K_t} U^t_{e_t}=2|K_t|.
-\]
-The assembled sparse projection for this case has 36 rows, 16 columns, and 80
-nonzeros.  Applying this matrix to the directed source edge flux vector
-reproduces the direct edge-transfer result to roundoff.
-
-\subsection{Voronoi n-gon Patch Test}
-The Voronoi test uses two different bounded Voronoi meshes over the unit square.
-The source mesh side-count histogram is
-\[
-  n=4:2,\qquad n=5:6,\qquad n=6:1,
-\]
-so seven source cells have more than four sides.  The target mesh side-count
-histogram is
-\[
-  n=4:4,\qquad n=5:5,\qquad n=6:5,
-\]
-so ten target cells have more than four sides.  The source-target clipping
-produces 36 nonempty overlaps, including 23 n-gon to n-gon overlaps where both
-the source and target cells have more than four sides.
-
-Every overlap satisfies Eq.~\eqref{eq:overlap_conservation}.  Each target cell
-is covered by source overlaps to roundoff.  The aggregate checks are:
-\[
-  \sum |K_s\cap K_t| = 1,\qquad
-  \sum \int_{\partial(K_s\cap K_t)}{\uh}_s\cdot\n\,ds = 2,\qquad
-  \int_\Omega \nabla\cdot(x,y)\,dA = 2.
-\]
-The largest printed overlap or aggregate residual is \(4.44\times10^{-16}\),
-well below the \(5\times10^{-13}\) conservation tolerance used throughout the
-validation study.
-The edge-wise Voronoi transfer computes 71 directed target edge fluxes.  Every
-target edge agrees with the analytic global linear field integral to roundoff,
-and every target cell satisfies the same edge-flux divergence check
-\(\sum U^t_{e_t}=2|K_t|\).
 
 \subsection{Edge Error and Cell-Divergence Visualizations}
 
@@ -1238,21 +1016,6 @@ staying close to the raw directed edge field.
     \label{fig:error_vv_hdiv}
 \end{figure}
 
-\begin{figure}[htbp]
-    \centering
-    \includegraphics[width=\textwidth]{vis_voronoi_voronoi_B__sincos_divfree_edge_jump.png}
-    \caption{Voronoi-to-Voronoi target-edge jump diagnostic for the same smooth
-    divergence-free manufactured field.  Left: raw interior-edge jump defect
-    \(J_g^{\mathrm{raw}} = U_{g,-}^{\mathrm{raw}} + U_{g,+}^{\mathrm{raw}}\).
-    Right: edge jump after the global constrained target-edge projection.  The
-    merged-target implementation is already single-valued to roundoff on the raw
-    target skeleton, and the globally constrained field preserves that property.
-    The figure therefore confirms that Figures~\ref{fig:error_vv} and
-    \ref{fig:error_vv_hdiv} differ in target-cell balance compatibility, not in
-    target-edge continuity.}
-    \label{fig:error_vv_edge_jump}
-\end{figure}
-
 \subsection{Global H(div)-Conforming Target Projection}
 
 The new global target-skeleton correction was validated on the same planar
@@ -1286,14 +1049,11 @@ least-squares correction removes low-order target-cell imbalance.  The
 visual comparison in Figure~\ref{fig:error_vv_hdiv} makes the same point
 geometrically: the raw local transfer carries a visible cell-balance defect on
 the target patch, whereas the constrained skeleton solve collapses that defect
-to values indistinguishable from roundoff on the same mesh.  Figure
-\ref{fig:error_vv_edge_jump} shows that this is not an edge-continuity issue:
-the merged-target raw transfer already has interior-edge jumps at roundoff, and
-the global solve preserves that single-valued target-edge skeleton while
-correcting the target-cell balance residual.  In the present Voronoi sequence,
-the maximum raw interior-edge jump stays between \(8.67\times10^{-17}\) and
-\(1.11\times10^{-16}\), while the maximum constrained jump is zero to printed
-precision.
+to values indistinguishable from roundoff on the same mesh.  The merged-target
+raw transfer already has interior-edge jumps at roundoff
+(\(8.67\times10^{-17}\) to \(1.11\times10^{-16}\)), and the global solve
+preserves that single-valued target-edge skeleton while correcting the
+target-cell balance residual.
 
 \begin{table}[t]
   \centering
@@ -1618,128 +1378,25 @@ the target-cell divergence residual at roundoff.
 
 \subsection{Discussion}
 
-The results show that the conservative property is controlled by three local
-ingredients: exact reconstruction of the polynomial moments used by the
-level-2 basis, exact reduction over each clipped overlap boundary, and
-edge-wise target-segment clipping with the target edge normal.  For the
-manufactured field \(\mathbf{u}=(x,y)\), the reconstructed divergence is
-constant and equal to 2 on every source cell.  Therefore the expected overlap
-flux is \(2|O|\), and the target-cell edge flux sum is \(2|K_t|\).  The
-residuals in Table~\ref{tab:verification-summary} measure only floating-point
-and clipping-roundoff effects.
-
-The planar Voronoi test rules out a common false positive in polygon remapping:
-passing only quadrilateral or axis-aligned cases.  Here both source
-and target meshes contain five- and six-sided cells, and 23 nonempty
-intersections involve n-gons on both sides.  The exact overlap identity holds on
-each of those intersections, and the directed-edge checks verify that the
-remapped edge data themselves, not only overlap-cell diagnostics, reproduce the
-analytic target edge integrals.
-
-The new global target-edge correction resolves the specific limitation exposed
-by Fig.~\ref{fig:error_vv}.  Equation~\eqref{eq:target_balance_with_jumps}
-shows that the raw nonmatching target-cell edge sum is contaminated by source
-interface jumps unless adjacent source-cell reconstructions induce the same
-normal trace on their shared edge.  Table~\ref{tab:hdiv-projection} confirms
-the expected behavior.  For the exact linear field, the correction is
-effectively zero because the raw transfer is already globally compatible.  For
-the smooth divergence-free Voronoi sequence, the raw target-cell closure defect
-decreases under refinement, and the conforming correction drives it to roundoff
-without destroying the directed edge accuracy.  This is the right interpretation
-of convergence toward a globally conforming target skeleton: the local harmonic
-source reconstruction stays unchanged, while the target-edge field approaches
-the globally constrained solution as the mesh is refined.
-
-The high-order planar study adds a second, complementary message.  Exact hard
-conservation of the zeroth edge moment is sufficient to keep the transfer
-conservative at every order, but it is not sufficient by itself to obtain
-higher-order convergence for smooth variable-divergence fields.  The observed
-order increase in Figure~\ref{fig:high-order-hdiv-convergence} comes from the
-combination of enriched edge moments, optional cell vector moments, and the
-constrained split-moment fit in Eq.~\eqref{eq:projected-moment-problem}.  The
-quad rates of \(2.26\), \(3.39\), and \(4.46\) are close to the expected
-\(p+1\)-type trend for a smooth field on a structured refinement sequence.
-The Voronoi rates are lower but still clearly order-separated, which is the
-relevant practical result on irregular polygonal patches.  This is also the
-reason the current report describes the method as a split-moment polygonal
-\(H(\mathrm{div})\)-style family rather than as a finished compatible polygonal
-finite element space: the conservation mechanism is exact, while the
-higher-moment accuracy mechanism is presently realized through a local
-constrained least-squares fit rather than a fully commuting global
+The high-order results in Figures~\ref{fig:high-order-hdiv-convergence}
+and~\ref{fig:spherical-high-order-hdiv-convergence} demonstrate that exact hard
+conservation of the zeroth edge moment is sufficient to preserve the transfer's
+conservative structure at every order, while the enriched higher moments and the
+constrained split-moment fit in Eq.~\eqref{eq:projected-moment-problem} drive
+asymptotic accuracy.  The quad-to-quad rates of \(2.26\), \(3.39\), and
+\(4.46\) are close to the expected \(O(h^{p+1})\) trend, and the Voronoi rates
+are lower but clearly order-separated.  The method is therefore best described
+as a split-moment polygonal \(H(\mathrm{div})\)-style family: the conservation
+mechanism is exact, while the higher-moment accuracy is realized through a
+local constrained least-squares fit rather than a fully commuting global
 discretization.
 
-The spherical results show that the same idea extends to curved manifolds when
-the geometry is handled in a source-cell chart and the Piola map is used for
-fluxes.  The cubed-sphere \(N\to N\) identity case is particularly important:
-it would fail if target edges coincident with source edges were double counted
-by adjacent source cells.  The unstructured spherical Voronoi test is the
-strongest current spherical result because it verifies conservation and sparse
-operator equivalence on n-sided great-circle polygons rather than on only
-quad-like cells.
-
-The additional convergence sweep clarifies the role of the spherical inner
-product.  The Hodge/Piola correction is methodologically necessary because the
-spherical least-squares norm must be a surface vector norm, not a scalar
-area-weighted chart norm.  Numerically, however, it changes the error constants
-only modestly.  The dominant observation remains the same: once the edge-flux
-constraints, source-chart clipping, and direct-vs-sparse consistency are all
-enforced, the smooth cubed-sphere regression sequence converges at a rate close
-to second order in the directed target-edge norms.  The corrected metric
-therefore strengthens the formulation without changing the basic convergence
-interpretation.
-
-A scalar control experiment was also added.  It performs a piecewise-constant
-conservative remap of cell averages for the same zonal spherical harmonic using
-exact spherical overlap areas recovered from the inverse gnomonic map.  The
-test now verifies both complete target coverage and global scalar conservation
-to the same \(5\times10^{-13}\) tolerance used by the vector transfer.  Its
-convergence remains first order, which is the expected behavior for a
-piecewise-constant overlap remap.  That makes it a useful geometry-only control:
-it verifies the spherical overlap and clipping machinery independently of the
-higher-order vector reconstruction, but it is not intended as a sharp accuracy
-upper bound for the edge-based method.
-
-The visualizations also clarify what remains outside this phase.  The clipping
-kernel assumes convex cells that fit in the relevant source gnomonic hemisphere;
-it does not cover nonconvex polygons or target edges crossing a projection
-singularity.  Those extensions should preserve the same acceptance criteria:
-global conservation, target-cell KKT re-integration, and direct-vs-sparse
-agreement at \(5\times10^{-13}\).
-
-\section{Assumptions and Limitations}
-
-\begin{itemize}
-  \item Spherical v1 assumes unit-sphere, convex, great-circle cells that fit in
-        the source-cell gnomonic hemisphere.
-  \item The harmonic mimetic reconstruction used for the planar/spherical base
-        method is level-2 only.  This remains the practical stable choice
-        emphasized by Perot and Chartrand for polygon meshes
-        \cite{PerotChartrand2021}.  The new higher-order family uses a split
-        polynomial-divergence / harmonic-gradient / divergence-free completion
-        hierarchy rather than a direct higher-level harmonic truncation.
-  \item Candidate search is deterministic all-pairs.  A production
-        source-target transfer should pair the same local kernels with spatial
-        search or an advancing-front traversal.
-  \item Tests use manufactured analytic fields and deterministic serial meshes.
-        They verify local conservation, sparse operator equivalence, and
-        refinement behavior, not global PDE accuracy.
-  \item The scalar control test is intentionally piecewise constant: it uses
-        exact spherical overlap areas and source cell averages to isolate
-        geometry and clipping.  Its first-order behavior therefore should not be
-        interpreted as an upper bound on the edge-flux remap accuracy.
-  \item The sparse projection currently uses directed cell-edge DOFs.  Shared
-        mesh-edge collapse requires explicit orientation metadata.
-  \item The new global correction is a conforming \emph{target-edge skeleton}
-        projection.  It does not yet construct a single globally conforming
-        target-cell interior vector field; target-cell reconstruction still
-        proceeds cell by cell from the corrected edge data.
-  \item The unified split-moment family now covers \(p=1,2,3\) in planar
-        charts, structured spherical gnomonic charts, and deterministic
-        spherical Voronoi chart patches.  Broader spherical studies on mixed
-        topologies and larger realistic meshes remain future work.
-  \item MPI, distributed ownership, ghosting, and parallel I/O are intentionally
-        out of scope for this phase.
-\end{itemize}
+On the sphere, the degree-elevated basis for \(p\ge3\) resolves the
+\(O(h^3)\) error floor caused by the Piola rational approximation.  Without
+elevation, the cubed-sphere \(p=3\) rate was~\(\sim1.8\); with elevation it
+reaches~4.57 (fine-pair rate~5.52).  The scalar piecewise-constant control
+experiment confirms that the spherical overlap and clipping machinery is
+independently correct at first-order accuracy.
 
 \section{Conclusions and Future Research Directions}
 
@@ -1774,34 +1431,10 @@ cubed-sphere sequence the zeroth-moment rates are \(1.75\), \(3.08\), and
 achieved via degree elevation of the polynomial basis by two orders, which
 captures the leading rational correction from the contravariant Piola mapping.
 
-The added spherical diagnostics sharpen the interpretation of the method.
-Switching the cell-centered \(L^1\) norm to physical spherical area is a
-necessary diagnostic correction.  Metric-weighting the reconstruction Gram
-matrix using the Hodge/Piola tensor ensures the constrained least-squares solve
-minimizes the correct surface energy functional.  The metric-corrected basis
-orthogonalization ensures the split-basis subspaces are properly separated in
-the surface inner product.
-
-The key accuracy advance on the sphere is the degree-elevated basis for
-\(p\ge3\).  The exact surface field in gnomonic chart coordinates is rational
-(the Piola mapping involves \(J/|J|\) with \(|J|=(1+|\boldsymbol{\xi}|^2)^{-3/2}\)),
-and a degree-\(p\) polynomial can approximate this rational field only to
-\(O(h_K^3)\) edge-flux accuracy.  Elevating the polynomial degree from~\(p\)
-to~\(p+2\) adds the \(|\boldsymbol{\xi}|^2\) correction modes needed to
-capture the leading rational term, breaking the \(O(h^3)\) floor and recovering
-the expected \(O(h^{p+1})\) asymptotic convergence.  The cubed-sphere \(p=3\)
-average rate improves from~1.77 (pre-elevation) to~4.57 (with elevation),
-with the fine-pair rate reaching~5.52.
-
-The Wachspress comparison clarifies the method selection.  Scalar Wachspress
-coordinates remain valuable for conforming H1 polygonal discretizations, but a
-componentwise vertex-based Wachspress vector interpolant does not reproduce the
-constant cell divergence or native edge-flux degree-of-freedom structure needed
-by this transfer.  For this edge-wise conservative transfer, the harmonic
-mimetic basis is therefore the better primary method.  Wachspress-based
-compatible vector constructions should be kept as future work only when
-formulated as genuine H(div) spaces, such as generalized Whitney forms or mixed
-virtual elements.
+As shown in Appendix~\ref{app:wachspress}, a componentwise Wachspress vector
+interpolant is not a substitute for the harmonic mimetic reconstruction; only
+vector-valued generalized barycentric constructions such as Whitney forms or
+mixed VEM are viable future alternatives.
 
 The added global target-edge projection changes the practical scope of the
 method.  The local harmonic reconstruction remains the source-side engine for
@@ -1875,6 +1508,50 @@ logical paths are proposed for future research:
 
 At that point the same overlap invariant, Eq.~\eqref{eq:overlap_conservation},
 should remain the primary acceptance test for these generalized topologies.
+
+\paragraph{Remaining limitations.}
+The current spherical backend assumes convex great-circle cells within the
+source-cell gnomonic hemisphere.  The global target-edge conforming projection
+does not yet construct a single globally conforming cell-interior vector field.
+The candidate search is deterministic all-pairs; production use requires spatial
+acceleration.  MPI, distributed ownership, and parallel I/O are out of scope.
+
+\appendix
+
+\section{Why Wachspress Coordinates Are Not a Drop-In Replacement}
+\label{app:wachspress}
+
+\begin{proposition}[Obstruction for componentwise Wachspress flux transfer]
+Let \(K\) be a convex polygon with at least one non-affine Wachspress coordinate
+\(\lambda_i\).  A componentwise vector interpolant
+\[
+  \mathbf{v}_W(\x)=\sum_{i=1}^{n}\mathbf{c}_i\lambda_i(\x),
+  \qquad \mathbf{c}_i\in\R^2,
+\]
+does not define an RT0-like edge-flux space: its divergence is generically
+nonconstant in \(K\), and its normal trace is generically nonconstant along an
+edge.
+\end{proposition}
+
+\begin{proof}
+The divergence \(\nabla\cdot\mathbf{v}_W = \sum_i \mathbf{c}_i\cdot\nabla\lambda_i\)
+would be constant for every \(\mathbf{c}_i\) only if each \(\lambda_i\) were
+affine.  Wachspress coordinates are affine only on simplices; for general \(n>3\)
+polygons they are rational and non-affine
+\cite{Wachspress1975,FloaterHormannKos2006}.  On an edge \(e=[x_j,x_{j+1}]\),
+the normal trace
+\(\mathbf{v}_W\cdot\n_e = (\mathbf{c}_j\cdot\n_e)\lambda_j +
+(\mathbf{c}_{j+1}\cdot\n_e)\lambda_{j+1}\) is constant only if the two endpoint
+normal components are equal.  A single integrated edge flux does not enforce
+that pointwise equality.
+\end{proof}
+
+\begin{remark}
+Generalized Whitney forms can produce H(div) spaces on convex polytopes
+\cite{GilletteRandBajaj2016} and should be studied as a new compatible finite
+element discretization with its own normal-trace basis, mass matrix, and
+quadrature rules.
+\end{remark}
 
 \bibliographystyle{plain}
 \bibliography{references}
