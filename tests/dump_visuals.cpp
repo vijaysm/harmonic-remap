@@ -1,4 +1,5 @@
 #include "mimetic/mimetic.hpp"
+#include "spherical_transfer_test_utils.hpp"
 #include "test_utils.hpp"
 
 #include <Eigen/Dense>
@@ -800,6 +801,210 @@ void compute_order_comparison(const std::string& prefix,
     std::cout << "  Order comparison dumped: " << prefix << "\n";
 }
 
+void dump_spherical_mesh(const std::string& filename, moab::Core& mb,
+                        const std::vector<moab::EntityHandle>& cells,
+                        const std::vector<double>& values,
+                        const mimetic::GnomonicFrame& view_frame)
+{
+    std::ofstream out(filename);
+    if (!out) return;
+    mimetic::GeometryOptions spherical;
+    spherical.mode = mimetic::GeometryMode::SphericalGnomonic;
+    for (std::size_t i = 0; i < cells.size(); ++i) {
+        const mimetic::SphericalPolygon poly = mimetic::spherical_polygon(mb, cells[i], spherical);
+        // Project all vertices into the common view frame
+        std::vector<Eigen::Vector2d> projected;
+        bool visible = true;
+        for (const Eigen::Vector3d& p : poly.points) {
+            try {
+                projected.push_back(mimetic::project_gnomonic(p, view_frame));
+            } catch (...) {
+                visible = false;
+                break;
+            }
+        }
+        if (!visible || projected.size() < 3) continue;
+        Eigen::Vector2d centroid = Eigen::Vector2d::Zero();
+        for (const Eigen::Vector2d& p : projected) centroid += p;
+        centroid /= static_cast<double>(projected.size());
+        out << centroid.x() << " " << centroid.y() << " " << values[i] << " " << projected.size();
+        for (const Eigen::Vector2d& p : projected) {
+            out << " " << p.x() << " " << p.y();
+        }
+        out << "\n";
+    }
+}
+
+void compute_spherical_order_comparison(const std::string& prefix, int source_n, int target_n)
+{
+    using namespace mimetic::test_sphere;
+    mimetic::GeometryOptions spherical;
+    spherical.mode = mimetic::GeometryMode::SphericalGnomonic;
+    spherical.metric_weighted = true;
+
+    // Common view frame: north pole, looking down at +z face
+    mimetic::GnomonicFrame view_frame;
+    view_frame.center = Eigen::Vector3d(0, 0, 1);
+    view_frame.e_x = Eigen::Vector3d(1, 0, 0);
+    view_frame.e_y = Eigen::Vector3d(0, 1, 0);
+    view_frame.radius = 1.0;
+
+    moab::Core mb;
+    const std::vector<moab::EntityHandle> source_cells = generate_cubed_sphere(mb, source_n);
+    const std::vector<moab::EntityHandle> target_cells = generate_cubed_sphere(mb, target_n);
+
+    // Exact source divergence (from edge fluxes)
+    std::vector<double> src_values;
+    for (const moab::EntityHandle cell : source_cells) {
+        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, cell, spherical);
+        const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb, poly);
+        double div = 0.0;
+        for (std::size_t i = 0; i < edges.size(); ++i) {
+            div += exact_chart_edge_flux(mb, cell, i, spherical_harmonic_gradient);
+        }
+        src_values.push_back(div / poly.area);
+    }
+
+    // Exact target divergence
+    std::vector<double> tgt_exact_values;
+    for (const moab::EntityHandle cell : target_cells) {
+        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, cell, spherical);
+        const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb, poly);
+        double div = 0.0;
+        for (std::size_t i = 0; i < edges.size(); ++i) {
+            div += exact_chart_edge_flux(mb, cell, i, spherical_harmonic_gradient);
+        }
+        tgt_exact_values.push_back(div / poly.area);
+    }
+
+    // p=1: low-order mimetic transfer
+    {
+        mimetic::MimeticInterpolator interpolator(mb);
+        interpolator.set_geometry_options(spherical);
+        set_conservative_source_fluxes(interpolator, mb, source_cells, spherical_harmonic_gradient);
+        for (const moab::EntityHandle cell : source_cells) {
+            interpolator.reconstruct_source_polygon(cell);
+        }
+        const mimetic::EdgeTransferResult transfer =
+            interpolator.transfer_source_to_target_edges(source_cells, target_cells);
+
+        std::vector<double> tgt_p1_values;
+        std::size_t dof = 0;
+        for (const moab::EntityHandle cell : target_cells) {
+            const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, cell, spherical);
+            const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb, poly);
+            double cell_flux = 0.0;
+            for (std::size_t e = 0; e < edges.size(); ++e, ++dof) {
+                cell_flux += transfer.target_fluxes[dof];
+            }
+            tgt_p1_values.push_back(cell_flux / poly.area);
+        }
+        dump_spherical_mesh(prefix + "_target_p1.txt", mb, target_cells, tgt_p1_values, view_frame);
+    }
+
+    // p=3: high-order moment transfer (needs fresh MOAB instance)
+    {
+        moab::Core mb3;
+        const std::vector<moab::EntityHandle> src3 = generate_cubed_sphere(mb3, source_n);
+        const std::vector<moab::EntityHandle> tgt3 = generate_cubed_sphere(mb3, target_n);
+
+        mimetic::PlanarMomentInterpolator interpolator3(mb3);
+        interpolator3.set_geometry_options(spherical);
+        mimetic::MomentMethodOptions options;
+        options.edge_moment_order = 3;
+        options.cell_moment_order = 2;
+        options.quadrature_points = 10;
+        options.regularization = 1.0e-12;
+        options.exact_constraints = false;
+
+        // Set source edge moments and cell vector moments
+        const auto conservative_fluxes = conservative_edge_fluxes(mb3, src3, spherical_harmonic_gradient);
+        for (const moab::EntityHandle cell : src3) {
+            const mimetic::LocalPolygon poly = mimetic::local_polygon(mb3, cell, spherical);
+            const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb3, poly);
+            const mimetic::GnomonicFrame frame{poly.n, poly.e_x, poly.e_y, 1.0};
+            // Edge moments
+            for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+                const mimetic::LocalEdge& edge = edges[edge_index];
+                const Eigen::Vector3d a3 = poly.points_3d[edge_index].normalized();
+                const Eigen::Vector3d b3 = poly.points_3d[(edge_index + 1) % poly.points_3d.size()].normalized();
+                const double total_angle = std::acos(std::max(-1.0, std::min(1.0, a3.dot(b3))));
+                std::vector<double> moments(4, 0.0);
+                for (int degree = 0; degree <= 3; ++degree) {
+                    moments[degree] = integrate_edge_gauss16(edge.a, edge.b, [&](const Eigen::Vector2d& p_local) {
+                        const Eigen::Vector2d xi = p_local + poly.centroid;
+                        const Eigen::Vector3d point = mimetic::inverse_gnomonic(xi, frame).normalized();
+                        const Eigen::Vector2d chart_vector =
+                            mimetic::pullback_contravariant_piola(spherical_harmonic_gradient(point), xi, frame);
+                        double t = 0.0;
+                        if (total_angle > 1.0e-12) {
+                            const double angle = std::acos(std::max(-1.0, std::min(1.0, a3.dot(point))));
+                            t = 2.0 * (angle / total_angle) - 1.0;
+                        }
+                        double Lm = 1.0;
+                        if (degree == 1) Lm = t;
+                        else if (degree == 2) Lm = 0.5 * (3.0 * t * t - 1.0);
+                        else if (degree == 3) Lm = 0.5 * (5.0 * t * t * t - 3.0 * t);
+                        return chart_vector.dot(edge.outward_normal) * Lm;
+                    });
+                }
+                interpolator3.set_source_edge_moments(cell, edge_index, moments);
+            }
+            // Cell vector moments (monomial integrals of Piola-pulled field)
+            std::vector<Eigen::Vector2d> cell_moments;
+            for (int total_degree = 0; total_degree <= 2; ++total_degree) {
+                for (int a = total_degree; a >= 0; --a) {
+                    const int b = total_degree - a;
+                    double mx = 0.0, my = 0.0;
+                    for (std::size_t ei = 0; ei < edges.size(); ++ei) {
+                        mx += mimetic::integrate_triangle_scalar(
+                            Eigen::Vector2d::Zero(), edges[ei].a, edges[ei].b,
+                            [&](const Eigen::Vector2d& p) {
+                                const Eigen::Vector2d xi = p + poly.centroid;
+                                const Eigen::Vector3d pt = mimetic::inverse_gnomonic(xi, frame).normalized();
+                                const Eigen::Vector2d cv = mimetic::pullback_contravariant_piola(
+                                    spherical_harmonic_gradient(pt), xi, frame);
+                                return cv.x() * std::pow(p.x(), a) * std::pow(p.y(), b);
+                            });
+                        my += mimetic::integrate_triangle_scalar(
+                            Eigen::Vector2d::Zero(), edges[ei].a, edges[ei].b,
+                            [&](const Eigen::Vector2d& p) {
+                                const Eigen::Vector2d xi = p + poly.centroid;
+                                const Eigen::Vector3d pt = mimetic::inverse_gnomonic(xi, frame).normalized();
+                                const Eigen::Vector2d cv = mimetic::pullback_contravariant_piola(
+                                    spherical_harmonic_gradient(pt), xi, frame);
+                                return cv.y() * std::pow(p.x(), a) * std::pow(p.y(), b);
+                            });
+                    }
+                    cell_moments.push_back(Eigen::Vector2d(mx, my));
+                }
+            }
+            interpolator3.set_source_cell_vector_moments(cell, cell_moments);
+            interpolator3.reconstruct_source_polygon(cell, options);
+        }
+
+        const mimetic::EdgeMomentTransferResult transfer3 =
+            interpolator3.transfer_source_to_target_edge_moments(src3, tgt3, 3);
+
+        std::vector<double> tgt_p3_values;
+        std::size_t dof = 0;
+        for (const moab::EntityHandle cell : tgt3) {
+            const mimetic::LocalPolygon poly = mimetic::local_polygon(mb3, cell, spherical);
+            const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb3, poly);
+            double cell_flux = 0.0;
+            for (std::size_t e = 0; e < edges.size(); ++e, ++dof) {
+                cell_flux += transfer3.target_moments[dof][0];
+            }
+            tgt_p3_values.push_back(cell_flux / poly.area);
+        }
+        dump_spherical_mesh(prefix + "_target_p3.txt", mb3, tgt3, tgt_p3_values, view_frame);
+    }
+
+    dump_spherical_mesh(prefix + "_source.txt", mb, source_cells, src_values, view_frame);
+    dump_spherical_mesh(prefix + "_target_exact.txt", mb, target_cells, tgt_exact_values, view_frame);
+    std::cout << "  Spherical order comparison dumped: " << prefix << "\n";
+}
+
 }  // namespace
 
 int main()
@@ -864,6 +1069,10 @@ int main()
             auto tgt = create_voronoi_mesh(mb, tgt_seeds);
             compute_order_comparison("vis_order_compare_voronoi_E: oscillating_div", mb, src, tgt, field_E);
         }
+
+        // Spherical order comparison: cubed-sphere, p=1 vs p=3
+        std::cout << "\n=== Spherical Order Comparison: Y_2^0 gradient ===\n";
+        compute_spherical_order_comparison("vis_order_compare_spherical", 8, 12);
 
         std::cout << "\n[SUCCESS] All convergence and exact recovery checks passed.\n";
         return 0;

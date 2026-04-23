@@ -237,6 +237,12 @@ def render_order_comparison(source_file: Path, output_dir: Path):
     vmax = max(src_vals.max(), tgt_p1_vals.max(), tgt_p3_vals.max(), tgt_exact_vals.max())
     err_max = max(np.abs(p1_error).max(), np.abs(p3_error).max(), 1.0e-16)
 
+    # Auto-detect coordinate bounds from all polygon vertices
+    all_polys = src_polys + tgt_p1_polys + tgt_p3_polys
+    all_coords = np.concatenate([np.array(p) for p in all_polys if len(p) >= 3])
+    xlo, ylo = all_coords.min(axis=0) - 0.02
+    xhi, yhi = all_coords.max(axis=0) + 0.02
+
     field_panels = [
         (axes[0, 0], src_polys, src_vals, "Source Exact Divergence"),
         (axes[0, 1], tgt_p1_polys, tgt_p1_vals, r"Target Recon. ($p=1$)"),
@@ -256,8 +262,8 @@ def render_order_comparison(source_file: Path, output_dir: Path):
         coll = PolyCollection(polys, array=values, cmap="viridis", edgecolors="k", linewidths=0.3)
         coll.set_clim(vmin, vmax)
         ax.add_collection(coll)
-        ax.set_xlim(0.0, 1.0)
-        ax.set_ylim(0.0, 1.0)
+        ax.set_xlim(xlo, xhi)
+        ax.set_ylim(ylo, yhi)
         ax.set_aspect("equal")
         ax.set_title(title, fontsize=11)
         value_mappable = coll
@@ -266,8 +272,8 @@ def render_order_comparison(source_file: Path, output_dir: Path):
         coll = PolyCollection(polys, array=values, cmap="RdBu_r", edgecolors="k", linewidths=0.3)
         coll.set_clim(-err_max, err_max)
         ax.add_collection(coll)
-        ax.set_xlim(0.0, 1.0)
-        ax.set_ylim(0.0, 1.0)
+        ax.set_xlim(xlo, xhi)
+        ax.set_ylim(ylo, yhi)
         ax.set_aspect("equal")
         ax.set_title(title, fontsize=11)
         error_mappable = coll

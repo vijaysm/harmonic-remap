@@ -1117,7 +1117,9 @@ qualitatively but has a maximum error of \(O(1)\), while the \(p=3\)
 reconstruction reduces the maximum error to \(O(10^{-3})\).
 Figure~\ref{fig:order-compare-voronoi} shows the same field on a
 \(64\to100\)-cell Voronoi-to-Voronoi transfer; the \(p=3\) error drops from
-\(O(1)\) to \(O(10^{-1})\) on the irregular mesh.
+\(O(1)\) to \(O(10^{-1})\) on the irregular mesh.  The same order-of-magnitude
+improvement is observed on the sphere
+(Figure~\ref{fig:order-compare-spherical}).
 
 \begin{figure}[htbp]
   \centering
@@ -1139,6 +1141,25 @@ Figure~\ref{fig:order-compare-voronoi} shows the same field on a
   baseline, reducing the maximum error by an order of magnitude even on
   irregular n-sided polygons.}
   \label{fig:order-compare-voronoi}
+\end{figure}
+
+Figure~\ref{fig:order-compare-spherical} extends the comparison to the unit
+sphere using a \(8\to12\) cubed-sphere transfer of
+\(\mathbf{u}=\nabla_S Y_2^0\).  The cells are shown in a gnomonic chart
+centered at the north pole.  The \(p=3\) reconstruction reduces the maximum
+divergence error from \(3.3\times10^{-1}\) to \(2.8\times10^{-2}\), an order
+of magnitude improvement consistent with the planar results.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{vis_order_compare_spherical_order_compare.png}
+  \caption{Cubed-sphere order comparison for the surface gradient of \(Y_2^0\),
+  shown in gnomonic chart coordinates.  Top row: source exact divergence,
+  \(p=1\) reconstruction, and \(p=1\) error.  Bottom row: target exact
+  divergence, \(p=3\) reconstruction, and \(p=3\) error.  The gnomonic
+  distortion is visible at the chart edges; the \(p=3\) error is concentrated
+  there while the interior cells are resolved to near roundoff.}
+  \label{fig:order-compare-spherical}
 \end{figure}
 
 \subsection{High-Order Split-Moment Convergence}
