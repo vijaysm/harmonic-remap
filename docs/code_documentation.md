@@ -125,7 +125,7 @@ The planar convergence driver `tests/high_order_hdiv_convergence_test.cpp`
 uses the harmonic-compatible lowest-order remap for `p=1` and the split-moment
 enrichment for `p=2,3`.  The moment-0 edge flux remains an exact hard
 constraint at every order.  On the current Voronoi-to-Voronoi sequence the
-observed average relative edge-flux rates are approximately `1.90`, `2.77`,
+observed average relative edge-flux rates are approximately `1.89`, `2.77`,
 and `3.34` for `p=1,2,3`.
 
 The spherical convergence driver
@@ -209,6 +209,44 @@ the divergence-free manufactured field in Figure 6 has exact source and exact
 target panels that are zero to roundoff, while the reconstructed target panel
 can still be nonzero on coarse or irregular meshes: that panel reflects local
 target-cell flux-closure error, not the value of the exact vector solution.
+
+## Spherical Accuracy Improvements
+
+The following changes improved spherical higher-order convergence rates,
+particularly for all-moment errors on cubed-sphere and Voronoi patches:
+
+1. **Metric-weighted Gram matrix for the high-order path.**
+   `PlanarMomentInterpolator::reconstruct_source_polygon()` now applies the
+   gnomonic Hodge metric `J^T J / |J|` in the `G_raw` inner product when
+   `metric_weighted` is enabled, consistent with the low-order reconstruction.
+
+2. **Duffy quadrature for metric-weighted integrals.**  Both
+   `source_reconstruction_matrix()` and `reconstruct_source_polygon()` use a
+   10-point Gauss-Legendre Duffy integration rule instead of the 7-point
+   symmetric triangle rule when the metric is active.  The Hodge metric
+   introduces rational (non-polynomial) integrands that require higher-order
+   quadrature for accurate integration.
+
+3. **Spherical arc-length parametrization for target edge moments.**  The
+   Legendre parameter `t` in `transfer_source_to_target_edge_moments()` now
+   uses the great-circle arc-angle fraction for spherical edges, matching the
+   parametrization already used in `basis_edge_moments()` for source edges.
+   The previous Euclidean chart-coordinate parametrization introduced a
+   systematic O(h^2) bias in higher moments.
+
+4. **Adaptive harmonic mode stabilization.**  The fixed diagonal penalty
+   `1e2 * area` for k>=3 harmonic modes was replaced with a relative penalty
+   `10 * V(i,i)`, which adapts to the actual magnitude of each mode rather
+   than applying a uniform damping proportional to cell area.
+
+These changes improved spherical all-moment convergence rates:
+
+- cubed-sphere p=2 all: 2.72 → 3.79
+- cubed-sphere p=3 all: 2.15 → 2.62
+- Voronoi-patch p=2 all: 2.22 → 2.70
+- Voronoi-patch p=3 all: 2.04 → 3.32
+
+Conservation residuals and moment-0 rates were unaffected.
 
 ## Current Numerical Caveats
 

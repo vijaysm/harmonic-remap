@@ -123,9 +123,11 @@ Shared utilities: `test_utils.hpp` (manufactured fields, flux integration), `sph
 | Domain | p=1 | p=2 | p=3 |
 |--------|-----|-----|-----|
 | Planar quad-to-quad | 2.26 | 3.39 | 4.46 |
-| Planar Voronoi-to-Voronoi | 1.90 | 2.77 | 3.34 |
+| Planar Voronoi-to-Voronoi | 1.89 | 2.77 | 3.34 |
 | Spherical cubed-sphere (moment-0) | 2.49 | 3.80 | 2.42 |
-| Spherical Voronoi-patch (moment-0) | 2.08 | 2.66 | 3.31 |
+| Spherical cubed-sphere (all moments) | 2.49 | 3.79 | 2.62 |
+| Spherical Voronoi-patch (moment-0) | 1.99 | 2.66 | 3.31 |
+| Spherical Voronoi-patch (all moments) | 1.99 | 2.70 | 3.32 |
 
 ## Technical Documentation
 
