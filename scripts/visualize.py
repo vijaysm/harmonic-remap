@@ -215,7 +215,7 @@ def render_edge_jump(source_file: Path, output_dir: Path):
 
 
 def render_order_comparison(source_file: Path, output_dir: Path):
-    """Render 4-panel comparison: source exact, target p=1, target p=3, p=3 error."""
+    """Render 5-panel comparison: source exact, p=1 recon, p=1 error, p=3 recon, p=3 error."""
     base_name = source_file.name.replace("_source.txt", "")
     target_p1_file = source_file.with_name(base_name + "_target_p1.txt")
     target_p3_file = source_file.with_name(base_name + "_target_p3.txt")
@@ -230,53 +230,68 @@ def render_order_comparison(source_file: Path, output_dir: Path):
     p1_error = tgt_p1_vals - tgt_exact_vals
     p3_error = tgt_p3_vals - tgt_exact_vals
 
-    fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+    fig = plt.figure(figsize=(20, 9))
+    # Layout: top row has 3 panels (source, p=1 recon, p=1 error)
+    #         bottom row has 2 panels (p=3 recon, p=3 error) centered
+    ax_src  = fig.add_subplot(2, 3, 1)
+    ax_p1   = fig.add_subplot(2, 3, 2)
+    ax_p1e  = fig.add_subplot(2, 3, 3)
+    # Bottom row: positions 4-6, use 5 and 6 to right-align with p=1 row
+    ax_p3   = fig.add_subplot(2, 3, 5)
+    ax_p3e  = fig.add_subplot(2, 3, 6)
+    # Hide unused bottom-left
+    ax_blank = fig.add_subplot(2, 3, 4)
+    ax_blank.axis("off")
 
     vmin = min(src_vals.min(), tgt_p1_vals.min(), tgt_p3_vals.min(), tgt_exact_vals.min())
     vmax = max(src_vals.max(), tgt_p1_vals.max(), tgt_p3_vals.max(), tgt_exact_vals.max())
     err_max = max(np.abs(p1_error).max(), np.abs(p3_error).max(), 1.0e-16)
 
-    # Top row: source exact, target exact, target p=1
-    panels_top = [
-        (axes[0, 0], src_polys, src_vals, "viridis", (vmin, vmax), "Source Exact Divergence"),
-        (axes[0, 1], tgt_p1_polys, tgt_p1_vals, "viridis", (vmin, vmax), r"Target Recon. Divergence ($p=1$)"),
-        (axes[0, 2], tgt_p1_polys, p1_error, "RdBu_r", (-err_max, err_max),
-         f"$p=1$ Error (max: {np.abs(p1_error).max():.2e})"),
+    field_panels = [
+        (ax_src, src_polys, src_vals, "Source Exact Divergence"),
+        (ax_p1, tgt_p1_polys, tgt_p1_vals, r"Target Recon. ($p=1$)"),
+        (ax_p3, tgt_p3_polys, tgt_p3_vals, r"Target Recon. ($p=3$)"),
     ]
-    # Bottom row: target exact, target p=3, p=3 error
-    panels_bot = [
-        (axes[1, 0], tgt_p3_polys, tgt_exact_vals, "viridis", (vmin, vmax), "Target Exact Divergence"),
-        (axes[1, 1], tgt_p3_polys, tgt_p3_vals, "viridis", (vmin, vmax), r"Target Recon. Divergence ($p=3$)"),
-        (axes[1, 2], tgt_p3_polys, p3_error, "RdBu_r", (-err_max, err_max),
-         f"$p=3$ Error (max: {np.abs(p3_error).max():.2e})"),
+    error_panels = [
+        (ax_p1e, tgt_p1_polys, p1_error, f"$p=1$ Error (max: {np.abs(p1_error).max():.2e})"),
+        (ax_p3e, tgt_p3_polys, p3_error, f"$p=3$ Error (max: {np.abs(p3_error).max():.2e})"),
     ]
 
     value_mappable = None
     error_mappable = None
-    for ax, polys, values, cmap, clim, title in panels_top + panels_bot:
-        coll = PolyCollection(polys, array=values, cmap=cmap, edgecolors="k", linewidths=0.3)
-        coll.set_clim(*clim)
+    for ax, polys, values, title in field_panels:
+        coll = PolyCollection(polys, array=values, cmap="viridis", edgecolors="k", linewidths=0.3)
+        coll.set_clim(vmin, vmax)
         ax.add_collection(coll)
         ax.set_xlim(0.0, 1.0)
         ax.set_ylim(0.0, 1.0)
         ax.set_aspect("equal")
         ax.set_title(title, fontsize=11)
-        if cmap == "viridis":
-            value_mappable = coll
-        else:
-            error_mappable = coll
+        value_mappable = coll
 
+    for ax, polys, values, title in error_panels:
+        coll = PolyCollection(polys, array=values, cmap="RdBu_r", edgecolors="k", linewidths=0.3)
+        coll.set_clim(-err_max, err_max)
+        ax.add_collection(coll)
+        ax.set_xlim(0.0, 1.0)
+        ax.set_ylim(0.0, 1.0)
+        ax.set_aspect("equal")
+        ax.set_title(title, fontsize=11)
+        error_mappable = coll
+
+    # Colorbars outside the plot bounding boxes
     if value_mappable is not None:
-        fig.colorbar(value_mappable, ax=[axes[0, 0], axes[0, 1], axes[1, 0], axes[1, 1]],
-                     orientation="vertical", fraction=0.04, pad=0.02)
+        fig.colorbar(value_mappable, ax=[ax_src, ax_p1, ax_p3],
+                     orientation="horizontal", fraction=0.06, pad=0.12,
+                     label="Cell-averaged divergence")
     if error_mappable is not None:
-        fig.colorbar(error_mappable, ax=[axes[0, 2], axes[1, 2]],
-                     orientation="vertical", fraction=0.04, pad=0.02)
+        fig.colorbar(error_mappable, ax=[ax_p1e, ax_p3e],
+                     orientation="horizontal", fraction=0.06, pad=0.12,
+                     label="Divergence error")
 
     display_name = base_name.replace("vis_order_compare_", "").replace("_", " ")
     output_name = base_name.replace(": ", "__").replace(" ", "_")
-    fig.suptitle(f"Order comparison: {display_name}", fontsize=14, y=0.98)
-    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.suptitle(f"Order comparison: {display_name}", fontsize=14)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{output_name}_order_compare.png"
     fig.savefig(output_path, dpi=200, bbox_inches="tight")
