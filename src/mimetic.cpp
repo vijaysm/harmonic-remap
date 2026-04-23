@@ -314,6 +314,65 @@ Eigen::Matrix2d gnomonic_hodge_metric(const Eigen::Vector2d& xi, const GnomonicF
     return (jacobian.transpose() * jacobian) / area_scale;
 }
 
+struct GaussLegendrePoint {
+    double x = 0.0;
+    double w = 0.0;
+};
+
+static const GaussLegendrePoint gauss4_rule[4] = {
+    {-0.8611363115940526, 0.3478548451374538},
+    {-0.3399810435848563, 0.6521451548625461},
+    { 0.3399810435848563, 0.6521451548625461},
+    { 0.8611363115940526, 0.3478548451374538},
+};
+
+static const GaussLegendrePoint gauss10_rule[10] = {
+    {-0.9739065285171717, 0.0666713443086881},
+    {-0.8650633666889845, 0.1494513491505806},
+    {-0.6794095682990244, 0.2190863625159820},
+    {-0.4333953941292472, 0.2692667193099963},
+    {-0.1488743389816312, 0.2955242247147529},
+    { 0.1488743389816312, 0.2955242247147529},
+    { 0.4333953941292472, 0.2692667193099963},
+    { 0.6794095682990244, 0.2190863625159820},
+    { 0.8650633666889845, 0.1494513491505806},
+    { 0.9739065285171717, 0.0666713443086881},
+};
+
+std::vector<GaussLegendrePoint> gauss_legendre_rule(const int quadrature_points)
+{
+    if (quadrature_points <= 4) {
+        return std::vector<GaussLegendrePoint>(gauss4_rule, gauss4_rule + 4);
+    }
+    return std::vector<GaussLegendrePoint>(gauss10_rule, gauss10_rule + 10);
+}
+
+template <typename Func>
+double integrate_triangle_duffy(const Eigen::Vector2d& a,
+                                const Eigen::Vector2d& b,
+                                const Eigen::Vector2d& c,
+                                const std::vector<GaussLegendrePoint>& rule,
+                                const Func& func)
+{
+    const Eigen::Vector2d ab = b - a;
+    const Eigen::Vector2d bc = c - b;
+    const double det_j = std::abs(ab.x() * bc.y() - ab.y() * bc.x());
+    double sum = 0.0;
+
+    for (const GaussLegendrePoint& qu : rule) {
+        const double u = 0.5 * (qu.x + 1.0);
+        const double wu = 0.5 * qu.w;
+        for (const GaussLegendrePoint& qv : rule) {
+            const double v = 0.5 * (qv.x + 1.0);
+            const double wv = 0.5 * qv.w;
+            const Eigen::Vector2d p = a + u * ab + (u * v) * bc;
+            sum += wu * wv * u * func(p);
+        }
+    }
+
+    return det_j * sum;
+}
+
 Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly,
                                              const std::vector<LocalEdge>& edges,
                                              const GeometryOptions& options)
@@ -330,6 +389,17 @@ Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly,
     Eigen::MatrixXd V = Eigen::MatrixXd::Zero(N_h, N_h);
     Eigen::MatrixXd M = Eigen::MatrixXd::Zero(N_h, N);
     const Eigen::Vector2d origin(0.0, 0.0);
+    const std::vector<GaussLegendrePoint> duffy_rule = gauss_legendre_rule(10);
+
+    // Helper: use Duffy quadrature for metric-weighted integrals (rational integrands),
+    // standard 7-point symmetric rule for polynomial integrands.
+    auto integrate_cell = [&](const Eigen::Vector2d& a, const Eigen::Vector2d& b,
+                              const Eigen::Vector2d& c, auto&& func) {
+        if (use_surface_metric) {
+            return integrate_triangle_duffy(a, b, c, duffy_rule, func);
+        }
+        return integrate_triangle_scalar(a, b, c, func);
+    };
 
     for (int i = 0; i < N_h; ++i) {
         int ki = (i / 2) + 1;
@@ -340,7 +410,7 @@ Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly,
 
             double val = 0.0;
             for (const LocalEdge& edge : edges) {
-                val += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
+                val += integrate_cell(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
                     double Pi, Qi, Pj, Qj;
                     Eigen::Vector2d gPi, gQi, gPj, gQj;
                     eval_harmonic_basis(ki, p, Pi, Qi, gPi, gQi);
@@ -356,16 +426,16 @@ Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly,
             }
             V(i, j) = val;
         }
-        
+
         double cell_basis_integral = 0.0;
         double div_integral = 0.0;
         for (const LocalEdge& edge : edges) {
-            cell_basis_integral += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
+            cell_basis_integral += integrate_cell(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
                 double P, Q; Eigen::Vector2d gP, gQ;
                 eval_harmonic_basis(ki, p, P, Q, gP, gQ);
                 return is_Q_i ? Q : P;
             });
-            div_integral += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
+            div_integral += integrate_cell(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
                 double P, Q; Eigen::Vector2d gP, gQ;
                 eval_harmonic_basis(ki, p, P, Q, gP, gQ);
                 return p.dot(is_Q_i ? gQ : gP);
@@ -373,9 +443,10 @@ Eigen::MatrixXd source_reconstruction_matrix(const LocalPolygon& poly,
         }
         const double cell_basis_average = cell_basis_integral / poly.area;
         if (i >= 4) {
-            V(i, i) += 1.0e2 * stabilization_area;
+            const double v_diag = std::max(V(i, i), kTolerance * stabilization_area);
+            V(i, i) += 1.0e1 * v_diag;
         }
-        
+
         for (int e = 0; e < N; ++e) {
             const double edge_average = integrate_edge_scalar(edges[e].a, edges[e].b, [&](const Eigen::Vector2d& p) {
                 double P, Q; Eigen::Vector2d gP, gQ;
@@ -436,39 +507,6 @@ struct VectorBasisTerm {
     int b = 0;
 };
 
-struct GaussLegendrePoint {
-    double x = 0.0;
-    double w = 0.0;
-};
-
-static const GaussLegendrePoint gauss4_rule[4] = {
-    {-0.8611363115940526, 0.3478548451374538},
-    {-0.3399810435848563, 0.6521451548625461},
-    { 0.3399810435848563, 0.6521451548625461},
-    { 0.8611363115940526, 0.3478548451374538},
-};
-
-static const GaussLegendrePoint gauss10_rule[10] = {
-    {-0.9739065285171717, 0.0666713443086881},
-    {-0.8650633666889845, 0.1494513491505806},
-    {-0.6794095682990244, 0.2190863625159820},
-    {-0.4333953941292472, 0.2692667193099963},
-    {-0.1488743389816312, 0.2955242247147529},
-    { 0.1488743389816312, 0.2955242247147529},
-    { 0.4333953941292472, 0.2692667193099963},
-    { 0.6794095682990244, 0.2190863625159820},
-    { 0.8650633666889845, 0.1494513491505806},
-    { 0.9739065285171717, 0.0666713443086881},
-};
-
-std::vector<GaussLegendrePoint> gauss_legendre_rule(const int quadrature_points)
-{
-    if (quadrature_points <= 4) {
-        return std::vector<GaussLegendrePoint>(gauss4_rule, gauss4_rule + 4);
-    }
-    return std::vector<GaussLegendrePoint>(gauss10_rule, gauss10_rule + 10);
-}
-
 double legendre_polynomial(const int degree, const double x)
 {
     if (degree == 0) {
@@ -502,32 +540,6 @@ double integrate_edge_highorder_rule(const Eigen::Vector2d& a,
         sum += q.w * func(mid + q.x * half_delta);
     }
     return 0.5 * length * sum;
-}
-
-template <typename Func>
-double integrate_triangle_duffy(const Eigen::Vector2d& a,
-                                const Eigen::Vector2d& b,
-                                const Eigen::Vector2d& c,
-                                const std::vector<GaussLegendrePoint>& rule,
-                                const Func& func)
-{
-    const Eigen::Vector2d ab = b - a;
-    const Eigen::Vector2d bc = c - b;
-    const double det_j = std::abs(ab.x() * bc.y() - ab.y() * bc.x());
-    double sum = 0.0;
-
-    for (const GaussLegendrePoint& qu : rule) {
-        const double u = 0.5 * (qu.x + 1.0);
-        const double wu = 0.5 * qu.w;
-        for (const GaussLegendrePoint& qv : rule) {
-            const double v = 0.5 * (qv.x + 1.0);
-            const double wv = 0.5 * qv.w;
-            const Eigen::Vector2d p = a + u * ab + (u * v) * bc;
-            sum += wu * wv * u * func(p);
-        }
-    }
-
-    return det_j * sum;
 }
 
 template <typename Func>
@@ -1817,6 +1829,17 @@ ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab:
     Eigen::MatrixXd V = Eigen::MatrixXd::Zero(N_h, N_h);
     Eigen::VectorXd M = Eigen::VectorXd::Zero(N_h);
     const Eigen::Vector2d origin(0.0, 0.0);
+    const std::vector<GaussLegendrePoint> duffy_rule = gauss_legendre_rule(10);
+
+    // Helper: use Duffy quadrature for metric-weighted integrals (rational integrands),
+    // standard 7-point symmetric rule for polynomial integrands.
+    auto integrate_cell = [&](const Eigen::Vector2d& a, const Eigen::Vector2d& b,
+                              const Eigen::Vector2d& c, auto&& func) {
+        if (use_surface_metric) {
+            return integrate_triangle_duffy(a, b, c, duffy_rule, func);
+        }
+        return integrate_triangle_scalar(a, b, c, func);
+    };
 
     for (int i = 0; i < N_h; ++i) {
         int ki = (i / 2) + 1;
@@ -1827,7 +1850,7 @@ ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab:
 
             double val = 0.0;
             for (const LocalEdge& edge : edges) {
-                val += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
+                val += integrate_cell(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
                     double Pi, Qi, Pj, Qj;
                     Eigen::Vector2d gPi, gQi, gPj, gQj;
                     eval_harmonic_basis(ki, p, Pi, Qi, gPi, gQi);
@@ -1847,12 +1870,12 @@ ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab:
         double cell_basis_integral = 0.0;
         double div_integral = 0.0;
         for (const LocalEdge& edge : edges) {
-            cell_basis_integral += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
+            cell_basis_integral += integrate_cell(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
                 double P, Q; Eigen::Vector2d gP, gQ;
                 eval_harmonic_basis(ki, p, P, Q, gP, gQ);
                 return is_Q_i ? Q : P;
             });
-            div_integral += integrate_triangle_scalar(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
+            div_integral += integrate_cell(origin, edge.a, edge.b, [&](const Eigen::Vector2d& p) {
                 double P, Q; Eigen::Vector2d gP, gQ;
                 eval_harmonic_basis(ki, p, P, Q, gP, gQ);
                 return p.dot(is_Q_i ? gQ : gP);
@@ -1860,9 +1883,10 @@ ReconstructionCoeffs MimeticInterpolator::reconstruct_source_polygon(const moab:
         }
         const double cell_basis_average = cell_basis_integral / poly.area;
         if (i >= 4) {
-            V(i, i) += 1.0e2 * stabilization_area;
+            const double v_diag = std::max(V(i, i), kTolerance * stabilization_area);
+            V(i, i) += 1.0e1 * v_diag;
         }
-        
+
         for (int e = 0; e < N; ++e) {
             const double edge_average = integrate_edge_scalar(edges[e].a, edges[e].b, [&](const Eigen::Vector2d& p) {
                 double P, Q; Eigen::Vector2d gP, gQ;
@@ -2497,11 +2521,19 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
     Eigen::VectorXd moments = Eigen::VectorXd::Zero(C);
     Eigen::VectorXd row_weights = Eigen::VectorXd::Ones(C);
 
+    const bool use_surface_metric = options_.metric_weighted && options_.mode == GeometryMode::SphericalGnomonic;
+    const GnomonicFrame gram_frame{poly.n, poly.e_x, poly.e_y, options_.radius};
+
     for (int i = 0; i < raw_dim; ++i) {
         for (int j = 0; j < raw_dim; ++j) {
             G_raw(i, j) = integrate_polygon_scalar_duffy(edges, quadrature, [&](const Eigen::Vector2d& p) {
-                return vector_basis_value(raw_basis[i], p, scale_length).dot(
-                    vector_basis_value(raw_basis[j], p, scale_length));
+                const Eigen::Vector2d vi = vector_basis_value(raw_basis[i], p, scale_length);
+                const Eigen::Vector2d vj = vector_basis_value(raw_basis[j], p, scale_length);
+                if (!use_surface_metric) {
+                    return vi.dot(vj);
+                }
+                const Eigen::Matrix2d hodge = gnomonic_hodge_metric(p + poly.centroid, gram_frame);
+                return vi.dot(hodge * vj);
             });
         }
     }
@@ -2735,11 +2767,19 @@ EdgeMomentTransferResult PlanarMomentInterpolator::transfer_source_to_target_edg
             result.target_edges.push_back(DirectedEdgeDof{target_polygon, target_edge.handle, edge_index});
             result.target_moments.push_back(std::vector<double>(static_cast<std::size_t>(target_moment_order + 1), 0.0));
 
+            // Precompute 3D target edge endpoints for arc-length parametrization.
+            const Eigen::Vector3d target_a3 = target.points_3d[edge_index].normalized();
+            const Eigen::Vector3d target_b3 = target.points_3d[(edge_index + 1) % target.points_3d.size()].normalized();
+            const double target_total_angle = (options_.mode == GeometryMode::SphericalGnomonic)
+                ? std::acos(clamp_unit(target_a3.dot(target_b3)))
+                : 0.0;
+
             for (const SourceCache& source : sources) {
                 Eigen::Vector2d whole_a = target.centroid + target_edge.a;
                 Eigen::Vector2d whole_b = target.centroid + target_edge.b;
+                GnomonicFrame source_frame;
                 if (options_.mode == GeometryMode::SphericalGnomonic) {
-                    const GnomonicFrame source_frame{source.local.n, source.local.e_x, source.local.e_y, options_.radius};
+                    source_frame = GnomonicFrame{source.local.n, source.local.e_x, source.local.e_y, options_.radius};
                     try {
                         whole_a = project_gnomonic(target.points_3d[edge_index], source_frame);
                         whole_b = project_gnomonic(target.points_3d[(edge_index + 1) % target.points_3d.size()], source_frame);
@@ -2769,7 +2809,15 @@ EdgeMomentTransferResult PlanarMomentInterpolator::transfer_source_to_target_edg
                 for (int degree = 0; degree <= target_moment_order; ++degree) {
                     const double contribution = integrate_edge_highorder_rule(
                         clipped_a, clipped_b, quadrature, [&](const Eigen::Vector2d& global_p) {
-                            const double t = 2.0 * (global_p - whole_a).dot(whole_delta) / whole_denom - 1.0;
+                            double t = 0.0;
+                            if (options_.mode == GeometryMode::SphericalGnomonic && target_total_angle > kTolerance) {
+                                // Use great-circle arc-length parametrization for spherical edges.
+                                const Eigen::Vector3d point3 = inverse_gnomonic(global_p, source_frame).normalized();
+                                const double angle = std::acos(clamp_unit(target_a3.dot(point3)));
+                                t = 2.0 * (angle / target_total_angle) - 1.0;
+                            } else {
+                                t = 2.0 * (global_p - whole_a).dot(whole_delta) / whole_denom - 1.0;
+                            }
                             const Eigen::Vector2d local_p = global_p - source.local.centroid;
                             return velocity(source.reconstruction, local_p).dot(whole_normal / whole_length) *
                                    legendre_polynomial(degree, t);
