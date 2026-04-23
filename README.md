@@ -201,13 +201,11 @@ The current convergence study reports:
 - Voronoi-to-Voronoi average relative edge-flux rates of approximately
   `1.89`, `2.77`, and `3.34` for `p=1,2,3`,
 - cubed-sphere average relative moment-0 edge rates of approximately
-  `2.49`, `3.80`, and `2.42` for `p=1,2,3`,
-- cubed-sphere average relative all-moment edge rates of approximately
-  `2.49`, `3.79`, and `2.62` for `p=1,2,3`,
+  `1.75`, `3.08`, and `1.77` for `p=1,2,3` (clean factor-of-2 refinement,
+  non-commensurate source/target; cubed-sphere p=3 is pre-asymptotic due
+  to gnomonic chart distortion; fine-pair rate is ~2.55),
 - spherical Voronoi-patch average relative moment-0 edge rates of approximately
-  `1.99`, `2.66`, and `3.31` for `p=1,2,3`,
-- spherical Voronoi-patch average relative all-moment edge rates of approximately
-  `1.99`, `2.70`, and `3.32` for `p=1,2,3`,
+  `2.05`, `2.52`, and `3.46` for `p=1,2,3`,
 - conservation residuals at roundoff, typically `1e-15` to `1e-16`.
 
 Run it with:
@@ -394,10 +392,8 @@ spherical_voronoi_test:
   fine Voronoi L2_rel        5.07e-03
 
 spherical_high_order_hdiv_convergence_test:
-  cubed-sphere m0 avg rates  2.49 / 3.80 / 2.42
-  cubed-sphere all avg rates 2.49 / 3.79 / 2.62
-  Voronoi m0 avg rates       1.99 / 2.66 / 3.31
-  Voronoi all avg rates      1.99 / 2.70 / 3.32
+  cubed-sphere m0 avg rates  1.75 / 3.08 / 1.77
+  Voronoi m0 avg rates       2.05 / 2.52 / 3.46
   max conforming residual    2.22e-16
 ```
 

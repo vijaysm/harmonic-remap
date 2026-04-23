@@ -124,10 +124,10 @@ Shared utilities: `test_utils.hpp` (manufactured fields, flux integration), `sph
 |--------|-----|-----|-----|
 | Planar quad-to-quad | 2.26 | 3.39 | 4.46 |
 | Planar Voronoi-to-Voronoi | 1.89 | 2.77 | 3.34 |
-| Spherical cubed-sphere (moment-0) | 2.49 | 3.80 | 2.42 |
-| Spherical cubed-sphere (all moments) | 2.49 | 3.79 | 2.62 |
-| Spherical Voronoi-patch (moment-0) | 1.99 | 2.66 | 3.31 |
-| Spherical Voronoi-patch (all moments) | 1.99 | 2.70 | 3.32 |
+| Spherical cubed-sphere (moment-0) | 1.75 | 3.08 | 1.77* |
+| Spherical Voronoi-patch (moment-0) | 2.05 | 2.52 | 3.46 |
+
+*Cubed-sphere p=3 is pre-asymptotic due to gnomonic chart distortion; fine-pair rate is ~2.55.
 
 ## Technical Documentation
 

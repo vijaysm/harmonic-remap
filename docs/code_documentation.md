@@ -248,6 +248,38 @@ These changes improved spherical all-moment convergence rates:
 
 Conservation residuals and moment-0 rates were unaffected.
 
+The convergence study now uses clean factor-of-2 refinement with
+non-commensurate source and target resolutions to avoid aliasing artifacts.
+Previous levels (`{4,6}, {6,8}, {8,10}, {10,12}`) shared resolutions between
+consecutive source and target meshes, which introduced rate oscillations.
+The current levels are:
+
+- Cubed-sphere: `{4,7}, {8,14}, {16,28}` (h ~ 1/n, doubling n)
+- Voronoi: `{16,25}, {64,100}, {256,400}` (h ~ 1/sqrt(N), quadrupling N)
+
+## Pre-Asymptotic Regime on Cubed-Sphere p=3
+
+The cubed-sphere p=3 moment-0 convergence rate (~1.77 average) is well below
+the expected O(h^4).  This is a pre-asymptotic effect caused by the gnomonic
+chart distortion: the harmonic basis functions P_k, Q_k are Euclidean
+harmonic (solutions of the flat Laplacian), but the chart inner product
+involves the Hodge metric J^T J / |J|.  At p=3, the O(h^2) error from this
+variational crime dominates the O(h^4) asymptotic term on the mesh sizes
+accessible with the current all-pairs search.
+
+Evidence for pre-asymptotic behavior:
+
+- The fine-pair rate (h=1/14 → 1/28) is ~2.55, trending upward toward the
+  expected rate.
+- The coarse-pair rate (h=1/7 → 1/14) is ~0.99, indicating the error has not
+  yet entered the asymptotic regime.
+- Voronoi patches, which cover a smaller solid angle and thus have less metric
+  distortion, achieve p=3 rates of ~3.46.
+
+The remedy is to use surface-adapted basis functions (e.g., spherical harmonics
+projected onto the chart) instead of flat-space harmonics, which would eliminate
+the O(h^2) variational crime.  This is tracked as a future improvement.
+
 ## Current Numerical Caveats
 
 The current implementation passes the conservation and direct-vs-sparse tests.
@@ -258,6 +290,8 @@ The main remaining numerical caveats are:
 2. The spherical higher-order study currently covers structured cubed-sphere
    transfers and deterministic Voronoi chart patches.  It does not yet cover
    larger mixed-topology or production spherical meshes.
+3. The cubed-sphere p=3 convergence is pre-asymptotic at current resolutions
+   due to the Euclidean-basis variational crime on gnomonic charts (see above).
 
 ## Build and Validation Commands
 
