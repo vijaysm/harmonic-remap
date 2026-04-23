@@ -966,24 +966,15 @@ also passes conservation to \(4.44\times10^{-16}\).
 The quantitative convergence diagnostics are edge-based: for each directed
 target edge \(e\), the transferred flux is compared with the manufactured
 integral \(\int_e \mathbf{u}_{\mathrm{exact}}\cdot\n\,ds\).  Figures
-\ref{fig:error_quad}--\ref{fig:error_vv} do not plot the vector solution
-\(\mathbf{u}\) itself.  They show a complementary scalar cell quantity, the
-cell-averaged divergence recovered from the directed edge fluxes,
-\[
-  \frac{1}{|K|}\sum_{e\subset\partial K} U^t_e .
-\]
-This distinction matters.  Edge errors assess the transferred H(div) degrees of
-freedom, while these plots show how the conservative edge fluxes assemble into
-macroscopic cell balances.  In particular, a divergence-free manufactured field
-can have exact source and exact target panels that are zero to roundoff, while
-the reconstructed target panel is nonzero on coarse or irregular cells because
-the transferred edge fluxes do not close exactly on each target cell.  That is
-a local flux-balance defect, not a pointwise vector-field value.
+\ref{fig:error_quad}--\ref{fig:error_vq} show a complementary scalar cell
+quantity: the cell-averaged divergence \(\frac{1}{|K|}\sum_{e\subset\partial K}
+U^t_e\) recovered from the directed edge fluxes.  Edge errors assess the
+transferred H(div) degrees of freedom, while these plots show how the
+conservative edge fluxes assemble into macroscopic cell balances.
 
 Figure~\ref{fig:error_quad} shows a harmonic field transferred from a source
-quad mesh to a refined target quad mesh.  Figures~\ref{fig:error_vq} and
-\ref{fig:error_vv} show the same diagnostic idea for Voronoi-to-quad and
-Voronoi-to-Voronoi configurations.
+quad mesh to a refined target quad mesh.  Figure~\ref{fig:error_vq} shows the
+same diagnostic for a Voronoi-to-quad configuration.
 
 \begin{figure}[htbp]
     \centering
@@ -1004,39 +995,20 @@ Voronoi-to-Voronoi configurations.
     \label{fig:error_vq}
 \end{figure}
 
-\begin{figure}[htbp]
-    \centering
-    \includegraphics[width=\textwidth]{vis_voronoi_voronoi_B__sincos_divfree.png}
-    \caption{Voronoi-to-Voronoi cell-divergence diagnostic for a smooth
-    divergence-free manufactured field on independent seed configurations.  The
-    exact source and exact target panels are zero to roundoff; the nonzero
-    reconstructed panel therefore measures local target-cell flux-closure error,
-    not the value of the vector solution itself.}
-    \label{fig:error_vv}
-\end{figure}
-
-Figure~\ref{fig:error_vv_hdiv} adds the new globally constrained target-edge
-postprocess to the same Voronoi-to-Voronoi divergence-free case.  Before the
-solve, coincident target vertices are merged to \(10^{-12}\) so that target
-cells share a genuine MOAB edge topology rather than paired duplicate
-vertices. Figure~\ref{fig:error_vv} already shows the raw local target-cell
-imbalance and its error. Figure~\ref{fig:error_vv_hdiv} therefore focuses only
-on what is new: the globally constrained target divergence field and its error.
-The local transfer still shows visible target-cell imbalance on the coarse
-mesh, but the global constrained solve removes that imbalance to roundoff while
-staying close to the raw directed edge field.
+Figure~\ref{fig:error_vv_hdiv} shows the globally constrained target-edge
+projection for the same Voronoi-to-Voronoi divergence-free case.  The raw
+local transfer shows visible target-cell imbalance on the coarse mesh, but the
+global constrained solve removes that imbalance to roundoff while staying close
+to the raw directed edge field.
 
 \begin{figure}[htbp]
     \centering
     \includegraphics[width=\textwidth]{vis_voronoi_voronoi_B__sincos_divfree_hdiv_compare.png}
     \caption{Voronoi-to-Voronoi globally constrained target-edge projection for
-    the smooth divergence-free manufactured field.  Figure~\ref{fig:error_vv}
-    already provides the raw local target divergence and its error.  The four
-    panels shown here therefore retain the exact source and exact target
-    divergence for context, then show only the globally constrained target
-    divergence and the globally constrained target-divergence error.  The
-    constrained solve eliminates the coarse-mesh target-cell closure defect
-    visible in Figure~\ref{fig:error_vv}.}
+    a smooth divergence-free manufactured field.  The exact source and target
+    divergences are zero to roundoff.  The globally constrained target
+    divergence and its error show that the conforming solve eliminates
+    the coarse-mesh target-cell closure defect to roundoff.}
     \label{fig:error_vv_hdiv}
 \end{figure}
 
