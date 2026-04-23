@@ -51,11 +51,12 @@ conservation, direct edge transfer, and sparse projection equivalence to a
 high-order extension shows average edge-flux convergence rates of approximately
 \(2.26/3.39/4.46\) for \(p=1,2,3\); on refined planar Voronoi patches, the
 harmonic \(p=1\) baseline and split-moment \(p=2,3\) enrichments yield average
-rates \(1.90/2.77/3.34\).  The same split-moment hierarchy extends to
+rates \(1.89/2.77/3.34\).  The same split-moment hierarchy extends to
 structured cubed-sphere and deterministic spherical Voronoi-patch transfers,
-where the globally conforming target-edge projection preserves
-machine-precision target-cell closure and the higher-order fits show the same
-order separation in great-circle edge norms.
+where a degree-elevated basis captures the leading Piola rational correction
+and yields zeroth-moment convergence rates of approximately
+\(1.75/3.08/4.57\) (cubed-sphere) and \(2.05/2.52/3.62\) (Voronoi patches)
+for \(p=1,2,3\), with machine-precision target-cell closure throughout.
 \end{abstract}
 
 \section{Introduction}
@@ -703,6 +704,43 @@ H(\mathrm{div})\) locally, the primary edge-flux functional is preserved
 exactly, and the divergence-controlled and divergence-free parts of the local
 space are explicitly separated.
 
+\paragraph{Metric-corrected orthogonalization.}
+In the spherical gnomonic backend, the local vector-polynomial mass matrix~\(G\)
+in~\eqref{eq:projected-moment-problem} is assembled with the Hodge/Piola metric
+\(J^T\!J / |J|\) from~\eqref{eq:hodge-piola-metric}.  When this
+metric-weighted~\(G\) is available, the split basis
+in~\eqref{eq:split-moment-field} is orthonormalized against~\(G\) rather than
+against the Euclidean identity.  Concretely, each block of mode vectors~\(M\) is
+replaced by its metric-orthonormal counterpart~\(Q\) satisfying \(Q^T G\, Q =
+I\) via the eigendecomposition of the block Gram \(M^T G\, M = V\, D\, V^T\) and
+the substitution \(Q = M\, V D^{-1/2}\).  Cross-block orthogonality is enforced
+sequentially: harmonic modes are projected against divergence modes in the
+\(G\)-inner product before orthonormalization, and bubble modes are projected
+against both divergence and harmonic blocks.  This ensures that the KKT
+solver in~\eqref{eq:projected-moment-problem} operates with the correct surface
+inner product.
+
+\paragraph{Degree-elevated basis for spherical \(p\ge3\).}
+On the sphere, the exact surface vector field pulled back to gnomonic chart
+coordinates via the contravariant Piola mapping is a rational function of
+\((\xi_1,\xi_2)\) because the Piola involves \(J/|J|\) where
+\(|J|=(1+|\boldsymbol{\xi}|^2)^{-3/2}\).  A degree-\(p\) polynomial basis can
+approximate this rational field only to polynomial accuracy, and the dominant
+approximation error is \(O(h_K^2)\) pointwise, giving an \(O(h_K^3)\) edge-flux
+error.  For \(p\le 2\) this is comparable to or smaller than the \(O(h_K^{p+1})\)
+asymptotic term, but for \(p\ge 3\) it dominates.
+
+The remedy is \emph{degree elevation}: for \(p\ge3\) in spherical mode, the
+vector polynomial degree is raised from~\(p\) to~\(p+2\).  The enlarged basis
+\([\mathbb{P}_{p+2}]^2\) spans all products
+\(|\boldsymbol{\xi}|^2 \boldsymbol{v}_j(\boldsymbol{\xi})\) for
+\(\boldsymbol{v}_j\in[\mathbb{P}_p]^2\), which captures the leading-order
+rational correction from the Piola mapping.  The edge and cell moment constraints
+remain at order~\(p\) (from the source data), making the system under-determined.
+The extra degrees of freedom are resolved by the minimum-energy regularization
+in~\eqref{eq:projected-moment-problem}, which selects the smoothest
+chart-coordinate field consistent with the physical moment data.
+
 \section{Why Wachspress Coordinates Are Not a Drop-In Replacement}
 
 One of the original alternatives considered for polygonal patches was to use a
@@ -1337,7 +1375,7 @@ throughout the refinement sequence.
 Figure~\ref{fig:high-order-hdiv-convergence} shows the resulting relative
 directed target-edge flux error curves.  On quad-to-quad meshes, the observed
 average rates are \(2.26\), \(3.39\), and \(4.46\) for \(p=1,2,3\).  On the
-Voronoi-to-Voronoi sequence, the observed average rates are \(1.90\), \(2.77\),
+Voronoi-to-Voronoi sequence, the observed average rates are \(1.89\), \(2.77\),
 and \(3.34\) for \(p=1,2,3\).  The important point is that the harmonic
 baseline and split-moment enrichments show systematic order separation:
 enriching the edge moments and the split local space produces visibly steeper
@@ -1429,18 +1467,27 @@ from \(1.40\) to \(8.87\times10^{-2}\).  Thus the spherical extension is not
 merely conservative; on these smooth cubed-sphere tests it remains strongly
 convergent under refinement.
 
-The same cubed-sphere source-chart machinery was then exercised with the new
-split-moment family on the structured sequence
-\((4\to6), (6\to8), (8\to10), (10\to12)\).  For the zeroth edge moment, the
-average convergence rates are \(2.49\), \(3.80\), and \(2.42\) for
+The same cubed-sphere source-chart machinery was then exercised with the
+split-moment family using clean factor-of-2 refinement with non-commensurate
+source and target resolutions to avoid aliasing:
+\((4\to7), (8\to14), (16\to28)\).  For the zeroth edge moment, the
+average convergence rates are \(1.75\), \(3.08\), and \(4.57\) for
 \(p=1,2,3\).  When all transferred edge moments are included in the error norm,
-the corresponding average rates are \(2.49\), \(2.72\), and \(2.15\).  The
+the corresponding average rates are \(1.75\), \(3.07\), and \(4.09\).  The
 finest structured relative zeroth-moment errors are
-\(1.14\times10^{-2}\), \(6.36\times10^{-4}\), and \(2.24\times10^{-4}\) for
+\(5.22\times10^{-3}\), \(1.50\times10^{-4}\), and \(1.22\times10^{-5}\) for
 \(p=1,2,3\), and every structured case still reduces the conforming target-cell
-divergence residual to \(O(10^{-16})\).  This verifies that the higher-order
-split basis, the intrinsic great-circle edge moments, and the gnomonic/Piola
-transfer remain compatible on the sphere.
+divergence residual to \(O(10^{-16})\).
+
+The cubed-sphere \(p=3\) rate of \(4.57\) is a direct consequence of the
+degree-elevated basis described in Section~3.9: without the elevation, the
+\(O(h^3)\) Piola-rational approximation error limited the rate to \(\sim1.8\).
+The fine-pair rate is \(5.52\), indicating that the degree-elevated basis
+captures the Piola correction well enough for the actual convergence to
+approach \(O(h^5)\) at these resolutions.  This verifies that the higher-order
+split basis, the intrinsic great-circle edge moments, the metric-corrected
+orthogonalization, and the gnomonic/Piola transfer remain compatible on the
+sphere.
 
 \begin{figure}[t]
   \centering
@@ -1466,15 +1513,15 @@ Voronoi-to-Voronoi relative edge-flux error decreases from \(1.11\times10^{-2}\)
 to \(5.08\times10^{-3}\).
 
 The higher-order spherical study was then extended to deterministic Voronoi
-patch sequences \((25\to36), (49\to64), (81\to100), (121\to144)\).  For the
-zeroth edge moment, the average rates are \(2.08\), \(2.66\), and \(3.31\) for
+patch sequences using the same clean factor-of-2 refinement:
+\((16\to25), (64\to100), (256\to400)\), where cell counts quadruple
+at each level so that \(h\sim1/\sqrt{N}\) halves.  For the zeroth edge moment,
+the average rates are \(2.05\), \(2.52\), and \(3.62\) for
 \(p=1,2,3\).  For the all-moment norm, the corresponding rates are
-\(2.08\), \(2.22\), and \(2.04\).  The \(p=3\) moment-0 curve shows one
-finest-level uptick on this deterministic patch sequence, but the overall
-structured-versus-unstructured picture is still clear: the higher-order moment
-fits reduce the great-circle edge error by more than an order of magnitude
-relative to the harmonic \(p=1\) baseline, while the conforming target-edge
-projection keeps the target-cell divergence residual at roundoff.
+\(2.05\), \(2.52\), and \(3.46\).  The higher-order moment fits reduce the
+great-circle edge error by more than an order of magnitude relative to the
+harmonic \(p=1\) baseline, while the conforming target-edge projection keeps
+the target-cell divergence residual at roundoff.
 
 \begin{figure}[t]
   \centering
@@ -1495,20 +1542,22 @@ projection keeps the target-cell divergence residual at roundoff.
   \toprule
   Domain & Order & Final-level \(L^2_{\mathrm{rel}}\) moment-0 error & Average all-moment rate & Max conforming residual \\
   \midrule
-  Spherical cubed-sphere & \(p=1\) & \(1.14\times10^{-2}\) & \(2.49\) & \(1.25\times10^{-16}\) \\
-  Spherical cubed-sphere & \(p=2\) & \(6.36\times10^{-4}\) & \(2.72\) & \(1.11\times10^{-16}\) \\
-  Spherical cubed-sphere & \(p=3\) & \(2.24\times10^{-4}\) & \(2.15\) & \(1.32\times10^{-16}\) \\
-  Spherical Voronoi patch & \(p=1\) & \(4.46\times10^{-3}\) & \(2.08\) & \(5.55\times10^{-17}\) \\
-  Spherical Voronoi patch & \(p=2\) & \(3.00\times10^{-4}\) & \(2.22\) & \(9.71\times10^{-17}\) \\
-  Spherical Voronoi patch & \(p=3\) & \(2.49\times10^{-5}\) & \(2.04\) & \(6.94\times10^{-17}\) \\
+  Spherical cubed-sphere & \(p=1\) & \(5.22\times10^{-3}\) & \(1.75\) & \(3.01\times10^{-17}\) \\
+  Spherical cubed-sphere & \(p=2\) & \(1.50\times10^{-4}\) & \(3.07\) & \(2.95\times10^{-17}\) \\
+  Spherical cubed-sphere & \(p=3\) & \(1.22\times10^{-5}\) & \(4.09\) & \(3.12\times10^{-17}\) \\
+  Spherical Voronoi patch & \(p=1\) & \(2.20\times10^{-3}\) & \(2.05\) & \(3.12\times10^{-17}\) \\
+  Spherical Voronoi patch & \(p=2\) & \(1.49\times10^{-4}\) & \(2.52\) & \(2.60\times10^{-17}\) \\
+  Spherical Voronoi patch & \(p=3\) & \(9.88\times10^{-6}\) & \(3.46\) & \(2.95\times10^{-17}\) \\
   \bottomrule
   \end{tabular}
   \caption{Spherical high-order split-moment convergence summary.  The
   tabulated finest errors are the final-level zeroth-moment edge errors from
   the structured and Voronoi-patch sequences, while the reported rates are the
-  average all-moment convergence rates over the full refinement sequence.  The
-  conforming target-edge projection keeps the target-cell divergence residual at
-  roundoff throughout.}
+  average all-moment convergence rates over the full clean factor-of-2
+  refinement sequence.  Cubed-sphere \(p=3\) uses degree-elevated basis
+  (\([\mathbb{P}_{p+2}]^2\)) to capture the Piola rational correction.
+  The conforming target-edge projection keeps the target-cell divergence
+  residual at roundoff throughout.}
   \label{tab:spherical-high-order-hdiv}
 \end{table}
 
@@ -1714,22 +1763,35 @@ space while keeping the zeroth edge moment exact as a hard constraint, the
 method achieves clear order separation on nonmatching polygon patches.  The
 quad-to-quad study yields average relative edge-flux rates of \(2.26\),
 \(3.39\), and \(4.46\) for \(p=1,2,3\).  On the current Voronoi-to-Voronoi
-sequence, the corresponding rates are \(1.90\), \(2.77\), and \(3.34\).  These
+sequence, the corresponding rates are \(1.89\), \(2.77\), and \(3.34\).  These
 results show that higher-order accuracy can be added without sacrificing
 machine-precision conservation of the primary edge-flux DOF.  The same
-hierarchy now also has verified spherical convergence studies: on the
-cubed-sphere sequence the zeroth-moment rates are \(2.49\), \(3.80\), and
-\(2.42\), while on the deterministic spherical Voronoi-patch sequence they are
-\(2.08\), \(2.66\), and \(3.31\).
+hierarchy now also has verified spherical convergence studies using clean
+factor-of-2 refinement with non-commensurate source and target meshes: on the
+cubed-sphere sequence the zeroth-moment rates are \(1.75\), \(3.08\), and
+\(4.57\), while on the deterministic spherical Voronoi-patch sequence they are
+\(2.05\), \(2.52\), and \(3.62\).  The cubed-sphere \(p=3\) rate of \(4.57\) is
+achieved via degree elevation of the polynomial basis by two orders, which
+captures the leading rational correction from the contravariant Piola mapping.
 
 The added spherical diagnostics sharpen the interpretation of the method.
 Switching the cell-centered \(L^1\) norm to physical spherical area is a
-necessary diagnostic correction.  Metric-weighting the reconstruction norm is a
-real but modest improvement.  It reduces the coarse structured-sphere edge error
-without changing the underlying convergence trend or the conservative invariants.
-Thus the current spherical backend is better characterized as a conservative and
-already strongly convergent low-order compatible transfer, not as a method whose
-accuracy is fundamentally blocked by the choice of gnomonic chart.
+necessary diagnostic correction.  Metric-weighting the reconstruction Gram
+matrix using the Hodge/Piola tensor ensures the constrained least-squares solve
+minimizes the correct surface energy functional.  The metric-corrected basis
+orthogonalization ensures the split-basis subspaces are properly separated in
+the surface inner product.
+
+The key accuracy advance on the sphere is the degree-elevated basis for
+\(p\ge3\).  The exact surface field in gnomonic chart coordinates is rational
+(the Piola mapping involves \(J/|J|\) with \(|J|=(1+|\boldsymbol{\xi}|^2)^{-3/2}\)),
+and a degree-\(p\) polynomial can approximate this rational field only to
+\(O(h_K^3)\) edge-flux accuracy.  Elevating the polynomial degree from~\(p\)
+to~\(p+2\) adds the \(|\boldsymbol{\xi}|^2\) correction modes needed to
+capture the leading rational term, breaking the \(O(h^3)\) floor and recovering
+the expected \(O(h^{p+1})\) asymptotic convergence.  The cubed-sphere \(p=3\)
+average rate improves from~1.77 (pre-elevation) to~4.57 (with elevation),
+with the fine-pair rate reaching~5.52.
 
 The Wachspress comparison clarifies the method selection.  Scalar Wachspress
 coordinates remain valuable for conforming H1 polygonal discretizations, but a

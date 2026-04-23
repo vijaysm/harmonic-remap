@@ -239,14 +239,16 @@ particularly for all-moment errors on cubed-sphere and Voronoi patches:
    `10 * V(i,i)`, which adapts to the actual magnitude of each mode rather
    than applying a uniform damping proportional to cell area.
 
-These changes improved spherical all-moment convergence rates:
+These changes improved spherical all-moment convergence rates (before degree
+elevation was also applied):
 
 - cubed-sphere p=2 all: 2.72 → 3.79
 - cubed-sphere p=3 all: 2.15 → 2.62
 - Voronoi-patch p=2 all: 2.22 → 2.70
 - Voronoi-patch p=3 all: 2.04 → 3.32
 
-Conservation residuals and moment-0 rates were unaffected.
+Conservation residuals and moment-0 rates were unaffected.  The degree
+elevation described below provides the final improvement for p=3.
 
 The convergence study now uses clean factor-of-2 refinement with
 non-commensurate source and target resolutions to avoid aliasing artifacts.
@@ -257,24 +259,23 @@ The current levels are:
 - Cubed-sphere: `{4,7}, {8,14}, {16,28}` (h ~ 1/n, doubling n)
 - Voronoi: `{16,25}, {64,100}, {256,400}` (h ~ 1/sqrt(N), quadrupling N)
 
-## Pre-Asymptotic Regime on Cubed-Sphere p=3
+## Pre-Asymptotic Regime on Cubed-Sphere p=3 (Resolved)
 
-The cubed-sphere p=3 moment-0 convergence rate (~1.77 average) is well below
-the expected O(h^4).  This is a pre-asymptotic effect caused by the gnomonic
-chart distortion: the harmonic basis functions P_k, Q_k are Euclidean
-harmonic (solutions of the flat Laplacian), but the chart inner product
-involves the Hodge metric J^T J / |J|.  At p=3, the O(h^2) error from this
-variational crime dominates the O(h^4) asymptotic term on the mesh sizes
-accessible with the current all-pairs search.
+Before degree elevation, the cubed-sphere p=3 moment-0 convergence rate
+(~1.77 average) was well below the expected O(h^4).  This was a
+pre-asymptotic effect caused by the gnomonic chart distortion: the flat-space
+polynomial basis could not approximate the rational Piola-pulled surface
+field beyond O(h^3) edge-flux accuracy.  The degree-elevated basis
+(described below) resolved this, raising the rate to 4.57.
 
-Evidence for pre-asymptotic behavior:
+Evidence for the pre-asymptotic behavior (prior to degree elevation):
 
-- The fine-pair rate (h=1/14 → 1/28) is ~2.55, trending upward toward the
+- The fine-pair rate (h=1/14 → 1/28) was ~2.55, trending upward toward the
   expected rate.
-- The coarse-pair rate (h=1/7 → 1/14) is ~0.99, indicating the error has not
+- The coarse-pair rate (h=1/7 → 1/14) was ~0.99, indicating the error had not
   yet entered the asymptotic regime.
 - Voronoi patches, which cover a smaller solid angle and thus have less metric
-  distortion, achieve p=3 rates of ~3.46.
+  distortion, achieved p=3 rates of ~3.46 even without degree elevation.
 
 ### Metric-Corrected Basis Orthogonalization
 
