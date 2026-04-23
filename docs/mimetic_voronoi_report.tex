@@ -1162,6 +1162,27 @@ of magnitude improvement consistent with the planar results.
   \label{fig:order-compare-spherical}
 \end{figure}
 
+Figure~\ref{fig:roundtrip} shows a round-trip transfer test: an exact
+\(\nabla_S Y_2^0\) field is set on a regular \(36\times18\) lat/lon grid,
+transferred to a cubed-sphere (\(n=10\)) intermediate mesh, reconstructed
+there, and transferred back to the original lat/lon grid.  The stereographic
+projection (from the south pole) provides a natural 2D view of the full
+sphere.  The round-trip error (max \(2.15\times10^{-1}\)) is concentrated
+at the poles (where lat/lon cells become degenerate triangles) and at
+cubed-sphere face boundaries (where the intermediate mesh changes chart
+alignment).
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{vis_roundtrip_latlon_cs_roundtrip.png}
+  \caption{Round-trip transfer: lat/lon \(\to\) cubed-sphere \(\to\) lat/lon
+  in stereographic projection.  Left: source exact divergence.  Center:
+  round-tripped divergence after two \(p=1\) transfers through a cubed-sphere
+  intermediate.  Right: round-trip error.  The lat/lon cells are great-circle
+  quadrilaterals with triangular polar caps.}
+  \label{fig:roundtrip}
+\end{figure}
+
 \subsection{High-Order Split-Moment Convergence}
 
 The high-order study applies Algorithm~\ref{alg:high-order-transfer} with a

@@ -298,12 +298,78 @@ def render_order_comparison(source_file: Path, output_dir: Path):
     print(f"Wrote {output_path}")
 
 
+def render_roundtrip(source_file: Path, output_dir: Path):
+    """Render 3-panel round-trip: source exact, round-tripped, error."""
+    base_name = source_file.name.replace("_source.txt", "")
+    target_p1_file = source_file.with_name(base_name + "_target_p1.txt")
+    target_exact_file = source_file.with_name(base_name + "_target_exact.txt")
+    if not target_p1_file.exists() or not target_exact_file.exists():
+        return
+
+    src_polys, src_vals = read_mesh(source_file)
+    tgt_polys, tgt_vals = read_mesh(target_p1_file)
+    _, tgt_exact_vals = read_mesh(target_exact_file)
+    error = tgt_vals - tgt_exact_vals
+
+    all_coords = np.concatenate([np.array(p) for p in src_polys + tgt_polys if len(p) >= 3])
+    xlo, ylo = all_coords.min(axis=0) - 0.05
+    xhi, yhi = all_coords.max(axis=0) + 0.05
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5.5))
+
+    vmin = min(src_vals.min(), tgt_vals.min(), tgt_exact_vals.min())
+    vmax = max(src_vals.max(), tgt_vals.max(), tgt_exact_vals.max())
+    err_max = max(np.abs(error).max(), 1.0e-16)
+
+    panels = [
+        (axes[0], src_polys, src_vals, "viridis", (vmin, vmax), "Source Exact Divergence"),
+        (axes[1], tgt_polys, tgt_vals, "viridis", (vmin, vmax), "Round-Tripped Divergence"),
+        (axes[2], tgt_polys, error, "RdBu_r", (-err_max, err_max),
+         f"Round-Trip Error (max: {np.abs(error).max():.2e})"),
+    ]
+
+    value_mappable = None
+    error_mappable = None
+    for ax, polys, values, cmap, clim, title in panels:
+        coll = PolyCollection(polys, array=values, cmap=cmap, edgecolors="k", linewidths=0.3)
+        coll.set_clim(*clim)
+        ax.add_collection(coll)
+        ax.set_xlim(xlo, xhi)
+        ax.set_ylim(ylo, yhi)
+        ax.set_aspect("equal")
+        ax.set_title(title, fontsize=11)
+        if cmap == "viridis":
+            value_mappable = coll
+        else:
+            error_mappable = coll
+
+    if value_mappable is not None:
+        fig.colorbar(value_mappable, ax=axes[:2].tolist(),
+                     orientation="horizontal", fraction=0.06, pad=0.12,
+                     label="Cell-averaged divergence")
+    if error_mappable is not None:
+        fig.colorbar(error_mappable, ax=[axes[2]],
+                     orientation="horizontal", fraction=0.06, pad=0.12,
+                     label="Divergence error")
+
+    display_name = base_name.replace("vis_roundtrip_", "").replace("_", " ")
+    output_name = base_name.replace(": ", "__").replace(" ", "_")
+    fig.suptitle(f"Round-trip: {display_name} (stereographic projection)", fontsize=14)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / f"{output_name}_roundtrip.png"
+    fig.savefig(output_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Wrote {output_path}")
+
+
 def main():
     input_dir = Path(sys.argv[1]) if len(sys.argv) >= 2 else Path.cwd()
     output_dir = Path(sys.argv[2]) if len(sys.argv) >= 3 else input_dir
     for source_file in sorted(input_dir.glob("vis_*_source.txt")):
         if "order_compare" in source_file.name:
             render_order_comparison(source_file, output_dir)
+        elif "roundtrip" in source_file.name:
+            render_roundtrip(source_file, output_dir)
         else:
             render_triplet(source_file, output_dir)
             render_hdiv_comparison(source_file, output_dir)

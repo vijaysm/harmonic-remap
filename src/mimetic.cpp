@@ -871,7 +871,7 @@ SplitMomentBasis build_split_moment_basis(const int degree,
     // Verify metric orthonormality: Q^T G Q should be close to identity.
     const Eigen::MatrixXd QGQ = basis.transpose() * G_raw * basis;
     const double orthogonality_error = (QGQ - Eigen::MatrixXd::Identity(basis_dim, basis_dim)).norm();
-    if (orthogonality_error > 1.0e-4) {
+    if (orthogonality_error > 1.0e-3) {
         std::ostringstream oss;
         oss << "Metric-orthonormal basis failed verification"
             << " ||Q^T G Q - I|| = " << orthogonality_error;

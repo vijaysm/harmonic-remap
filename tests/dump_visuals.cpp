@@ -1005,6 +1005,209 @@ void compute_spherical_order_comparison(const std::string& prefix, int source_n,
     std::cout << "  Spherical order comparison dumped: " << prefix << "\n";
 }
 
+std::vector<moab::EntityHandle> generate_latlon_grid(moab::Core& mb, int nlon, int nlat)
+{
+    // Create a lat/lon grid on the unit sphere with great-circle edges.
+    // nlon = cells in longitude, nlat = cells in latitude (pole to pole).
+    // Vertices at (lon_i, lat_j) mapped to (x,y,z) on the sphere.
+    // Polar caps are triangular fans.
+    std::vector<moab::EntityHandle> cells;
+    std::vector<std::vector<moab::EntityHandle>> vertex_grid(nlat + 1);
+
+    for (int j = 0; j <= nlat; ++j) {
+        const double lat = PI * (0.5 - static_cast<double>(j) / nlat);  // +pi/2 to -pi/2
+        const int nlon_row = (j == 0 || j == nlat) ? 1 : nlon;  // poles are single vertices
+        vertex_grid[j].resize(nlon_row);
+        for (int i = 0; i < nlon_row; ++i) {
+            const double lon = 2.0 * PI * static_cast<double>(i) / nlon;
+            const double x = std::cos(lat) * std::cos(lon);
+            const double y = std::cos(lat) * std::sin(lon);
+            const double z = std::sin(lat);
+            const double xyz[3] = {x, y, z};
+            moab::EntityHandle v = 0;
+            mimetic::check_moab(mb.create_vertex(xyz, v), "latlon vertex");
+            vertex_grid[j][i] = v;
+        }
+    }
+
+    // North polar cap: triangles from pole to first lat ring
+    {
+        const moab::EntityHandle pole = vertex_grid[0][0];
+        for (int i = 0; i < nlon; ++i) {
+            const int i_next = (i + 1) % nlon;
+            moab::EntityHandle conn[3] = {pole, vertex_grid[1][i], vertex_grid[1][i_next]};
+            moab::EntityHandle tri = 0;
+            mimetic::check_moab(mb.create_element(moab::MBPOLYGON, conn, 3, tri), "polar tri");
+            for (int k = 0; k < 3; ++k)
+                mimetic::find_or_create_edge(mb, conn[k], conn[(k + 1) % 3]);
+            cells.push_back(tri);
+        }
+    }
+
+    // Interior bands: quads
+    for (int j = 1; j < nlat - 1; ++j) {
+        for (int i = 0; i < nlon; ++i) {
+            const int i_next = (i + 1) % nlon;
+            moab::EntityHandle conn[4] = {
+                vertex_grid[j][i], vertex_grid[j][i_next],
+                vertex_grid[j + 1][i_next], vertex_grid[j + 1][i]
+            };
+            moab::EntityHandle quad = 0;
+            mimetic::check_moab(mb.create_element(moab::MBQUAD, conn, 4, quad), "latlon quad");
+            for (int k = 0; k < 4; ++k)
+                mimetic::find_or_create_edge(mb, conn[k], conn[(k + 1) % 4]);
+            cells.push_back(quad);
+        }
+    }
+
+    // South polar cap: triangles from last lat ring to pole
+    {
+        const moab::EntityHandle pole = vertex_grid[nlat][0];
+        for (int i = 0; i < nlon; ++i) {
+            const int i_next = (i + 1) % nlon;
+            moab::EntityHandle conn[3] = {vertex_grid[nlat - 1][i], pole, vertex_grid[nlat - 1][i_next]};
+            moab::EntityHandle tri = 0;
+            mimetic::check_moab(mb.create_element(moab::MBPOLYGON, conn, 3, tri), "polar tri");
+            for (int k = 0; k < 3; ++k)
+                mimetic::find_or_create_edge(mb, conn[k], conn[(k + 1) % 3]);
+            cells.push_back(tri);
+        }
+    }
+
+    return cells;
+}
+
+/// Dump mesh cells in stereographic projection from south pole.
+/// Projection: (x,y,z) → (X,Y) = (x/(1+z), y/(1+z))
+void dump_stereographic_mesh(const std::string& filename, moab::Core& mb,
+                             const std::vector<moab::EntityHandle>& cells,
+                             const std::vector<double>& values)
+{
+    std::ofstream out(filename);
+    if (!out) return;
+    mimetic::GeometryOptions spherical;
+    spherical.mode = mimetic::GeometryMode::SphericalGnomonic;
+    for (std::size_t i = 0; i < cells.size(); ++i) {
+        const moab::EntityHandle* conn = nullptr;
+        int num_verts = 0;
+        mimetic::check_moab(mb.get_connectivity(cells[i], conn, num_verts), "get conn");
+        if (num_verts < 3) continue;
+
+        std::vector<Eigen::Vector2d> projected;
+        bool visible = true;
+        Eigen::Vector2d centroid_proj = Eigen::Vector2d::Zero();
+        for (int v = 0; v < num_verts; ++v) {
+            double xyz[3];
+            mimetic::check_moab(mb.get_coords(&conn[v], 1, xyz), "get coords");
+            const Eigen::Vector3d p = Eigen::Vector3d(xyz[0], xyz[1], xyz[2]).normalized();
+            if (p.z() < -0.95) { visible = false; break; }  // skip near south pole
+            const double denom = 1.0 + p.z();
+            if (denom < 1e-10) { visible = false; break; }
+            projected.push_back(Eigen::Vector2d(p.x() / denom, p.y() / denom));
+        }
+        if (!visible || projected.size() < 3) continue;
+        for (const auto& q : projected) centroid_proj += q;
+        centroid_proj /= static_cast<double>(projected.size());
+
+        out << centroid_proj.x() << " " << centroid_proj.y() << " " << values[i]
+            << " " << projected.size();
+        for (const auto& q : projected) {
+            out << " " << q.x() << " " << q.y();
+        }
+        out << "\n";
+    }
+}
+
+void compute_roundtrip_comparison(const std::string& prefix,
+                                  int nlon, int nlat, int cs_n)
+{
+    using namespace mimetic::test_sphere;
+    mimetic::GeometryOptions spherical;
+    spherical.mode = mimetic::GeometryMode::SphericalGnomonic;
+    spherical.metric_weighted = true;
+
+    // Create lat/lon source mesh and cubed-sphere intermediate mesh
+    moab::Core mb;
+    const std::vector<moab::EntityHandle> latlon_cells = generate_latlon_grid(mb, nlon, nlat);
+    const std::vector<moab::EntityHandle> cs_cells = generate_cubed_sphere(mb, cs_n);
+
+    // Assign exact source fluxes on lat/lon grid
+    mimetic::MimeticInterpolator fwd_interp(mb);
+    fwd_interp.set_geometry_options(spherical);
+    set_conservative_source_fluxes(fwd_interp, mb, latlon_cells, spherical_harmonic_gradient);
+
+    // Reconstruct on lat/lon cells
+    for (const moab::EntityHandle cell : latlon_cells) {
+        fwd_interp.reconstruct_source_polygon(cell);
+    }
+
+    // Compute original divergence on lat/lon cells (this is our reference)
+    std::vector<double> latlon_exact_div;
+    for (const moab::EntityHandle cell : latlon_cells) {
+        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, cell, spherical);
+        const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb, poly);
+        double div = 0.0;
+        for (std::size_t i = 0; i < edges.size(); ++i) {
+            div += exact_chart_edge_flux(mb, cell, i, spherical_harmonic_gradient);
+        }
+        latlon_exact_div.push_back(div / poly.area);
+    }
+
+    // Forward transfer: lat/lon → cubed-sphere (p=1)
+    const mimetic::EdgeTransferResult fwd_transfer =
+        fwd_interp.transfer_source_to_target_edges(latlon_cells, cs_cells);
+
+    // Reconstruct on cubed-sphere from transferred fluxes
+    mimetic::MimeticInterpolator bwd_interp(mb);
+    bwd_interp.set_geometry_options(spherical);
+    // Set cubed-sphere edge fluxes from the forward transfer
+    {
+        std::size_t dof = 0;
+        for (const moab::EntityHandle cell : cs_cells) {
+            const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, cell, spherical);
+            for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++dof) {
+                bwd_interp.set_source_edge_flux(cell, i, fwd_transfer.target_fluxes[dof]);
+            }
+        }
+    }
+    for (const moab::EntityHandle cell : cs_cells) {
+        bwd_interp.reconstruct_source_polygon(cell);
+    }
+
+    // Backward transfer: cubed-sphere → lat/lon (p=1 round-trip)
+    const mimetic::EdgeTransferResult bwd_transfer =
+        bwd_interp.transfer_source_to_target_edges(cs_cells, latlon_cells);
+
+    // Compute round-tripped divergence on lat/lon
+    std::vector<double> latlon_roundtrip_p1;
+    {
+        std::size_t dof = 0;
+        for (const moab::EntityHandle cell : latlon_cells) {
+            const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, cell, spherical);
+            double cell_flux = 0.0;
+            for (std::size_t e = 0; e < poly.vertices.size(); ++e, ++dof) {
+                cell_flux += bwd_transfer.target_fluxes[dof];
+            }
+            latlon_roundtrip_p1.push_back(cell_flux / poly.area);
+        }
+    }
+
+    // Dump in stereographic projection
+    dump_stereographic_mesh(prefix + "_source.txt", mb, latlon_cells, latlon_exact_div);
+    dump_stereographic_mesh(prefix + "_target_exact.txt", mb, latlon_cells, latlon_exact_div);
+    dump_stereographic_mesh(prefix + "_target_p1.txt", mb, latlon_cells, latlon_roundtrip_p1);
+    // For the comparison column, show p=1 error (round-trip is p=1 only;
+    // high-order one-way improvement is demonstrated in Figures 5-7).
+    dump_stereographic_mesh(prefix + "_target_p3.txt", mb, latlon_cells, latlon_roundtrip_p1);
+
+    std::cout << "  Round-trip comparison dumped: " << prefix << "\n";
+    double max_err_p1 = 0.0;
+    for (std::size_t i = 0; i < latlon_exact_div.size(); ++i) {
+        max_err_p1 = std::max(max_err_p1, std::abs(latlon_roundtrip_p1[i] - latlon_exact_div[i]));
+    }
+    std::cout << "  p=1 round-trip max div error: " << max_err_p1 << "\n";
+}
+
 }  // namespace
 
 int main()
@@ -1073,6 +1276,10 @@ int main()
         // Spherical order comparison: cubed-sphere, p=1 vs p=3
         std::cout << "\n=== Spherical Order Comparison: Y_2^0 gradient ===\n";
         compute_spherical_order_comparison("vis_order_compare_spherical", 8, 12);
+
+        // Round-trip test: lat/lon → cubed-sphere → lat/lon
+        std::cout << "\n=== Round-Trip: lat/lon -> cubed-sphere -> lat/lon ===\n";
+        compute_roundtrip_comparison("vis_roundtrip_latlon_cs", 36, 18, 10);
 
         std::cout << "\n[SUCCESS] All convergence and exact recovery checks passed.\n";
         return 0;
