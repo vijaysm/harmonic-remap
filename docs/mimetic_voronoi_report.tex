@@ -780,14 +780,14 @@ polygonal bases \cite{GilletteRandBajaj2016}.
 \ENSURE  Target edge fluxes \(U^t_e\) and sparse matrix \(P\) such that \(U_t = P U_s\)
 \STATE Enumerate directed source-cell and target-cell edge DOFs
 \FOR{each source cell \(K_s\)}
-  \STATE Build local reconstruction matrix \(B_{K_s}\) \hfill\COMMENT{Eq.~\eqref{eq:local_reconstruction_matrix}}
+  \STATE Build local reconstruction matrix \(B_K\) \hfill\COMMENT{Eq.~\eqref{eq:local_reconstruction_matrix}}
 \ENDFOR
 \FOR{each directed target edge \(e_t\)}
   \FOR{each source cell \(K_s\)}
     \STATE Clip \(e_t\) against \(K_s\) \(\to\) clipped segment \(\gamma\)
     \IF{\(\gamma\) is non-empty}
-      \STATE \(U^t_{e_t} \mathrel{+}= \int_\gamma \uh_{K_s} \cdot \n_t \, ds\) \hfill\COMMENT{Eq.~\eqref{eq:edge_transfer}}
-      \STATE \(P(e_t, :) \mathrel{+}= L_{\gamma,K_s} B_{K_s}\) \hfill\COMMENT{Eq.~\eqref{eq:sparse_projection}}
+      \STATE \(U^t_{e} \mathrel{+}= \int_\gamma {\uh}_K \cdot \n_t \, ds\) \hfill\COMMENT{Eq.~\eqref{eq:edge_transfer}}
+      \STATE \(P(e, :) \mathrel{+}= L_\gamma B_K\) \hfill\COMMENT{Eq.~\eqref{eq:sparse_projection}}
     \ENDIF
   \ENDFOR
 \ENDFOR
@@ -826,7 +826,7 @@ polygonal bases \cite{GilletteRandBajaj2016}.
 \ENSURE  Conforming target-edge fluxes \(u^{\mathrm{conf}}\) with exact cell divergence
 \STATE Collapse directed target edges to unique geometric edges; assign canonical orientations \(\sigma_e \in \{-1,+1\}\)
 \STATE Form directed-edge map \(B\), cell-edge incidence \(A\), diagonal \(H = B^T B\)
-\STATE Assemble divergence RHS: \(b_t = \sum_{K_s} d_s |K_t \cap K_s|\) \hfill\COMMENT{Eq.~\eqref{eq:target_divergence_rhs}}
+\STATE Assemble divergence RHS: \(b_t = \sum_K d_K |K_t \cap K|\) \hfill\COMMENT{Eq.~\eqref{eq:target_divergence_rhs}}
 \STATE Solve via Schur complement: \(A H^{-1} A^T \lambda = A H^{-1} g - b\) \hfill\COMMENT{Eq.~\eqref{eq:hdiv_projection_schur}}
 \STATE \(x \leftarrow H^{-1}(g - A^T \lambda)\); \quad \(u^{\mathrm{conf}} \leftarrow Bx\)
 \STATE Verify \(\|Ax - b\|_\infty \le 5\times10^{-13}\)
