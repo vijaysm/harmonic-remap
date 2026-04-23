@@ -276,9 +276,67 @@ Evidence for pre-asymptotic behavior:
 - Voronoi patches, which cover a smaller solid angle and thus have less metric
   distortion, achieve p=3 rates of ~3.46.
 
-The remedy is to use surface-adapted basis functions (e.g., spherical harmonics
-projected onto the chart) instead of flat-space harmonics, which would eliminate
-the O(h^2) variational crime.  This is tracked as a future improvement.
+### Metric-Corrected Basis Orthogonalization
+
+The split moment basis is now orthonormalized against the metric-weighted
+Gram matrix `G_raw` rather than the Euclidean identity.  The function
+`build_split_moment_basis()` accepts G_raw as input and uses a new helper
+`metric_orthonormal_column_basis()` that performs eigendecomposition of the
+block Gram `M^T G M` to produce mode vectors satisfying `Q^T G Q = I`.
+
+Cross-block orthogonality is enforced sequentially: harmonic modes are
+projected against divergence modes before orthonormalization, and bubble
+modes are projected against both divergence and harmonic blocks.  The
+per-row polynomial scaling (by `local_length_scale`) is applied before
+orthogonalization so mode vectors and G_raw are in the same coordinate
+system.
+
+This change ensures the KKT and constrained least-squares solves operate
+with the correct surface inner product.  However, experiments confirmed
+that the spherical p=3 convergence rates are unchanged: the O(h^2) error
+floor is caused by the **basis span** (flat-space polynomials), not by the
+inner product used within that span.  The chart-coordinate polynomial
+basis can only approximate the exact surface field (which is a rational
+function of chart coordinates) to polynomial accuracy, and this
+approximation has an irreducible O(h^{degree+1}) component that for p>=3
+is dominated by the O(h^3) rational-to-polynomial approximation error on
+cells subtending ~10-15 degrees.
+
+### Root Cause: Basis Span Limitation
+
+The exact surface vector field, when expressed in gnomonic chart
+coordinates via the Piola pullback, is a rational function of (x,y)
+because the Piola mapping involves `1/|ray|^3`.  Polynomial vector fields
+in the chart coordinates can approximate this rational field, but the
+approximation error is controlled by the metric variation across each
+cell, which is O(h^2) in the chart coordinates.
+
+For an edge flux integral of this approximation error, the total error
+scales as O(h^2) × O(h) = O(h^3).  This is:
+- negligible for p=1 (asymptotic O(h^2) dominates)
+- comparable for p=2 (O(h^3) matches asymptotic)
+- dominant for p=3 (O(h^3) beats asymptotic O(h^4))
+
+The Voronoi patches confirm this: they subtend a smaller solid angle
+(~0.55 rad vs ~1.57 rad for a cubed-sphere face), reducing the metric
+variation constant by ~(0.55/1.57)^2 ≈ 0.12, which pushes the crossover
+to finer meshes and allows p=3 rates of ~3.46 to be observed.
+
+### Path Forward
+
+To achieve O(h^{p+1}) convergence for arbitrary p on large spherical
+cells, the basis must be enriched with metric-correction terms.  Two
+approaches are viable:
+
+1. **Metric-augmented polynomial basis**: add modes of the form
+   `|ξ|^2 v_j(ξ)` that capture the leading-order rational correction.
+   This increases the basis dimension by a factor of ~2 but extends the
+   polynomial approximation to rational functions.
+
+2. **Surface-harmonic basis**: replace flat P_k, Q_k with projections of
+   spherical harmonics onto the gnomonic chart.  This gives exact
+   surface-harmonic modes at the chart center and O(h^k) accuracy at
+   distance h for a k-term expansion.
 
 ## Current Numerical Caveats
 

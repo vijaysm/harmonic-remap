@@ -667,6 +667,56 @@ Eigen::MatrixXd nullspace_basis(const Eigen::MatrixXd& matrix, const double tole
     return svd.matrixV().rightCols(matrix.cols() - rank);
 }
 
+/// Orthonormalize mode vectors with respect to a metric Gram matrix G.
+///
+/// Given a matrix M whose columns are mode vectors in scaled raw-monomial
+/// coordinates, compute Q such that Q^T G Q = I, where Q spans the same
+/// column space as M (up to rank tolerance).
+///
+/// When G is the identity, this is equivalent to orthonormal_column_basis().
+Eigen::MatrixXd metric_orthonormal_column_basis(const Eigen::MatrixXd& modes,
+                                                const Eigen::MatrixXd& G,
+                                                const double tolerance)
+{
+    if (modes.cols() == 0) {
+        return Eigen::MatrixXd::Zero(modes.rows(), 0);
+    }
+
+    // Block Gram matrix in the mode subspace: Gb = M^T G M
+    const Eigen::MatrixXd Gb = modes.transpose() * G * modes;
+
+    // Eigendecompose the SPD block Gram matrix
+    const Eigen::SelfAdjointEigenSolver<Eigen::MatrixXd> eig(Gb);
+    if (eig.info() != Eigen::Success) {
+        throw std::runtime_error("Eigendecomposition failed in metric_orthonormal_column_basis");
+    }
+
+    // Threshold eigenvalues to determine rank
+    const double max_eigenvalue = eig.eigenvalues().maxCoeff();
+    const double threshold = tolerance * std::max(max_eigenvalue, 1.0e-30);
+    Eigen::Index rank = 0;
+    for (Eigen::Index i = 0; i < eig.eigenvalues().size(); ++i) {
+        if (eig.eigenvalues()(i) > threshold) {
+            ++rank;
+        }
+    }
+
+    if (rank == 0) {
+        return Eigen::MatrixXd::Zero(modes.rows(), 0);
+    }
+
+    // Build metric-orthonormal basis: Q = M * V_kept * D_kept^{-1/2}
+    // Eigenvalues are sorted ascending, so kept columns are the last 'rank' ones.
+    const Eigen::Index skip = eig.eigenvalues().size() - rank;
+    const Eigen::MatrixXd V_kept = eig.eigenvectors().rightCols(rank);
+    Eigen::VectorXd D_inv_sqrt(rank);
+    for (Eigen::Index i = 0; i < rank; ++i) {
+        D_inv_sqrt(i) = 1.0 / std::sqrt(eig.eigenvalues()(skip + i));
+    }
+
+    return modes * V_kept * D_inv_sqrt.asDiagonal();
+}
+
 struct SplitMomentBasis {
     Eigen::MatrixXd raw_coordinates;
     int divergence_mode_count = 0;
@@ -742,14 +792,30 @@ Eigen::MatrixXd divergence_operator_physical(const int degree,
     return divergence;
 }
 
+/// Apply per-row polynomial scaling to mode vectors so they match the
+/// scaled-coordinate convention used by vector_basis_value() and G_raw.
+void apply_mode_scaling(Eigen::MatrixXd& modes,
+                        const std::vector<VectorBasisTerm>& raw_basis,
+                        const double scale)
+{
+    for (std::size_t row = 0; row < raw_basis.size(); ++row) {
+        const int total_degree = raw_basis[row].a + raw_basis[row].b;
+        if (total_degree > 0) {
+            modes.row(static_cast<Eigen::Index>(row)) *= std::pow(scale, total_degree);
+        }
+    }
+}
+
 SplitMomentBasis build_split_moment_basis(const int degree,
                                           const int harmonic_degree_option,
                                           const std::vector<VectorBasisTerm>& raw_basis,
-                                          const double scale)
+                                          const double scale,
+                                          const Eigen::MatrixXd& G_raw)
 {
     const double tolerance = 1.0e-12;
     const Eigen::Index raw_dim = static_cast<Eigen::Index>(raw_basis.size());
 
+    // Stage 1: Divergence-particular modes.
     Eigen::MatrixXd divergence_modes = Eigen::MatrixXd::Zero(raw_dim,
                                                              std::max(0, scalar_monomial_basis_count(degree - 1)));
     int divergence_col = 0;
@@ -759,8 +825,11 @@ SplitMomentBasis build_split_moment_basis(const int degree,
             divergence_modes.col(divergence_col) = divergence_particular_mode_physical(raw_basis, a, b);
         }
     }
-    const Eigen::MatrixXd divergence_block = orthonormal_column_basis(divergence_modes, tolerance);
+    apply_mode_scaling(divergence_modes, raw_basis, scale);
+    const Eigen::MatrixXd divergence_block = metric_orthonormal_column_basis(divergence_modes, G_raw, tolerance);
 
+    // Stage 2: Harmonic-gradient modes.
+    // Project out divergence_block first to ensure mutual metric-orthogonality.
     const int harmonic_degree = (harmonic_degree_option > 0)
         ? std::min(harmonic_degree_option, degree + 1)
         : (degree + 1);
@@ -770,15 +839,27 @@ SplitMomentBasis build_split_moment_basis(const int degree,
         harmonic_modes.col(harmonic_col++) = harmonic_gradient_mode_physical(raw_basis, k, false);
         harmonic_modes.col(harmonic_col++) = harmonic_gradient_mode_physical(raw_basis, k, true);
     }
-    const Eigen::MatrixXd harmonic_block = orthonormal_column_basis(harmonic_modes, tolerance);
+    apply_mode_scaling(harmonic_modes, raw_basis, scale);
+    if (divergence_block.cols() > 0 && harmonic_modes.cols() > 0) {
+        harmonic_modes -= divergence_block * (divergence_block.transpose() * G_raw * harmonic_modes);
+    }
+    const Eigen::MatrixXd harmonic_block = metric_orthonormal_column_basis(harmonic_modes, G_raw, tolerance);
 
+    // Stage 3: Divergence-free completion (bubble) modes.
+    // The divergence operator is algebraic -- its nullspace is metric-independent.
     const Eigen::MatrixXd divergence_operator = divergence_operator_physical(degree, raw_basis);
     Eigen::MatrixXd bubble_candidates = nullspace_basis(divergence_operator, tolerance);
-    if (harmonic_block.cols() > 0 && bubble_candidates.cols() > 0) {
-        bubble_candidates -= harmonic_block * (harmonic_block.transpose() * bubble_candidates);
+    apply_mode_scaling(bubble_candidates, raw_basis, scale);
+    // Project out both divergence and harmonic subspaces using the metric inner product.
+    if (divergence_block.cols() > 0 && bubble_candidates.cols() > 0) {
+        bubble_candidates -= divergence_block * (divergence_block.transpose() * G_raw * bubble_candidates);
     }
-    const Eigen::MatrixXd bubble_block = orthonormal_column_basis(bubble_candidates, tolerance);
+    if (harmonic_block.cols() > 0 && bubble_candidates.cols() > 0) {
+        bubble_candidates -= harmonic_block * (harmonic_block.transpose() * G_raw * bubble_candidates);
+    }
+    const Eigen::MatrixXd bubble_block = metric_orthonormal_column_basis(bubble_candidates, G_raw, tolerance);
 
+    // Assemble the full basis.
     Eigen::MatrixXd basis = Eigen::MatrixXd::Zero(raw_dim,
                                                   divergence_block.cols() + harmonic_block.cols() + bubble_block.cols());
     basis.block(0, 0, raw_dim, divergence_block.cols()) = divergence_block;
@@ -795,21 +876,14 @@ SplitMomentBasis build_split_moment_basis(const int degree,
         throw std::runtime_error(oss.str());
     }
 
-    for (std::size_t row = 0; row < raw_basis.size(); ++row) {
-        const int total_degree = raw_basis[row].a + raw_basis[row].b;
-        basis.row(static_cast<Eigen::Index>(row)) *= std::pow(scale, total_degree);
-    }
-
-    for (Eigen::Index col = 0; col < basis.cols(); ++col) {
-        const double norm = basis.col(col).norm();
-        if (norm > tolerance) {
-            basis.col(col) /= norm;
-        }
-    }
-
-    const Eigen::ColPivHouseholderQR<Eigen::MatrixXd> qr(basis);
-    if (qr.rank() != raw_dim) {
-        throw std::runtime_error("Unified split basis is rank-deficient");
+    // Verify metric orthonormality: Q^T G Q should be close to identity.
+    const Eigen::MatrixXd QGQ = basis.transpose() * G_raw * basis;
+    const double orthogonality_error = (QGQ - Eigen::MatrixXd::Identity(raw_dim, raw_dim)).norm();
+    if (orthogonality_error > 1.0e-6) {
+        std::ostringstream oss;
+        oss << "Metric-orthonormal basis failed verification"
+            << " ||Q^T G Q - I|| = " << orthogonality_error;
+        throw std::runtime_error(oss.str());
     }
 
     SplitMomentBasis split;
@@ -2512,18 +2586,13 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
         (cell_moment_order >= 0) ? vector_moment_basis_count(cell_moment_order) : 0;
     const int C = static_cast<int>(edges.size()) * (options.edge_moment_order + 1) +
                   2 * num_cell_scalar_moments;
-    const SplitMomentBasis split_basis =
-        build_split_moment_basis(vector_degree, options.harmonic_degree, raw_basis, scale_length);
-    const int B = static_cast<int>(split_basis.raw_coordinates.cols());
-
-    Eigen::MatrixXd G_raw = Eigen::MatrixXd::Zero(raw_dim, raw_dim);
-    Eigen::MatrixXd A_raw = Eigen::MatrixXd::Zero(C, raw_dim);
-    Eigen::VectorXd moments = Eigen::VectorXd::Zero(C);
-    Eigen::VectorXd row_weights = Eigen::VectorXd::Ones(C);
 
     const bool use_surface_metric = options_.metric_weighted && options_.mode == GeometryMode::SphericalGnomonic;
     const GnomonicFrame gram_frame{poly.n, poly.e_x, poly.e_y, options_.radius};
 
+    // Compute the metric-weighted Gram matrix BEFORE building the split basis,
+    // so the basis can be orthonormalized against the correct inner product.
+    Eigen::MatrixXd G_raw = Eigen::MatrixXd::Zero(raw_dim, raw_dim);
     for (int i = 0; i < raw_dim; ++i) {
         for (int j = 0; j < raw_dim; ++j) {
             G_raw(i, j) = integrate_polygon_scalar_duffy(edges, quadrature, [&](const Eigen::Vector2d& p) {
@@ -2537,6 +2606,14 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
             });
         }
     }
+
+    const SplitMomentBasis split_basis =
+        build_split_moment_basis(vector_degree, options.harmonic_degree, raw_basis, scale_length, G_raw);
+    const int B = static_cast<int>(split_basis.raw_coordinates.cols());
+
+    Eigen::MatrixXd A_raw = Eigen::MatrixXd::Zero(C, raw_dim);
+    Eigen::VectorXd moments = Eigen::VectorXd::Zero(C);
+    Eigen::VectorXd row_weights = Eigen::VectorXd::Ones(C);
 
     int row = 0;
     for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
