@@ -1051,16 +1051,29 @@ std::vector<double> roundtrip_p3(moab::Core& mb_shared,
     }
 
     // Transfer cell vector moments from source to intermediate using
-    // the forward reconstruction (provides the missing interior constraints).
+    // the forward reconstruction (provides interior constraints for
+    // cells with insufficient edge data).
     const int cmo = std::max(1, opts.edge_moment_order - 1);
     const auto cell_moments =
         fwd.transfer_source_to_target_cell_moments(src_fwd, inter_fwd, cmo);
 
-    // Edge moments were already set on bwd above. Now add cell moments.
-
-    // Set transferred cell moments on the backward interpolator's intermediate cells.
-    // inter_fwd and inter_bwd are duplicate meshes; match by index.
+    // Adaptive per-cell reconstruction:
+    // - Cells with >= (p+1)(p+2)/(p+1) = p+2 edges: edge moments alone suffice.
+    //   Use cell_weight = 0 to avoid polluting with approximate cell moments.
+    // - Cells with fewer edges: use transferred cell moments to fill the gap.
+    const int p = opts.edge_moment_order;
+    const int basis_dim = (p + 1) * (p + 2);  // dim([P_p]^2)
     for (std::size_t ci = 0; ci < inter_fwd.size(); ++ci) {
+        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb_bwd, inter_bwd[ci], bwd_geo);
+        const int n_edges = static_cast<int>(poly.vertices.size());
+        const int edge_constraints = n_edges * (p + 1);
+
+        mimetic::MomentMethodOptions bwd_opts = opts;
+        if (edge_constraints >= basis_dim) {
+            // Enough edge constraints: ignore cell moments
+            bwd_opts.cell_weight = 0.0;
+        }
+
         const auto it = cell_moments.find(inter_fwd[ci]);
         if (it != cell_moments.end()) {
             bwd.set_source_cell_vector_moments(inter_bwd[ci], it->second);
@@ -1070,10 +1083,8 @@ std::vector<double> roundtrip_p3(moab::Core& mb_shared,
             bwd.set_source_cell_vector_moments(inter_bwd[ci],
                 std::vector<Eigen::Vector2d>(n_cm, Eigen::Vector2d::Zero()));
         }
+        bwd.reconstruct_source_polygon(inter_bwd[ci], bwd_opts);
     }
-
-    for (const moab::EntityHandle cell : inter_bwd)
-        bwd.reconstruct_source_polygon(cell, opts);
 
     // Transfer back: intermediate → source (p=3 moments)
     const mimetic::EdgeMomentTransferResult bwd_xfer =
