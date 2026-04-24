@@ -936,11 +936,12 @@ std::vector<moab::EntityHandle> duplicate_mesh(moab::Core& src_mb,
     return result;
 }
 
-/// Helper: set exact p=3 edge moments and cell vector moments on cells.
-void set_exact_p3_moments(moab::Core& mb,
-                          mimetic::PlanarMomentInterpolator& interp,
-                          const std::vector<moab::EntityHandle>& cells,
-                          const mimetic::GeometryOptions& spherical)
+/// Helper: set exact edge moments and cell vector moments on cells at given order.
+void set_exact_moments(moab::Core& mb,
+                       mimetic::PlanarMomentInterpolator& interp,
+                       const std::vector<moab::EntityHandle>& cells,
+                       const mimetic::GeometryOptions& spherical,
+                       int order)
 {
     using namespace mimetic::test_sphere;
     for (const moab::EntityHandle cell : cells) {
@@ -951,8 +952,8 @@ void set_exact_p3_moments(moab::Core& mb,
             const Eigen::Vector3d a3 = poly.points_3d[ei].normalized();
             const Eigen::Vector3d b3 = poly.points_3d[(ei + 1) % poly.points_3d.size()].normalized();
             const double total_angle = std::acos(std::max(-1.0, std::min(1.0, a3.dot(b3))));
-            std::vector<double> moments(4, 0.0);
-            for (int deg = 0; deg <= 3; ++deg) {
+            std::vector<double> moments(static_cast<std::size_t>(order + 1), 0.0);
+            for (int deg = 0; deg <= order; ++deg) {
                 moments[deg] = integrate_edge_gauss16(edges[ei].a, edges[ei].b,
                     [&](const Eigen::Vector2d& p_local) {
                         const Eigen::Vector2d xi = p_local + poly.centroid;
@@ -972,8 +973,9 @@ void set_exact_p3_moments(moab::Core& mb,
             }
             interp.set_source_edge_moments(cell, ei, moments);
         }
+        const int cmo = std::max(1, order - 1);
         std::vector<Eigen::Vector2d> cm;
-        for (int td = 0; td <= 2; ++td) {
+        for (int td = 0; td <= cmo; ++td) {
             for (int a = td; a >= 0; --a) {
                 const int b = td - a;
                 double mx = 0, my = 0;
@@ -1005,15 +1007,16 @@ void set_exact_p3_moments(moab::Core& mb,
 /// cell vector moments computed from the forward-reconstructed field
 /// (two-pass: first reconstruct from edge moments only, then evaluate
 /// the reconstruction to get cell moments, then re-reconstruct).
-std::vector<double> roundtrip_p3(moab::Core& mb_shared,
-                                  const std::vector<moab::EntityHandle>& source_cells,
-                                  const std::vector<moab::EntityHandle>& inter_cells,
-                                  const mimetic::GeometryOptions& spherical)
+std::vector<double> roundtrip_highorder(moab::Core& mb_shared,
+                                        const std::vector<moab::EntityHandle>& source_cells,
+                                        const std::vector<moab::EntityHandle>& inter_cells,
+                                        const mimetic::GeometryOptions& spherical,
+                                        int order)
 {
     using namespace mimetic::test_sphere;
     mimetic::MomentMethodOptions opts;
-    opts.edge_moment_order = 3;
-    opts.cell_moment_order = 2;
+    opts.edge_moment_order = order;
+    opts.cell_moment_order = std::max(1, order - 1);
     opts.quadrature_points = 10;
     opts.regularization = 1.0e-12;
     opts.exact_constraints = false;
@@ -1025,14 +1028,14 @@ std::vector<double> roundtrip_p3(moab::Core& mb_shared,
 
     mimetic::PlanarMomentInterpolator fwd(mb_fwd);
     fwd.set_geometry_options(spherical);
-    set_exact_p3_moments(mb_fwd, fwd, src_fwd, spherical);
+    set_exact_moments(mb_fwd, fwd, src_fwd, spherical, order);
     for (const moab::EntityHandle cell : src_fwd)
         fwd.reconstruct_source_polygon(cell, opts);
 
     const mimetic::EdgeMomentTransferResult fwd_xfer =
-        fwd.transfer_source_to_target_edge_moments(src_fwd, inter_fwd, 3);
+        fwd.transfer_source_to_target_edge_moments(src_fwd, inter_fwd, order);
 
-    // Backward: p=3 intermediate → source (another fresh MOAB)
+    // Backward: high-order intermediate → source (another fresh MOAB)
     moab::Core mb_bwd;
     auto inter_bwd = duplicate_mesh(mb_shared, inter_cells, mb_bwd);
     auto src_bwd = duplicate_mesh(mb_shared, source_cells, mb_bwd);
@@ -1058,9 +1061,9 @@ std::vector<double> roundtrip_p3(moab::Core& mb_shared,
         fwd.transfer_source_to_target_cell_moments(src_fwd, inter_fwd, cmo);
 
     // Adaptive per-cell reconstruction:
-    // - Cells with >= (p+1)(p+2)/(p+1) = p+2 edges: edge moments alone suffice.
-    //   Use cell_weight = 0 to avoid polluting with approximate cell moments.
-    // - Cells with fewer edges: use transferred cell moments to fill the gap.
+    // - Cells strictly overdetermined by edge moments alone (edge_constraints > basis_dim):
+    //   ignore cell moments (cell_weight = 0) to avoid quadrature noise.
+    // - Cells exactly or under-determined: use transferred cell moments.
     const int p = opts.edge_moment_order;
     const int basis_dim = (p + 1) * (p + 2);  // dim([P_p]^2)
     for (std::size_t ci = 0; ci < inter_fwd.size(); ++ci) {
@@ -1069,8 +1072,8 @@ std::vector<double> roundtrip_p3(moab::Core& mb_shared,
         const int edge_constraints = n_edges * (p + 1);
 
         mimetic::MomentMethodOptions bwd_opts = opts;
-        if (edge_constraints >= basis_dim) {
-            // Enough edge constraints: ignore cell moments
+        if (edge_constraints > basis_dim) {
+            // Strictly overdetermined: edge moments alone are robust
             bwd_opts.cell_weight = 0.0;
         }
 
@@ -1086,9 +1089,9 @@ std::vector<double> roundtrip_p3(moab::Core& mb_shared,
         bwd.reconstruct_source_polygon(inter_bwd[ci], bwd_opts);
     }
 
-    // Transfer back: intermediate → source (p=3 moments)
+    // Transfer back: intermediate → source
     const mimetic::EdgeMomentTransferResult bwd_xfer =
-        bwd.transfer_source_to_target_edge_moments(inter_bwd, src_bwd, 3);
+        bwd.transfer_source_to_target_edge_moments(inter_bwd, src_bwd, order);
 
     std::vector<double> result;
     std::size_t d3 = 0;
@@ -1651,10 +1654,12 @@ int main()
             const auto ll_cs_p1 = roundtrip_p1(mb, ll, cs, spherical);
             std::cout << "  Voronoi p=1 round-trip...\n";
             const auto ll_vor_p1 = roundtrip_p1(mb, ll, vor, spherical);
+            std::cout << "  CS p=2 round-trip...\n";
+            const auto ll_cs_p2 = roundtrip_highorder(mb, ll, cs, spherical, 2);
             std::cout << "  CS p=3 round-trip (with cell moments)...\n";
-            const auto ll_cs_p3 = roundtrip_p3(mb, ll, cs, spherical);
+            const auto ll_cs_p3 = roundtrip_highorder(mb, ll, cs, spherical, 3);
             std::cout << "  Voronoi p=3 round-trip...\n";
-            const auto ll_vor_p3 = roundtrip_p3(mb, ll, vor, spherical);
+            const auto ll_vor_p3 = roundtrip_highorder(mb, ll, vor, spherical, 3);
 
             dump_mercator_mesh("vis_mercator_roundtrip_source_exact.txt", mb, ll, ll_exact);
 
@@ -1671,6 +1676,7 @@ int main()
             };
 
             dump_errors("cs_p1", ll_cs_p1);
+            dump_errors("cs_p2", ll_cs_p2);
             dump_errors("vor_p1", ll_vor_p1);
             dump_errors("cs_p3", ll_cs_p3);
             dump_errors("vor_p3", ll_vor_p3);

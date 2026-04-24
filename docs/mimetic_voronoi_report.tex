@@ -1167,21 +1167,36 @@ chooses between two modes based on the number of edges~\(n_e\):
         Piola conversion between gnomonic chart frames.  This applies to
         cubed-sphere quads (4 edges).
 \end{itemize}
-The result: the Voronoi \(p=3\) round-trip error
-(\(3.8\times10^{-2}\)) is \(8.6\times\) smaller than \(p=1\)
-(\(3.3\times10^{-1}\)), while the cubed-sphere \(p=3\) error
-(\(2.8\times10^{-1}\)) is \(2.2\times\) smaller than \(p=1\)
-(\(6.2\times10^{-1}\)).  The Voronoi improvement is larger because the
-edge-only reconstruction avoids the approximation error introduced by the
-cell moment quadrature.
+The cubed-sphere row also includes \(p=2\), which has
+\(4\times3=12\) edge constraints for a 12-dimensional basis -- exactly
+determined but with no redundancy.  The cell moment transfer is used for
+\(p\ge2\) to provide overdetermination.  The results:
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+Intermediate & \(p=1\) & \(p=2\) & \(p=3\) \\
+\midrule
+Cubed-sphere (cell moments) &
+  \(6.2\times10^{-1}\) & \(2.9\times10^{-1}\) & \(2.8\times10^{-1}\) \\
+Voronoi (edge-only for \(p=3\)) &
+  \(3.3\times10^{-1}\) & --- & \(2.4\times10^{-2}\) \\
+\bottomrule
+\end{tabular}
+\end{center}
+The Voronoi \(p=3\) improvement (\(13\times\)) is much larger than
+the cubed-sphere improvement (\(2.2\times\)) because the edge-only
+reconstruction on Voronoi cells avoids the quadrature noise in the
+transferred cell moments.  The cubed-sphere \(p=2\) and \(p=3\) errors
+are similar because the cell moment quality is the limiting factor on
+4-sided cells.
 
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=\textwidth]{vis_mercator_roundtrip_mercator.png}
   \caption{Round-trip: lat/lon \(\to\) intermediate \(\to\) lat/lon in
-  Mercator projection.  Top: cubed-sphere (4-sided, uses cell-to-cell moment
-  transfer for \(p=3\)).  Bottom: icosahedral dual Voronoi (5--6-sided,
-  edge-only \(p=3\) gives \(8.6\times\) improvement).
+  Mercator projection.  Top: cubed-sphere with \(p=1,2,3\) (cell-to-cell
+  moment transfer for \(p\ge2\)).  Bottom: icosahedral dual Voronoi with
+  \(p=1,3\) (edge-only \(p=3\) gives \(13\times\) improvement).
   Polar caps (\(|\mathrm{lat}|>85^\circ\)) excluded.}
   \label{fig:mercator-roundtrip}
 \end{figure}

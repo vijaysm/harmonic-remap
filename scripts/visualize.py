@@ -303,7 +303,7 @@ def render_mercator_roundtrip(prefix: str, input_dir: Path, output_dir: Path):
     src_file = input_dir / f"{prefix}_source_exact.txt"
     files = {}
     for mesh in ["cs", "vor"]:
-        for order in ["p1", "p3"]:
+        for order in ["p1", "p2", "p3"]:
             tag = f"{mesh}_{order}"
             f = input_dir / f"{prefix}_{tag}.txt"
             ef = input_dir / f"{prefix}_{tag}_error.txt"
@@ -336,12 +336,17 @@ def render_mercator_roundtrip(prefix: str, input_dir: Path, output_dir: Path):
     err_max = max(np.abs(e).max() for _, _, e in data.values())
     err_max = max(err_max, 1e-16)
 
-    has_cs = "cs_p1" in data
-    has_vor = "vor_p1" in data
-    has_p3 = "cs_p3" in data or "vor_p3" in data
-    nrows = (1 if has_cs else 0) + (1 if has_vor else 0)
-    ncols = 3 if has_p3 else 2
-    fig, axes = plt.subplots(nrows, ncols, figsize=(6.5 * ncols, 4.5 * nrows + 1.5))
+    # Build rows: [(mesh_label, [(order_label, key), ...])]
+    row_specs = []
+    for mesh_label, mesh_key in [("CS", "cs"), ("Voronoi", "vor")]:
+        orders = [(ol, f"{mesh_key}_{ol}") for ol in ["p1", "p2", "p3"]
+                  if f"{mesh_key}_{ol}" in data]
+        if orders:
+            row_specs.append((mesh_label, orders))
+
+    nrows = len(row_specs)
+    ncols = 1 + max(len(o) for _, o in row_specs)
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6.0 * ncols, 4.5 * nrows + 1.5))
     if nrows == 1:
         axes = axes.reshape(1, -1)
 
@@ -355,36 +360,28 @@ def render_mercator_roundtrip(prefix: str, input_dir: Path, output_dir: Path):
         ax.set_title(title, fontsize=10)
         return coll
 
-    row = 0
     value_mappable = None
     error_mappable = None
 
-    for mesh_label, mesh_key in [("CS", "cs"), ("Voronoi", "vor")]:
-        p1_key = f"{mesh_key}_p1"
-        p3_key = f"{mesh_key}_p3"
-        if p1_key not in data:
-            continue
-
-        p1_polys, p1_vals, p1_err = data[p1_key]
-
+    for row, (mesh_label, orders) in enumerate(row_specs):
         value_mappable = fill_panel(axes[row, 0], src_polys, src_vals, "viridis", (vmin, vmax),
                                     "Source Exact Divergence")
-        error_mappable = fill_panel(axes[row, 1], p1_polys, p1_err, "RdBu_r", (-err_max, err_max),
-                                    f"{mesh_label} $p=1$ Error (max: {np.abs(p1_err).max():.2e})")
-
-        if p3_key in data:
-            p3_polys, p3_vals, p3_err = data[p3_key]
-            fill_panel(axes[row, 2], p3_polys, p3_err, "RdBu_r", (-err_max, err_max),
-                       f"{mesh_label} $p=3$ Error (max: {np.abs(p3_err).max():.2e})")
-
-        row += 1
+        for col, (olabel, key) in enumerate(orders):
+            _, _, err = data[key]
+            error_mappable = fill_panel(axes[row, col + 1], data[key][0], err, "RdBu_r",
+                (-err_max, err_max),
+                f"{mesh_label} ${olabel}$ Error (max: {np.abs(err).max():.2e})")
+        for col in range(len(orders) + 1, ncols):
+            axes[row, col].axis("off")
 
     if value_mappable is not None:
         fig.colorbar(value_mappable, ax=axes[:, 0].ravel().tolist(),
                      orientation="horizontal", fraction=0.06, pad=0.12,
                      label="Cell-averaged divergence")
     if error_mappable is not None:
-        fig.colorbar(error_mappable, ax=axes[:, 1:].ravel().tolist(),
+        err_axes = [axes[r, c] for r in range(nrows)
+                    for c in range(1, ncols) if axes[r, c].axison]
+        fig.colorbar(error_mappable, ax=err_axes,
                      orientation="horizontal", fraction=0.06, pad=0.12,
                      label="Round-trip divergence error")
 
