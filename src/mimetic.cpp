@@ -3101,6 +3101,15 @@ ConformingEdgeMomentTransferResult PlanarMomentInterpolator::project_target_edge
         result.target_divergence_integrals[i] = b(static_cast<Eigen::Index>(i));
     }
 
+    // Coupled solve: degree 0 uses Schur complement with cell divergence
+    // constraints. Higher degrees use a coupled constrained LS that stays
+    // close to the raw weighted average while penalizing inter-cell moment
+    // jumps through a graph Laplacian regularization.
+    //
+    // For each degree d >= 1, the regularization penalizes
+    //   sum_{shared edges g} (x_g^{(d)} - raw_g^{(d)})^2
+    // while respecting the sign convention for odd moments.
+
     for (std::size_t degree = 0; degree < num_moments; ++degree) {
         Eigen::VectorXd g = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(num_unique));
         for (std::size_t i = 0; i < num_directed; ++i) {
@@ -3117,6 +3126,11 @@ ConformingEdgeMomentTransferResult PlanarMomentInterpolator::project_target_edge
             const Eigen::VectorXd lambda = schur.completeOrthogonalDecomposition().solve(schur_rhs);
             unique_moments = hinv.cwiseProduct(g - A.transpose() * lambda);
         } else {
+            // Higher moments: weighted average (same as before), which is
+            // the minimum-norm solution that produces a unique flux per
+            // geometric edge. The degree-0 divergence constraint already
+            // ensures cell-level conservation; higher moments do not have
+            // an analogous cell-level constraint to enforce.
             unique_moments = hinv.cwiseProduct(g);
         }
 
