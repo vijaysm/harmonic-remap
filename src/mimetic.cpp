@@ -291,11 +291,17 @@ Eigen::Vector3d reconstruction_integral(const GeometryOptions& options,
 
     if (options.mode == GeometryMode::SphericalGnomonic) {
         const GnomonicFrame frame{source.n, source.e_x, source.e_y, options.radius};
-        return integrate_polygon_vector(polygon_abs, [&](const Eigen::Vector2d& xi) {
+        // Use adaptive integration for each component to handle thin fan triangles
+        // on elongated spherical cells (e.g., near cubed-sphere corners).
+        auto field = [&](const Eigen::Vector2d& xi) {
             const Eigen::Vector2d chart_velocity = harmonic_velocity_value(coeffs, xi - source.centroid);
             const Eigen::Vector3d surface_velocity = lift_contravariant_piola(chart_velocity, xi, frame);
             return gnomonic_area_scale(xi, frame) * surface_velocity;
-        });
+        };
+        return Eigen::Vector3d(
+            integrate_polygon_adaptive(polygon_abs, [&](const Eigen::Vector2d& p) { return field(p).x(); }),
+            integrate_polygon_adaptive(polygon_abs, [&](const Eigen::Vector2d& p) { return field(p).y(); }),
+            integrate_polygon_adaptive(polygon_abs, [&](const Eigen::Vector2d& p) { return field(p).z(); }));
     }
 
     return integrate_polygon_vector(polygon_abs, [&](const Eigen::Vector2d& p) {
@@ -3003,12 +3009,12 @@ PlanarMomentInterpolator::transfer_source_to_target_cell_moments(
                     for (std::size_t k = 0; k < overlap_ccw.size(); ++k) {
                         const Eigen::Vector2d& va = overlap_ccw[k];
                         const Eigen::Vector2d& vb = overlap_ccw[(k + 1) % overlap_ccw.size()];
-                        const double mx = integrate_triangle_scalar(oc, va, vb,
+                        const double mx = integrate_triangle_adaptive(oc, va, vb,
                             [&](const Eigen::Vector2d& p_src) {
                                 auto [vel, loc] = eval_in_target_frame(p_src);
                                 return vel.x() * std::pow(loc.x(), a) * std::pow(loc.y(), b);
                             });
-                        const double my = integrate_triangle_scalar(oc, va, vb,
+                        const double my = integrate_triangle_adaptive(oc, va, vb,
                             [&](const Eigen::Vector2d& p_src) {
                                 auto [vel, loc] = eval_in_target_frame(p_src);
                                 return vel.y() * std::pow(loc.x(), a) * std::pow(loc.y(), b);

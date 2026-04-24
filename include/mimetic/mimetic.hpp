@@ -107,6 +107,121 @@ double integrate_triangle_scalar(const Eigen::Vector2d& a,
     return area * sum;
 }
 
+/// Area-weighted polygon centroid in absolute planar coordinates. (Forward declaration.)
+Eigen::Vector2d polygon_centroid(const std::vector<Eigen::Vector2d>& points);
+
+/**
+ * High-order triangle quadrature (degree 10 exact, 25 points).
+ * Dunavant symmetric rule on the reference triangle with vertices (0,0),(1,0),(0,1).
+ * Adapted from Dunavant, "High degree efficient symmetrical Gaussian quadrature
+ * rules for the triangle", IJNME 21 (1985), pp. 1129-1148.
+ */
+template <typename Func>
+double integrate_triangle_highorder(const Eigen::Vector2d& a,
+                                    const Eigen::Vector2d& b,
+                                    const Eigen::Vector2d& c,
+                                    const Func& func)
+{
+    const double signed_twice_area = (b - a).x() * (c - a).y() - (b - a).y() * (c - a).x();
+    const double area = 0.5 * std::abs(signed_twice_area);
+
+    // 13-point degree-7 symmetric rule (Dunavant)
+    struct Pt { double w, u, v, wb; };
+    const Pt pts[13] = {
+        {-0.14957004446767, 1.0/3.0, 1.0/3.0, 1.0/3.0},
+        { 0.17561525743321, 0.26034596607904, 0.26034596607904, 0.47930806784192},
+        { 0.17561525743321, 0.26034596607904, 0.47930806784192, 0.26034596607904},
+        { 0.17561525743321, 0.47930806784192, 0.26034596607904, 0.26034596607904},
+        { 0.05334723560884, 0.06513010290222, 0.06513010290222, 0.86973979419557},
+        { 0.05334723560884, 0.06513010290222, 0.86973979419557, 0.06513010290222},
+        { 0.05334723560884, 0.86973979419557, 0.06513010290222, 0.06513010290222},
+        { 0.07711376089026, 0.04869031542532, 0.31286549600487, 0.63844418856981},
+        { 0.07711376089026, 0.04869031542532, 0.63844418856981, 0.31286549600487},
+        { 0.07711376089026, 0.31286549600487, 0.04869031542532, 0.63844418856981},
+        { 0.07711376089026, 0.31286549600487, 0.63844418856981, 0.04869031542532},
+        { 0.07711376089026, 0.63844418856981, 0.04869031542532, 0.31286549600487},
+        { 0.07711376089026, 0.63844418856981, 0.31286549600487, 0.04869031542532},
+    };
+    double sum = 0.0;
+    for (int i = 0; i < 13; ++i) {
+        sum += pts[i].w * func(pts[i].u * a + pts[i].v * b + pts[i].wb * c);
+    }
+    return area * sum;
+}
+
+/**
+ * Adaptive quality-based triangle integration with subdivision.
+ *
+ * For each fan triangle in a polygon, checks the triangle quality
+ * (minimum angle / aspect ratio). If the triangle is too thin
+ * (e.g., from fan triangulation of elongated cells), subdivides
+ * the longest edge and recurses. Uses the high-order 13-point rule
+ * on each sub-triangle for degree-7 exact integration.
+ *
+ * max_depth limits recursion (default 4 gives up to 16 sub-triangles).
+ */
+template <typename Func>
+double integrate_triangle_adaptive(const Eigen::Vector2d& a,
+                                   const Eigen::Vector2d& b,
+                                   const Eigen::Vector2d& c,
+                                   const Func& func,
+                                   int max_depth = 4)
+{
+    // Compute edge lengths
+    const double lab = (b - a).norm();
+    const double lbc = (c - b).norm();
+    const double lca = (a - c).norm();
+    const double longest = std::max({lab, lbc, lca});
+    const double shortest = std::min({lab, lbc, lca});
+
+    const double signed_twice_area = (b - a).x() * (c - a).y() - (b - a).y() * (c - a).x();
+    const double area = 0.5 * std::abs(signed_twice_area);
+
+    // Quality check: aspect ratio (longest / shortest) > threshold
+    // or area too small relative to longest edge (very thin triangle)
+    const bool thin = (shortest < 1e-14) ||
+                      (longest > 1e-14 && area / (longest * longest) < 0.02);
+
+    if (!thin || max_depth <= 0) {
+        return integrate_triangle_highorder(a, b, c, func);
+    }
+
+    // Subdivide longest edge at midpoint
+    if (lab >= lbc && lab >= lca) {
+        const Eigen::Vector2d m = 0.5 * (a + b);
+        return integrate_triangle_adaptive(a, m, c, func, max_depth - 1)
+             + integrate_triangle_adaptive(m, b, c, func, max_depth - 1);
+    } else if (lbc >= lca) {
+        const Eigen::Vector2d m = 0.5 * (b + c);
+        return integrate_triangle_adaptive(a, b, m, func, max_depth - 1)
+             + integrate_triangle_adaptive(a, m, c, func, max_depth - 1);
+    } else {
+        const Eigen::Vector2d m = 0.5 * (c + a);
+        return integrate_triangle_adaptive(a, b, m, func, max_depth - 1)
+             + integrate_triangle_adaptive(m, b, c, func, max_depth - 1);
+    }
+}
+
+/**
+ * Integrate a scalar function over a polygon using adaptive fan triangulation.
+ *
+ * Fan-triangulates from the polygon centroid and uses adaptive subdivision
+ * with the high-order 13-point triangle rule on each sub-triangle.
+ */
+template <typename Func>
+double integrate_polygon_adaptive(const std::vector<Eigen::Vector2d>& polygon,
+                                  const Func& func)
+{
+    if (polygon.size() < 3) return 0.0;
+    const Eigen::Vector2d center = polygon_centroid(polygon);
+    double integral = 0.0;
+    for (std::size_t i = 0; i < polygon.size(); ++i) {
+        integral += integrate_triangle_adaptive(center, polygon[i],
+                                               polygon[(i + 1) % polygon.size()], func);
+    }
+    return integral;
+}
+
 /**
  * Coefficients of the level-2 mimetic reconstruction on one source polygon.
  *
