@@ -1142,24 +1142,27 @@ Figure~\ref{fig:order-compare-voronoi} shows the same field on a
 \end{figure}
 
 Figure~\ref{fig:mercator-roundtrip} compares round-trip transfers through two
-different intermediate mesh topologies on the full sphere.  An exact
-\(\nabla_S Y_2^0\) field on a \(72\times36\) regular lat/lon grid is
-transferred to an intermediate mesh, reconstructed there at \(p=1\), and
-transferred back.  Top row: cubed-sphere intermediate (\(n=8\), 384 cells),
-showing face-boundary artifacts in the error (max~\(6.2\times10^{-1}\)).
-Bottom row: icosahedral dual Voronoi intermediate (642 cells), showing a
-smoother error distribution (max~\(3.3\times10^{-1}\)) because the
-icosahedral mesh has no sharp face boundaries.
+intermediate mesh topologies.  An exact \(\nabla_S Y_2^0\) field on a
+\(72\times36\) lat/lon grid is transferred to an intermediate mesh and back,
+shown at both \(p=1\) and \(p=3\) forward order (backward leg is \(p=1\) in
+all cases).  Top row: cubed-sphere intermediate (\(n=8\), 384 cells).  Bottom
+row: icosahedral dual Voronoi (642 cells).  Although \(Y_2^0\) is zonally
+symmetric, the error is not: the cubed-sphere error shows the imprint of the
+six face boundaries (at specific longitudes where charts change alignment),
+while the Voronoi error reflects the five-fold icosahedral vertex placement.
+The \(p=3\) column shows negligible improvement over \(p=1\) because the
+round-trip accuracy is limited by the weaker backward leg.
 
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=\textwidth]{vis_mercator_roundtrip_mercator.png}
-  \caption{Round-trip transfer: lat/lon \(\to\) intermediate \(\to\) lat/lon
-  in Mercator projection.  Top row: cubed-sphere intermediate.  Bottom row:
-  icosahedral dual (Voronoi) intermediate.  Each row shows source exact
-  divergence, round-tripped field, and error.  The Voronoi mesh produces lower
-  error with a more uniform spatial distribution.
-  Polar caps (\(|\mathrm{lat}|>85^\circ\)) are excluded.}
+  \caption{Round-trip: lat/lon \(\to\) intermediate \(\to\) lat/lon in
+  Mercator projection.  Top: cubed-sphere, bottom: icosahedral dual Voronoi.
+  Each row shows source exact divergence (left), \(p=1\) round-trip error
+  (center), and \(p=3\)-forward / \(p=1\)-backward error (right).  The
+  non-zonal error structure reflects the intermediate mesh topology: CS face
+  boundaries (top) and icosahedral vertex placement (bottom).
+  Polar caps (\(|\mathrm{lat}|>85^\circ\)) excluded.}
   \label{fig:mercator-roundtrip}
 \end{figure}
 

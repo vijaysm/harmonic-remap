@@ -914,6 +914,143 @@ std::vector<double> roundtrip_p1(moab::Core& mb,
     return result;
 }
 
+/// Compute p=3-forward / p=1-backward round-trip divergence.
+/// The forward leg uses PlanarMomentInterpolator with exact p=3 source moments.
+/// The backward leg uses the transferred zeroth moments as p=1 edge fluxes.
+std::vector<double> roundtrip_p3fwd(moab::Core& mb_shared,
+                                     const std::vector<moab::EntityHandle>& source_cells,
+                                     const std::vector<moab::EntityHandle>& inter_cells,
+                                     const mimetic::GeometryOptions& spherical)
+{
+    using namespace mimetic::test_sphere;
+
+    // Forward: p=3 moment transfer source → intermediate (needs fresh MOAB)
+    moab::Core mb_fwd;
+    // Duplicate source mesh
+    std::vector<moab::EntityHandle> src_dup;
+    for (const moab::EntityHandle cell : source_cells) {
+        const moab::EntityHandle* conn = nullptr;
+        int nv = 0;
+        mimetic::check_moab(mb_shared.get_connectivity(cell, conn, nv), "get conn");
+        std::vector<Eigen::Vector3d> pts;
+        for (int v = 0; v < nv; ++v) {
+            double xyz[3];
+            mimetic::check_moab(mb_shared.get_coords(&conn[v], 1, xyz), "get coords");
+            pts.push_back(Eigen::Vector3d(xyz[0], xyz[1], xyz[2]));
+        }
+        src_dup.push_back(create_spherical_polygon(mb_fwd, pts));
+    }
+    // Duplicate intermediate mesh
+    std::vector<moab::EntityHandle> inter_dup;
+    for (const moab::EntityHandle cell : inter_cells) {
+        const moab::EntityHandle* conn = nullptr;
+        int nv = 0;
+        mimetic::check_moab(mb_shared.get_connectivity(cell, conn, nv), "get conn");
+        std::vector<Eigen::Vector3d> pts;
+        for (int v = 0; v < nv; ++v) {
+            double xyz[3];
+            mimetic::check_moab(mb_shared.get_coords(&conn[v], 1, xyz), "get coords");
+            pts.push_back(Eigen::Vector3d(xyz[0], xyz[1], xyz[2]));
+        }
+        inter_dup.push_back(create_spherical_polygon(mb_fwd, pts));
+    }
+
+    mimetic::PlanarMomentInterpolator fwd(mb_fwd);
+    fwd.set_geometry_options(spherical);
+    mimetic::MomentMethodOptions opts;
+    opts.edge_moment_order = 3;
+    opts.cell_moment_order = 2;
+    opts.quadrature_points = 10;
+    opts.regularization = 1.0e-12;
+    opts.exact_constraints = false;
+
+    // Set exact source moments
+    for (const moab::EntityHandle cell : src_dup) {
+        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb_fwd, cell, spherical);
+        const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb_fwd, poly);
+        const mimetic::GnomonicFrame frame{poly.n, poly.e_x, poly.e_y, 1.0};
+        for (std::size_t ei = 0; ei < edges.size(); ++ei) {
+            const Eigen::Vector3d a3 = poly.points_3d[ei].normalized();
+            const Eigen::Vector3d b3 = poly.points_3d[(ei + 1) % poly.points_3d.size()].normalized();
+            const double total_angle = std::acos(std::max(-1.0, std::min(1.0, a3.dot(b3))));
+            std::vector<double> moments(4, 0.0);
+            for (int deg = 0; deg <= 3; ++deg) {
+                moments[deg] = integrate_edge_gauss16(edges[ei].a, edges[ei].b,
+                    [&](const Eigen::Vector2d& p_local) {
+                        const Eigen::Vector2d xi = p_local + poly.centroid;
+                        const Eigen::Vector3d pt = mimetic::inverse_gnomonic(xi, frame).normalized();
+                        const Eigen::Vector2d cv = mimetic::pullback_contravariant_piola(
+                            spherical_harmonic_gradient(pt), xi, frame);
+                        double t = 0.0;
+                        if (total_angle > 1e-12) {
+                            t = 2.0 * (std::acos(std::max(-1.0, std::min(1.0, a3.dot(pt)))) / total_angle) - 1.0;
+                        }
+                        double Lm = 1.0;
+                        if (deg == 1) Lm = t;
+                        else if (deg == 2) Lm = 0.5 * (3*t*t - 1);
+                        else if (deg == 3) Lm = 0.5 * (5*t*t*t - 3*t);
+                        return cv.dot(edges[ei].outward_normal) * Lm;
+                    });
+            }
+            fwd.set_source_edge_moments(cell, ei, moments);
+        }
+        // Cell vector moments
+        std::vector<Eigen::Vector2d> cm;
+        for (int td = 0; td <= 2; ++td) {
+            for (int a = td; a >= 0; --a) {
+                const int b = td - a;
+                double mx = 0, my = 0;
+                for (const mimetic::LocalEdge& edge : edges) {
+                    mx += mimetic::integrate_triangle_scalar(Eigen::Vector2d::Zero(), edge.a, edge.b,
+                        [&](const Eigen::Vector2d& p) {
+                            const Eigen::Vector2d xi = p + poly.centroid;
+                            const Eigen::Vector3d pt = mimetic::inverse_gnomonic(xi, frame).normalized();
+                            return mimetic::pullback_contravariant_piola(
+                                spherical_harmonic_gradient(pt), xi, frame).x() * std::pow(p.x(), a) * std::pow(p.y(), b);
+                        });
+                    my += mimetic::integrate_triangle_scalar(Eigen::Vector2d::Zero(), edge.a, edge.b,
+                        [&](const Eigen::Vector2d& p) {
+                            const Eigen::Vector2d xi = p + poly.centroid;
+                            const Eigen::Vector3d pt = mimetic::inverse_gnomonic(xi, frame).normalized();
+                            return mimetic::pullback_contravariant_piola(
+                                spherical_harmonic_gradient(pt), xi, frame).y() * std::pow(p.x(), a) * std::pow(p.y(), b);
+                        });
+                }
+                cm.push_back(Eigen::Vector2d(mx, my));
+            }
+        }
+        fwd.set_source_cell_vector_moments(cell, cm);
+        fwd.reconstruct_source_polygon(cell, opts);
+    }
+
+    // Forward transfer: source → intermediate (p=3 moments)
+    const mimetic::EdgeMomentTransferResult fwd_xfer =
+        fwd.transfer_source_to_target_edge_moments(src_dup, inter_dup, 3);
+
+    // Backward: use zeroth moments as p=1 fluxes → intermediate → source
+    mimetic::MimeticInterpolator bwd(mb_fwd);
+    bwd.set_geometry_options(spherical);
+    std::size_t dof = 0;
+    for (const moab::EntityHandle cell : inter_dup) {
+        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb_fwd, cell, spherical);
+        for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++dof)
+            bwd.set_source_edge_flux(cell, i, fwd_xfer.target_moments[dof][0]);
+    }
+    for (const moab::EntityHandle cell : inter_dup) bwd.reconstruct_source_polygon(cell);
+    const mimetic::EdgeTransferResult bwd_xfer = bwd.transfer_source_to_target_edges(inter_dup, src_dup);
+
+    std::vector<double> result;
+    dof = 0;
+    for (const moab::EntityHandle cell : src_dup) {
+        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb_fwd, cell, spherical);
+        double flux = 0.0;
+        for (std::size_t e = 0; e < poly.vertices.size(); ++e, ++dof)
+            flux += bwd_xfer.target_fluxes[dof];
+        result.push_back(flux / poly.area);
+    }
+    return result;
+}
+
 /// Compute exact cell-averaged divergence from manufactured field.
 std::vector<double> exact_cell_divergence(moab::Core& mb,
                                           const std::vector<moab::EntityHandle>& cells,
@@ -1459,27 +1596,32 @@ int main()
             const auto ll_exact = exact_cell_divergence(mb, ll, spherical);
 
             std::cout << "  CS p=1 round-trip...\n";
-            const auto ll_cs = roundtrip_p1(mb, ll, cs, spherical);
+            const auto ll_cs_p1 = roundtrip_p1(mb, ll, cs, spherical);
             std::cout << "  Voronoi p=1 round-trip...\n";
-            const auto ll_vor = roundtrip_p1(mb, ll, vor, spherical);
+            const auto ll_vor_p1 = roundtrip_p1(mb, ll, vor, spherical);
+            std::cout << "  CS p=3fwd round-trip...\n";
+            const auto ll_cs_p3 = roundtrip_p3fwd(mb, ll, cs, spherical);
+            std::cout << "  Voronoi p=3fwd round-trip...\n";
+            const auto ll_vor_p3 = roundtrip_p3fwd(mb, ll, vor, spherical);
 
             dump_mercator_mesh("vis_mercator_roundtrip_source_exact.txt", mb, ll, ll_exact);
-            dump_mercator_mesh("vis_mercator_roundtrip_cs_p1.txt", mb, ll, ll_cs);
-            dump_mercator_mesh("vis_mercator_roundtrip_vor_p1.txt", mb, ll, ll_vor);
 
-            std::vector<double> cs_err, vor_err;
-            double max_cs = 0, max_vor = 0;
-            for (std::size_t i = 0; i < ll_exact.size(); ++i) {
-                cs_err.push_back(ll_cs[i] - ll_exact[i]);
-                vor_err.push_back(ll_vor[i] - ll_exact[i]);
-                max_cs = std::max(max_cs, std::abs(cs_err.back()));
-                max_vor = std::max(max_vor, std::abs(vor_err.back()));
-            }
-            dump_mercator_mesh("vis_mercator_roundtrip_cs_p1_error.txt", mb, ll, cs_err);
-            dump_mercator_mesh("vis_mercator_roundtrip_vor_p1_error.txt", mb, ll, vor_err);
+            auto dump_errors = [&](const std::string& tag, const std::vector<double>& roundtripped) {
+                std::vector<double> err;
+                double max_e = 0;
+                for (std::size_t i = 0; i < ll_exact.size(); ++i) {
+                    err.push_back(roundtripped[i] - ll_exact[i]);
+                    max_e = std::max(max_e, std::abs(err.back()));
+                }
+                dump_mercator_mesh("vis_mercator_roundtrip_" + tag + ".txt", mb, ll, roundtripped);
+                dump_mercator_mesh("vis_mercator_roundtrip_" + tag + "_error.txt", mb, ll, err);
+                std::cout << "  " << tag << " max error: " << max_e << "\n";
+            };
 
-            std::cout << "  CS max error: " << max_cs << "\n";
-            std::cout << "  Voronoi max error: " << max_vor << "\n";
+            dump_errors("cs_p1", ll_cs_p1);
+            dump_errors("vor_p1", ll_vor_p1);
+            dump_errors("cs_p3", ll_cs_p3);
+            dump_errors("vor_p3", ll_vor_p3);
         }
 
         std::cout << "\n[SUCCESS] All convergence and exact recovery checks passed.\n";

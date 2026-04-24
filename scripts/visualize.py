@@ -299,74 +299,94 @@ def render_order_comparison(source_file: Path, output_dir: Path):
 
 
 def render_mercator_roundtrip(prefix: str, input_dir: Path, output_dir: Path):
-    """Render 2×3 Mercator round-trip: source exact, CS/Voronoi round-tripped, errors."""
+    """Render 2×5 Mercator round-trip: source | p=1 error | p=3 error × CS/Voronoi rows."""
     src_file = input_dir / f"{prefix}_source_exact.txt"
-    cs_p1_file = input_dir / f"{prefix}_cs_p1.txt"
-    cs_err_file = input_dir / f"{prefix}_cs_p1_error.txt"
-    vor_p1_file = input_dir / f"{prefix}_vor_p1.txt"
-    vor_err_file = input_dir / f"{prefix}_vor_p1_error.txt"
+    files = {}
+    for mesh in ["cs", "vor"]:
+        for order in ["p1", "p3"]:
+            tag = f"{mesh}_{order}"
+            f = input_dir / f"{prefix}_{tag}.txt"
+            ef = input_dir / f"{prefix}_{tag}_error.txt"
+            if f.exists() and ef.exists():
+                files[tag] = (f, ef)
 
-    # Fall back to 1×3 if no Voronoi data
-    has_voronoi = vor_p1_file.exists() and vor_err_file.exists()
-
-    if not all(f.exists() for f in [src_file, cs_p1_file, cs_err_file]):
+    if not src_file.exists() or not files:
         return
 
     src_polys, src_vals = read_mesh(src_file)
-    cs_polys, cs_vals = read_mesh(cs_p1_file)
-    _, cs_err_vals = read_mesh(cs_err_file)
 
-    all_polys = src_polys + cs_polys
-    if has_voronoi:
-        vor_polys, vor_vals = read_mesh(vor_p1_file)
-        _, vor_err_vals = read_mesh(vor_err_file)
-        all_polys += vor_polys
+    # Collect all data
+    data = {}
+    for tag, (f, ef) in files.items():
+        polys, vals = read_mesh(f)
+        _, err_vals = read_mesh(ef)
+        data[tag] = (polys, vals, err_vals)
 
+    # Compute global bounds
+    all_polys = list(src_polys)
+    for polys, _, _ in data.values():
+        all_polys += polys
     all_coords = np.concatenate([np.array(p) for p in all_polys if len(p) >= 3])
     xlo, ylo = all_coords.min(axis=0) - 0.05
     xhi, yhi = all_coords.max(axis=0) + 0.05
 
-    vmin = min(src_vals.min(), cs_vals.min())
-    vmax = max(src_vals.max(), cs_vals.max())
-    err_max = max(np.abs(cs_err_vals).max(), 1e-16)
-    if has_voronoi:
-        vmin = min(vmin, vor_vals.min())
-        vmax = max(vmax, vor_vals.max())
-        err_max = max(err_max, np.abs(vor_err_vals).max())
+    all_field_vals = [src_vals] + [v for _, v, _ in data.values()]
+    vmin = min(v.min() for v in all_field_vals)
+    vmax = max(v.max() for v in all_field_vals)
+    err_max = max(np.abs(e).max() for _, _, e in data.values())
+    err_max = max(err_max, 1e-16)
 
-    nrows = 2 if has_voronoi else 1
-    fig, axes = plt.subplots(nrows, 3, figsize=(20, 5.5 * nrows))
+    has_cs = "cs_p1" in data
+    has_vor = "vor_p1" in data
+    has_p3 = "cs_p3" in data or "vor_p3" in data
+    nrows = (1 if has_cs else 0) + (1 if has_vor else 0)
+    ncols = 3 if has_p3 else 2
+    fig, axes = plt.subplots(nrows, ncols, figsize=(6.5 * ncols, 4.5 * nrows + 1.5))
     if nrows == 1:
-        axes = axes.reshape(1, 3)
+        axes = axes.reshape(1, -1)
 
-    def fill_row(row_axes, field_polys, field_vals, err_polys, err_vals, label):
-        mappables = {}
-        for ax, polys, vals, cmap, clim, title in [
-            (row_axes[0], src_polys, src_vals, "viridis", (vmin, vmax), "Source Exact Divergence"),
-            (row_axes[1], field_polys, field_vals, "viridis", (vmin, vmax), f"Round-Tripped via {label}"),
-            (row_axes[2], err_polys, err_vals, "RdBu_r", (-err_max, err_max),
-             f"{label} Error (max: {np.abs(err_vals).max():.2e})"),
-        ]:
-            coll = PolyCollection(polys, array=vals, cmap=cmap, edgecolors="none", linewidths=0.1)
-            coll.set_clim(*clim)
-            ax.add_collection(coll)
-            ax.set_xlim(xlo, xhi)
-            ax.set_ylim(ylo, yhi)
-            ax.set_aspect("equal")
-            ax.set_title(title, fontsize=11)
-            mappables[cmap] = coll
-        return mappables
+    def fill_panel(ax, polys, vals, cmap, clim, title):
+        coll = PolyCollection(polys, array=vals, cmap=cmap, edgecolors="none", linewidths=0.1)
+        coll.set_clim(*clim)
+        ax.add_collection(coll)
+        ax.set_xlim(xlo, xhi)
+        ax.set_ylim(ylo, yhi)
+        ax.set_aspect("equal")
+        ax.set_title(title, fontsize=10)
+        return coll
 
-    m_cs = fill_row(axes[0], cs_polys, cs_vals, cs_polys, cs_err_vals, r"CS ($p=1$)")
-    if has_voronoi:
-        m_vor = fill_row(axes[1], vor_polys, vor_vals, vor_polys, vor_err_vals, r"Voronoi ($p=1$)")
+    row = 0
+    value_mappable = None
+    error_mappable = None
 
-    fig.colorbar(m_cs["viridis"], ax=axes[:, :2].ravel().tolist(),
-                 orientation="horizontal", fraction=0.05, pad=0.08,
-                 label="Cell-averaged divergence")
-    fig.colorbar(m_cs["RdBu_r"], ax=axes[:, 2].ravel().tolist(),
-                 orientation="horizontal", fraction=0.05, pad=0.08,
-                 label="Round-trip divergence error")
+    for mesh_label, mesh_key in [("CS", "cs"), ("Voronoi", "vor")]:
+        p1_key = f"{mesh_key}_p1"
+        p3_key = f"{mesh_key}_p3"
+        if p1_key not in data:
+            continue
+
+        p1_polys, p1_vals, p1_err = data[p1_key]
+
+        value_mappable = fill_panel(axes[row, 0], src_polys, src_vals, "viridis", (vmin, vmax),
+                                    "Source Exact Divergence")
+        error_mappable = fill_panel(axes[row, 1], p1_polys, p1_err, "RdBu_r", (-err_max, err_max),
+                                    f"{mesh_label} $p=1$ Error (max: {np.abs(p1_err).max():.2e})")
+
+        if p3_key in data:
+            p3_polys, p3_vals, p3_err = data[p3_key]
+            fill_panel(axes[row, 2], p3_polys, p3_err, "RdBu_r", (-err_max, err_max),
+                       f"{mesh_label} $p=3$ Error (max: {np.abs(p3_err).max():.2e})")
+
+        row += 1
+
+    if value_mappable is not None:
+        fig.colorbar(value_mappable, ax=axes[:, 0].ravel().tolist(),
+                     orientation="horizontal", fraction=0.06, pad=0.12,
+                     label="Cell-averaged divergence")
+    if error_mappable is not None:
+        fig.colorbar(error_mappable, ax=axes[:, 1:].ravel().tolist(),
+                     orientation="horizontal", fraction=0.06, pad=0.12,
+                     label="Round-trip divergence error")
 
     fig.suptitle(r"Round-trip transfer error (Mercator, $\nabla_S Y_2^0$)", fontsize=14)
     output_dir.mkdir(parents=True, exist_ok=True)
