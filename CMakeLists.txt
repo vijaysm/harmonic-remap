@@ -99,3 +99,7 @@ add_test(NAME spherical_high_order_hdiv_convergence_test COMMAND spherical_high_
 
 add_executable(dump_visuals tests/dump_visuals.cpp)
 target_link_libraries(dump_visuals PRIVATE mimetic ${MOAB_LIBRARY})
+
+add_executable(roundtrip_analysis tests/roundtrip_analysis.cpp)
+target_link_libraries(roundtrip_analysis PRIVATE mimetic ${MOAB_LIBRARY})
+target_include_directories(roundtrip_analysis PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/tests ${MOAB_INCLUDE_DIRS})
