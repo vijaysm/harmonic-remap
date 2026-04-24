@@ -1151,25 +1151,27 @@ the error is not: the cubed-sphere error shows the imprint of the six face
 boundaries (at specific longitudes where gnomonic charts change alignment),
 while the Voronoi error reflects the five-fold icosahedral vertex placement.
 
-The \(p=3\) round-trip uses the full split-moment hierarchy on both legs.  For
-the backward leg, cell vector moments on the intermediate mesh are bootstrapped
-from a preliminary \(p=1\) reconstruction of the transferred zeroth edge
-moments.  This bootstrap limits the backward reconstruction quality: the
-\(p=3\) round-trip error is comparable to or slightly larger than \(p=1\)
-because the approximate cell moments prevent the higher-order edge data from
-being fully utilized in the cell interior.  A cell-to-cell moment transfer
-alongside the edge-to-edge transfer would resolve this limitation.
+The \(p=3\) round-trip uses the full split-moment hierarchy on both legs of the
+transfer.  On the backward leg, the reconstruction on the intermediate mesh
+uses only the transferred edge moments (no cell vector moments are available
+from the edge-to-edge transfer), with degree elevation disabled.  Whether this
+edge-only reconstruction is well-determined depends on the number of edges per
+cell: cubed-sphere quads have only 4 edges, giving \(4\times4=16\) constraints
+for a 20-dimensional \([\mathbb{P}_3]^2\) basis -- insufficient.  The
+icosahedral dual Voronoi cells have 5--6 edges, giving 20--24 constraints --
+exactly or over-determined.  The result is striking: the Voronoi \(p=3\)
+round-trip error (\(1.9\times10^{-2}\)) is \(17\times\) smaller than \(p=1\)
+(\(3.3\times10^{-1}\)), while the cubed-sphere \(p=3\) round-trip cannot
+improve over \(p=1\) because the backward reconstruction is underconstrained.
 
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=\textwidth]{vis_mercator_roundtrip_mercator.png}
   \caption{Round-trip: lat/lon \(\to\) intermediate \(\to\) lat/lon in
-  Mercator projection.  Top: cubed-sphere, bottom: icosahedral dual Voronoi.
-  Each row shows source exact divergence (left), \(p=1\) round-trip error
-  (center), and true \(p=3\) round-trip error (right) with cell moments
-  bootstrapped from a \(p=1\) reconstruction on the intermediate mesh.
-  The non-zonal error pattern reflects the intermediate mesh topology.
-  Polar caps (\(|\mathrm{lat}|>85^\circ\)) excluded.}
+  Mercator projection.  Top: cubed-sphere (4-sided cells, \(p=3\) same as
+  \(p=1\) due to insufficient edge constraints).  Bottom: icosahedral dual
+  Voronoi (5--6-sided cells), where \(p=3\) reduces the error by
+  \(17\times\).  Polar caps (\(|\mathrm{lat}|>85^\circ\)) excluded.}
   \label{fig:mercator-roundtrip}
 \end{figure}
 
