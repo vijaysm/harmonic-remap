@@ -492,6 +492,15 @@ class PlanarMomentInterpolator {
         const std::vector<moab::EntityHandle>& source_polygons,
         const std::vector<moab::EntityHandle>& target_polygons,
         int target_moment_order) const;
+    /// Transfer cell vector moments from source reconstructions to target cells
+    /// via overlap integration: for each target cell K_t, compute
+    ///   c_{ab}^t = sum_s integral_{K_t cap K_s} u_h^s x^a y^b dA
+    /// in the target cell's local chart coordinates.
+    std::map<moab::EntityHandle, std::vector<Eigen::Vector2d>>
+    transfer_source_to_target_cell_moments(
+        const std::vector<moab::EntityHandle>& source_polygons,
+        const std::vector<moab::EntityHandle>& target_polygons,
+        int cell_moment_order) const;
     ConformingEdgeMomentTransferResult project_target_edge_moments_to_hdiv_conforming(
         const std::vector<moab::EntityHandle>& source_polygons,
         const std::vector<moab::EntityHandle>& target_polygons,

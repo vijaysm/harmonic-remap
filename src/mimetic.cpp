@@ -2907,6 +2907,124 @@ EdgeMomentTransferResult PlanarMomentInterpolator::transfer_source_to_target_edg
     return result;
 }
 
+std::map<moab::EntityHandle, std::vector<Eigen::Vector2d>>
+PlanarMomentInterpolator::transfer_source_to_target_cell_moments(
+    const std::vector<moab::EntityHandle>& source_polygons,
+    const std::vector<moab::EntityHandle>& target_polygons,
+    const int cell_moment_order) const
+{
+    struct SourceCache {
+        moab::EntityHandle polygon;
+        LocalPolygon local;
+        std::vector<Eigen::Vector2d> absolute_points;
+        MomentReconstruction reconstruction;
+    };
+
+    std::vector<SourceCache> sources;
+    sources.reserve(source_polygons.size());
+    for (const moab::EntityHandle source_polygon : source_polygons) {
+        const auto it = reconstructions_.find(source_polygon);
+        if (it == reconstructions_.end()) {
+            throw std::runtime_error("Missing reconstruction for cell moment transfer");
+        }
+        const LocalPolygon local = local_polygon(mb_, source_polygon, options_);
+        sources.push_back(SourceCache{source_polygon, local, absolute_points(local), it->second});
+    }
+
+    const std::vector<GaussLegendrePoint> quadrature = gauss_legendre_rule(10);
+    std::map<moab::EntityHandle, std::vector<Eigen::Vector2d>> result;
+
+    for (const moab::EntityHandle target_polygon : target_polygons) {
+        const LocalPolygon target = local_polygon(mb_, target_polygon, options_);
+
+        // Initialize cell moments to zero
+        int n_cm = 0;
+        for (int td = 0; td <= cell_moment_order; ++td) n_cm += td + 1;
+        std::vector<Eigen::Vector2d> moments(n_cm, Eigen::Vector2d::Zero());
+
+        for (const SourceCache& source : sources) {
+            // Compute source-target overlap in the source chart
+            std::vector<Eigen::Vector2d> target_in_source;
+            if (options_.mode == GeometryMode::SphericalGnomonic) {
+                const GnomonicFrame source_frame{source.local.n, source.local.e_x, source.local.e_y, options_.radius};
+                target_in_source.reserve(target.points_3d.size());
+                bool valid = true;
+                for (const Eigen::Vector3d& p3d : target.points_3d) {
+                    try {
+                        target_in_source.push_back(project_gnomonic(p3d, source_frame));
+                    } catch (...) { valid = false; break; }
+                }
+                if (!valid) continue;
+            } else {
+                target_in_source = absolute_points(target);
+            }
+
+            const std::vector<Eigen::Vector2d> overlap =
+                convex_polygon_intersection(target_in_source, source.absolute_points, options_.geometry_tolerance);
+            if (overlap.size() < 3 || std::abs(signed_area(overlap)) <= options_.geometry_tolerance)
+                continue;
+
+            // Integrate the source reconstruction times target-local monomials
+            // over the overlap region. The reconstruction is evaluated in source
+            // chart coords. The monomials x^a y^b must be in the TARGET cell's
+            // centroid-relative local frame. For spherical, this means lifting each
+            // source-chart point to the sphere and re-projecting into the target chart.
+            const GnomonicFrame source_frame{source.local.n, source.local.e_x, source.local.e_y, options_.radius};
+            const GnomonicFrame target_frame{target.n, target.e_x, target.e_y, options_.radius};
+
+            std::vector<Eigen::Vector2d> overlap_ccw = overlap;
+            if (signed_area(overlap_ccw) < 0.0) std::reverse(overlap_ccw.begin(), overlap_ccw.end());
+            const Eigen::Vector2d oc = polygon_centroid(overlap_ccw);
+
+            // Helper: evaluate reconstruction and convert to target chart frame
+            auto eval_in_target_frame = [&](const Eigen::Vector2d& p_src) -> std::pair<Eigen::Vector2d, Eigen::Vector2d> {
+                // Source-chart velocity
+                const Eigen::Vector2d src_vel = moment_velocity_value(source.reconstruction, p_src - source.local.centroid);
+                Eigen::Vector2d tgt_vel;
+                Eigen::Vector2d tgt_local;
+                if (options_.mode == GeometryMode::SphericalGnomonic) {
+                    // Lift to sphere, convert to target chart
+                    const Eigen::Vector3d surface_vel = lift_contravariant_piola(src_vel, p_src, source_frame);
+                    const Eigen::Vector3d sphere_pt = inverse_gnomonic(p_src, source_frame);
+                    const Eigen::Vector2d tgt_xi = project_gnomonic(sphere_pt, target_frame);
+                    tgt_vel = pullback_contravariant_piola(surface_vel, tgt_xi, target_frame);
+                    tgt_local = tgt_xi - target.centroid;
+                } else {
+                    tgt_vel = src_vel;
+                    tgt_local = p_src - target.centroid;
+                }
+                return {tgt_vel, tgt_local};
+            };
+
+            int mi = 0;
+            for (int td = 0; td <= cell_moment_order; ++td) {
+                for (int a = td; a >= 0; --a, ++mi) {
+                    const int b = td - a;
+                    for (std::size_t k = 0; k < overlap_ccw.size(); ++k) {
+                        const Eigen::Vector2d& va = overlap_ccw[k];
+                        const Eigen::Vector2d& vb = overlap_ccw[(k + 1) % overlap_ccw.size()];
+                        const double mx = integrate_triangle_scalar(oc, va, vb,
+                            [&](const Eigen::Vector2d& p_src) {
+                                auto [vel, loc] = eval_in_target_frame(p_src);
+                                return vel.x() * std::pow(loc.x(), a) * std::pow(loc.y(), b);
+                            });
+                        const double my = integrate_triangle_scalar(oc, va, vb,
+                            [&](const Eigen::Vector2d& p_src) {
+                                auto [vel, loc] = eval_in_target_frame(p_src);
+                                return vel.y() * std::pow(loc.x(), a) * std::pow(loc.y(), b);
+                            });
+                        moments[mi] += Eigen::Vector2d(mx, my);
+                    }
+                }
+            }
+        }
+
+        result[target_polygon] = moments;
+    }
+
+    return result;
+}
+
 ConformingEdgeMomentTransferResult PlanarMomentInterpolator::project_target_edge_moments_to_hdiv_conforming(
     const std::vector<moab::EntityHandle>& source_polygons,
     const std::vector<moab::EntityHandle>& target_polygons,

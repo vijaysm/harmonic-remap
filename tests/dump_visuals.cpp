@@ -1037,8 +1037,10 @@ std::vector<double> roundtrip_p3(moab::Core& mb_shared,
     auto inter_bwd = duplicate_mesh(mb_shared, inter_cells, mb_bwd);
     auto src_bwd = duplicate_mesh(mb_shared, source_cells, mb_bwd);
 
+    mimetic::GeometryOptions bwd_geo = spherical;
+    bwd_geo.metric_weighted = false;  // disable degree elevation on backward leg
     mimetic::PlanarMomentInterpolator bwd(mb_bwd);
-    bwd.set_geometry_options(spherical);
+    bwd.set_geometry_options(bwd_geo);
 
     // Set edge moments from forward transfer
     std::size_t dof = 0;
@@ -1048,52 +1050,45 @@ std::vector<double> roundtrip_p3(moab::Core& mb_shared,
             bwd.set_source_edge_moments(cell, i, fwd_xfer.target_moments[dof]);
     }
 
-    // Reconstruct each intermediate cell from transferred edge moments only.
-    // Disable metric_weighted to avoid degree elevation (which inflates the
-    // basis dimension beyond what edge moments alone can constrain).
-    {
-        mimetic::GeometryOptions bwd_geo = spherical;
-        bwd_geo.metric_weighted = false;  // no degree elevation on backward leg
+    // Transfer cell vector moments from source to intermediate using
+    // the forward reconstruction (provides the missing interior constraints).
+    const int cmo = std::max(1, opts.edge_moment_order - 1);
+    const auto cell_moments =
+        fwd.transfer_source_to_target_cell_moments(src_fwd, inter_fwd, cmo);
 
-        mimetic::PlanarMomentInterpolator bwd_recon(mb_bwd);
-        bwd_recon.set_geometry_options(bwd_geo);
+    // Edge moments were already set on bwd above. Now add cell moments.
 
-        // Copy edge moments to the new interpolator
-        std::size_t d2 = 0;
-        for (const moab::EntityHandle cell : inter_bwd) {
-            const mimetic::LocalPolygon poly = mimetic::local_polygon(mb_bwd, cell, bwd_geo);
-            for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++d2)
-                bwd_recon.set_source_edge_moments(cell, i, fwd_xfer.target_moments[d2]);
-        }
-
-        mimetic::MomentMethodOptions bwd_opts = opts;
-        bwd_opts.cell_weight = 0.0;
-        for (const moab::EntityHandle cell : inter_bwd) {
-            const mimetic::LocalPolygon poly = mimetic::local_polygon(mb_bwd, cell, bwd_geo);
-            const int cmo = std::max(1, opts.edge_moment_order - 1);
+    // Set transferred cell moments on the backward interpolator's intermediate cells.
+    // inter_fwd and inter_bwd are duplicate meshes; match by index.
+    for (std::size_t ci = 0; ci < inter_fwd.size(); ++ci) {
+        const auto it = cell_moments.find(inter_fwd[ci]);
+        if (it != cell_moments.end()) {
+            bwd.set_source_cell_vector_moments(inter_bwd[ci], it->second);
+        } else {
             int n_cm = 0;
             for (int td = 0; td <= cmo; ++td) n_cm += td + 1;
-            bwd_recon.set_source_cell_vector_moments(cell,
+            bwd.set_source_cell_vector_moments(inter_bwd[ci],
                 std::vector<Eigen::Vector2d>(n_cm, Eigen::Vector2d::Zero()));
-            bwd_recon.reconstruct_source_polygon(cell, bwd_opts);
         }
-
-        // Transfer back using the non-elevated reconstructions
-        const mimetic::EdgeMomentTransferResult bwd_xfer_inner =
-            bwd_recon.transfer_source_to_target_edge_moments(inter_bwd, src_bwd, 3);
-
-        // Return results from this inner transfer
-        std::vector<double> result;
-        std::size_t d3 = 0;
-        for (const moab::EntityHandle cell : src_bwd) {
-            const mimetic::LocalPolygon poly = mimetic::local_polygon(mb_bwd, cell, bwd_geo);
-            double flux = 0.0;
-            for (std::size_t e = 0; e < poly.vertices.size(); ++e, ++d3)
-                flux += bwd_xfer_inner.target_moments[d3][0];
-            result.push_back(flux / poly.area);
-        }
-        return result;
     }
+
+    for (const moab::EntityHandle cell : inter_bwd)
+        bwd.reconstruct_source_polygon(cell, opts);
+
+    // Transfer back: intermediate → source (p=3 moments)
+    const mimetic::EdgeMomentTransferResult bwd_xfer =
+        bwd.transfer_source_to_target_edge_moments(inter_bwd, src_bwd, 3);
+
+    std::vector<double> result;
+    std::size_t d3 = 0;
+    for (const moab::EntityHandle cell : src_bwd) {
+        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb_bwd, cell, spherical);
+        double flux = 0.0;
+        for (std::size_t e = 0; e < poly.vertices.size(); ++e, ++d3)
+            flux += bwd_xfer.target_moments[d3][0];
+        result.push_back(flux / poly.area);
+    }
+    return result;
 
 }
 
@@ -1645,9 +1640,8 @@ int main()
             const auto ll_cs_p1 = roundtrip_p1(mb, ll, cs, spherical);
             std::cout << "  Voronoi p=1 round-trip...\n";
             const auto ll_vor_p1 = roundtrip_p1(mb, ll, vor, spherical);
-            // CS p=3 round-trip fails because 4-sided cells have insufficient
-            // edge constraints for p=3 (16 < 20). Skip CS p=3 in the figure.
-            const auto ll_cs_p3 = ll_cs_p1;  // placeholder: same as p=1
+            std::cout << "  CS p=3 round-trip (with cell moments)...\n";
+            const auto ll_cs_p3 = roundtrip_p3(mb, ll, cs, spherical);
             std::cout << "  Voronoi p=3 round-trip...\n";
             const auto ll_vor_p3 = roundtrip_p3(mb, ll, vor, spherical);
 
