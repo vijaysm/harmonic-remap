@@ -914,60 +914,38 @@ std::vector<double> roundtrip_p1(moab::Core& mb,
     return result;
 }
 
-/// Compute p=3-forward / p=1-backward round-trip divergence.
-/// The forward leg uses PlanarMomentInterpolator with exact p=3 source moments.
-/// The backward leg uses the transferred zeroth moments as p=1 edge fluxes.
-std::vector<double> roundtrip_p3fwd(moab::Core& mb_shared,
-                                     const std::vector<moab::EntityHandle>& source_cells,
-                                     const std::vector<moab::EntityHandle>& inter_cells,
-                                     const mimetic::GeometryOptions& spherical)
+/// Helper: duplicate a spherical mesh into a fresh MOAB instance.
+std::vector<moab::EntityHandle> duplicate_mesh(moab::Core& src_mb,
+                                                const std::vector<moab::EntityHandle>& cells,
+                                                moab::Core& dst_mb)
 {
     using namespace mimetic::test_sphere;
-
-    // Forward: p=3 moment transfer source → intermediate (needs fresh MOAB)
-    moab::Core mb_fwd;
-    // Duplicate source mesh
-    std::vector<moab::EntityHandle> src_dup;
-    for (const moab::EntityHandle cell : source_cells) {
+    std::vector<moab::EntityHandle> result;
+    for (const moab::EntityHandle cell : cells) {
         const moab::EntityHandle* conn = nullptr;
         int nv = 0;
-        mimetic::check_moab(mb_shared.get_connectivity(cell, conn, nv), "get conn");
+        mimetic::check_moab(src_mb.get_connectivity(cell, conn, nv), "dup conn");
         std::vector<Eigen::Vector3d> pts;
         for (int v = 0; v < nv; ++v) {
             double xyz[3];
-            mimetic::check_moab(mb_shared.get_coords(&conn[v], 1, xyz), "get coords");
+            mimetic::check_moab(src_mb.get_coords(&conn[v], 1, xyz), "dup coords");
             pts.push_back(Eigen::Vector3d(xyz[0], xyz[1], xyz[2]));
         }
-        src_dup.push_back(create_spherical_polygon(mb_fwd, pts));
+        result.push_back(create_spherical_polygon(dst_mb, pts));
     }
-    // Duplicate intermediate mesh
-    std::vector<moab::EntityHandle> inter_dup;
-    for (const moab::EntityHandle cell : inter_cells) {
-        const moab::EntityHandle* conn = nullptr;
-        int nv = 0;
-        mimetic::check_moab(mb_shared.get_connectivity(cell, conn, nv), "get conn");
-        std::vector<Eigen::Vector3d> pts;
-        for (int v = 0; v < nv; ++v) {
-            double xyz[3];
-            mimetic::check_moab(mb_shared.get_coords(&conn[v], 1, xyz), "get coords");
-            pts.push_back(Eigen::Vector3d(xyz[0], xyz[1], xyz[2]));
-        }
-        inter_dup.push_back(create_spherical_polygon(mb_fwd, pts));
-    }
+    return result;
+}
 
-    mimetic::PlanarMomentInterpolator fwd(mb_fwd);
-    fwd.set_geometry_options(spherical);
-    mimetic::MomentMethodOptions opts;
-    opts.edge_moment_order = 3;
-    opts.cell_moment_order = 2;
-    opts.quadrature_points = 10;
-    opts.regularization = 1.0e-12;
-    opts.exact_constraints = false;
-
-    // Set exact source moments
-    for (const moab::EntityHandle cell : src_dup) {
-        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb_fwd, cell, spherical);
-        const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb_fwd, poly);
+/// Helper: set exact p=3 edge moments and cell vector moments on cells.
+void set_exact_p3_moments(moab::Core& mb,
+                          mimetic::PlanarMomentInterpolator& interp,
+                          const std::vector<moab::EntityHandle>& cells,
+                          const mimetic::GeometryOptions& spherical)
+{
+    using namespace mimetic::test_sphere;
+    for (const moab::EntityHandle cell : cells) {
+        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb, cell, spherical);
+        const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb, poly);
         const mimetic::GnomonicFrame frame{poly.n, poly.e_x, poly.e_y, 1.0};
         for (std::size_t ei = 0; ei < edges.size(); ++ei) {
             const Eigen::Vector3d a3 = poly.points_3d[ei].normalized();
@@ -992,9 +970,8 @@ std::vector<double> roundtrip_p3fwd(moab::Core& mb_shared,
                         return cv.dot(edges[ei].outward_normal) * Lm;
                     });
             }
-            fwd.set_source_edge_moments(cell, ei, moments);
+            interp.set_source_edge_moments(cell, ei, moments);
         }
-        // Cell vector moments
         std::vector<Eigen::Vector2d> cm;
         for (int td = 0; td <= 2; ++td) {
             for (int a = td; a >= 0; --a) {
@@ -1019,33 +996,117 @@ std::vector<double> roundtrip_p3fwd(moab::Core& mb_shared,
                 cm.push_back(Eigen::Vector2d(mx, my));
             }
         }
-        fwd.set_source_cell_vector_moments(cell, cm);
+        interp.set_source_cell_vector_moments(cell, cm);
+    }
+}
+
+/// Compute true p=3 round-trip: p=3 forward, p=3 backward.
+/// The backward reconstruction uses transferred edge moments plus
+/// cell vector moments computed from the forward-reconstructed field
+/// (two-pass: first reconstruct from edge moments only, then evaluate
+/// the reconstruction to get cell moments, then re-reconstruct).
+std::vector<double> roundtrip_p3(moab::Core& mb_shared,
+                                  const std::vector<moab::EntityHandle>& source_cells,
+                                  const std::vector<moab::EntityHandle>& inter_cells,
+                                  const mimetic::GeometryOptions& spherical)
+{
+    using namespace mimetic::test_sphere;
+    mimetic::MomentMethodOptions opts;
+    opts.edge_moment_order = 3;
+    opts.cell_moment_order = 2;
+    opts.quadrature_points = 10;
+    opts.regularization = 1.0e-12;
+    opts.exact_constraints = false;
+
+    // Forward: p=3 source → intermediate (fresh MOAB)
+    moab::Core mb_fwd;
+    auto src_fwd = duplicate_mesh(mb_shared, source_cells, mb_fwd);
+    auto inter_fwd = duplicate_mesh(mb_shared, inter_cells, mb_fwd);
+
+    mimetic::PlanarMomentInterpolator fwd(mb_fwd);
+    fwd.set_geometry_options(spherical);
+    set_exact_p3_moments(mb_fwd, fwd, src_fwd, spherical);
+    for (const moab::EntityHandle cell : src_fwd)
         fwd.reconstruct_source_polygon(cell, opts);
-    }
 
-    // Forward transfer: source → intermediate (p=3 moments)
     const mimetic::EdgeMomentTransferResult fwd_xfer =
-        fwd.transfer_source_to_target_edge_moments(src_dup, inter_dup, 3);
+        fwd.transfer_source_to_target_edge_moments(src_fwd, inter_fwd, 3);
 
-    // Backward: use zeroth moments as p=1 fluxes → intermediate → source
-    mimetic::MimeticInterpolator bwd(mb_fwd);
+    // Backward: p=3 intermediate → source (another fresh MOAB)
+    moab::Core mb_bwd;
+    auto inter_bwd = duplicate_mesh(mb_shared, inter_cells, mb_bwd);
+    auto src_bwd = duplicate_mesh(mb_shared, source_cells, mb_bwd);
+
+    mimetic::PlanarMomentInterpolator bwd(mb_bwd);
     bwd.set_geometry_options(spherical);
-    std::size_t dof = 0;
-    for (const moab::EntityHandle cell : inter_dup) {
-        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb_fwd, cell, spherical);
-        for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++dof)
-            bwd.set_source_edge_flux(cell, i, fwd_xfer.target_moments[dof][0]);
-    }
-    for (const moab::EntityHandle cell : inter_dup) bwd.reconstruct_source_polygon(cell);
-    const mimetic::EdgeTransferResult bwd_xfer = bwd.transfer_source_to_target_edges(inter_dup, src_dup);
 
+    // Set edge moments from forward transfer
+    std::size_t dof = 0;
+    for (const moab::EntityHandle cell : inter_bwd) {
+        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb_bwd, cell, spherical);
+        for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++dof)
+            bwd.set_source_edge_moments(cell, i, fwd_xfer.target_moments[dof]);
+    }
+
+    // Bootstrap cell moments via p=1 reconstruction from zeroth moments,
+    // then use those cell moments for the full p=3 reconstruction.
+    {
+        // Step 1: p=1 reconstruction from zeroth edge moments
+        mimetic::MimeticInterpolator p1_recon(mb_bwd);
+        p1_recon.set_geometry_options(spherical);
+        std::size_t d = 0;
+        for (const moab::EntityHandle cell : inter_bwd) {
+            const mimetic::LocalPolygon poly = mimetic::local_polygon(mb_bwd, cell, spherical);
+            for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++d)
+                p1_recon.set_source_edge_flux(cell, i, fwd_xfer.target_moments[d][0]);
+        }
+        for (const moab::EntityHandle cell : inter_bwd)
+            p1_recon.reconstruct_source_polygon(cell);
+
+        // Step 2: compute cell vector moments from p=1 reconstruction
+        for (const moab::EntityHandle cell : inter_bwd) {
+            const mimetic::LocalPolygon poly = mimetic::local_polygon(mb_bwd, cell, spherical);
+            const std::vector<mimetic::LocalEdge> edges = mimetic::local_edges(mb_bwd, poly);
+            const mimetic::ReconstructionCoeffs coeffs = p1_recon.reconstruct_source_polygon(cell);
+            std::vector<Eigen::Vector2d> cm;
+            for (int td = 0; td <= 2; ++td) {
+                for (int a = td; a >= 0; --a) {
+                    const int b = td - a;
+                    double mx = 0, my = 0;
+                    for (const mimetic::LocalEdge& edge : edges) {
+                        mx += mimetic::integrate_triangle_scalar(Eigen::Vector2d::Zero(), edge.a, edge.b,
+                            [&](const Eigen::Vector2d& p) {
+                                const Eigen::Vector2d vel = p1_recon.velocity(coeffs, p);
+                                return vel.x() * std::pow(p.x(), a) * std::pow(p.y(), b);
+                            });
+                        my += mimetic::integrate_triangle_scalar(Eigen::Vector2d::Zero(), edge.a, edge.b,
+                            [&](const Eigen::Vector2d& p) {
+                                const Eigen::Vector2d vel = p1_recon.velocity(coeffs, p);
+                                return vel.y() * std::pow(p.x(), a) * std::pow(p.y(), b);
+                            });
+                    }
+                    cm.push_back(Eigen::Vector2d(mx, my));
+                }
+            }
+            bwd.set_source_cell_vector_moments(cell, cm);
+
+            // Step 3: full p=3 reconstruction with bootstrapped cell moments
+            bwd.reconstruct_source_polygon(cell, opts);
+        }
+    }
+
+    // Transfer back: intermediate → source (p=3 moments)
+    const mimetic::EdgeMomentTransferResult bwd_xfer =
+        bwd.transfer_source_to_target_edge_moments(inter_bwd, src_bwd, 3);
+
+    // Compute round-tripped divergence from zeroth moments
     std::vector<double> result;
     dof = 0;
-    for (const moab::EntityHandle cell : src_dup) {
-        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb_fwd, cell, spherical);
+    for (const moab::EntityHandle cell : src_bwd) {
+        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb_bwd, cell, spherical);
         double flux = 0.0;
         for (std::size_t e = 0; e < poly.vertices.size(); ++e, ++dof)
-            flux += bwd_xfer.target_fluxes[dof];
+            flux += bwd_xfer.target_moments[dof][0];
         result.push_back(flux / poly.area);
     }
     return result;
@@ -1599,10 +1660,10 @@ int main()
             const auto ll_cs_p1 = roundtrip_p1(mb, ll, cs, spherical);
             std::cout << "  Voronoi p=1 round-trip...\n";
             const auto ll_vor_p1 = roundtrip_p1(mb, ll, vor, spherical);
-            std::cout << "  CS p=3fwd round-trip...\n";
-            const auto ll_cs_p3 = roundtrip_p3fwd(mb, ll, cs, spherical);
-            std::cout << "  Voronoi p=3fwd round-trip...\n";
-            const auto ll_vor_p3 = roundtrip_p3fwd(mb, ll, vor, spherical);
+            std::cout << "  CS p=3 round-trip...\n";
+            const auto ll_cs_p3 = roundtrip_p3(mb, ll, cs, spherical);
+            std::cout << "  Voronoi p=3 round-trip...\n";
+            const auto ll_vor_p3 = roundtrip_p3(mb, ll, vor, spherical);
 
             dump_mercator_mesh("vis_mercator_roundtrip_source_exact.txt", mb, ll, ll_exact);
 
