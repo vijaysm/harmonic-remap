@@ -1441,9 +1441,46 @@ int main()
             compute_order_comparison("vis_order_compare_voronoi_E: oscillating_div", mb, src, tgt, field_E);
         }
 
-        // Mercator round-trip: lat/lon → CS → lat/lon
-        std::cout << "\n=== Mercator Round-Trip: lat/lon -> CS -> lat/lon ===\n";
-        compute_mercator_roundtrip("vis_mercator_roundtrip", 72, 36, 8, 0);
+        // Mercator round-trip: lat/lon → CS and Voronoi → lat/lon
+        std::cout << "\n=== Mercator Round-Trip: lat/lon -> CS/Voronoi -> lat/lon ===\n";
+        {
+            mimetic::GeometryOptions spherical;
+            spherical.mode = mimetic::GeometryMode::SphericalGnomonic;
+            spherical.metric_weighted = true;
+
+            moab::Core mb;
+            const auto ll = generate_latlon_grid(mb, 72, 36);
+            const auto cs = mimetic::test_sphere::generate_cubed_sphere(mb, 8);
+            const auto vor = mimetic::test_sphere::generate_icosahedral_dual(mb, 8);
+
+            std::cout << "  lat/lon: " << ll.size() << ", CS: " << cs.size()
+                      << ", Voronoi: " << vor.size() << " cells\n";
+
+            const auto ll_exact = exact_cell_divergence(mb, ll, spherical);
+
+            std::cout << "  CS p=1 round-trip...\n";
+            const auto ll_cs = roundtrip_p1(mb, ll, cs, spherical);
+            std::cout << "  Voronoi p=1 round-trip...\n";
+            const auto ll_vor = roundtrip_p1(mb, ll, vor, spherical);
+
+            dump_mercator_mesh("vis_mercator_roundtrip_source_exact.txt", mb, ll, ll_exact);
+            dump_mercator_mesh("vis_mercator_roundtrip_cs_p1.txt", mb, ll, ll_cs);
+            dump_mercator_mesh("vis_mercator_roundtrip_vor_p1.txt", mb, ll, ll_vor);
+
+            std::vector<double> cs_err, vor_err;
+            double max_cs = 0, max_vor = 0;
+            for (std::size_t i = 0; i < ll_exact.size(); ++i) {
+                cs_err.push_back(ll_cs[i] - ll_exact[i]);
+                vor_err.push_back(ll_vor[i] - ll_exact[i]);
+                max_cs = std::max(max_cs, std::abs(cs_err.back()));
+                max_vor = std::max(max_vor, std::abs(vor_err.back()));
+            }
+            dump_mercator_mesh("vis_mercator_roundtrip_cs_p1_error.txt", mb, ll, cs_err);
+            dump_mercator_mesh("vis_mercator_roundtrip_vor_p1_error.txt", mb, ll, vor_err);
+
+            std::cout << "  CS max error: " << max_cs << "\n";
+            std::cout << "  Voronoi max error: " << max_vor << "\n";
+        }
 
         std::cout << "\n[SUCCESS] All convergence and exact recovery checks passed.\n";
         return 0;

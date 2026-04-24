@@ -1141,24 +1141,25 @@ Figure~\ref{fig:order-compare-voronoi} shows the same field on a
   \label{fig:order-compare-voronoi}
 \end{figure}
 
-Figure~\ref{fig:mercator-roundtrip} shows a round-trip transfer on the full
-sphere: an exact \(\nabla_S Y_2^0\) field is set on a \(72\times36\)
-regular lat/lon grid (great-circle edges with triangular polar caps),
-transferred to a cubed-sphere (\(n=8\), 384 cells) intermediate, reconstructed
-there, and transferred back to the original lat/lon grid.  The Mercator
-projection provides a natural global view.  The round-trip error
-(max~\(6.2\times10^{-1}\)) shows the imprint of the cubed-sphere face
-boundaries where the intermediate mesh changes chart alignment.
+Figure~\ref{fig:mercator-roundtrip} compares round-trip transfers through two
+different intermediate mesh topologies on the full sphere.  An exact
+\(\nabla_S Y_2^0\) field on a \(72\times36\) regular lat/lon grid is
+transferred to an intermediate mesh, reconstructed there at \(p=1\), and
+transferred back.  Top row: cubed-sphere intermediate (\(n=8\), 384 cells),
+showing face-boundary artifacts in the error (max~\(6.2\times10^{-1}\)).
+Bottom row: icosahedral dual Voronoi intermediate (642 cells), showing a
+smoother error distribution (max~\(3.3\times10^{-1}\)) because the
+icosahedral mesh has no sharp face boundaries.
 
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=\textwidth]{vis_mercator_roundtrip_mercator.png}
-  \caption{Round-trip transfer: lat/lon \(\to\) cubed-sphere \(\to\) lat/lon
-  in Mercator projection.  Left: source exact divergence.  Center:
-  round-tripped divergence after two \(p=1\) transfers through a cubed-sphere
-  intermediate.  Right: round-trip error, showing the cubed-sphere face
-  boundary imprint.  Polar caps (\(|\mathrm{lat}|>85^\circ\)) are excluded
-  from the Mercator view.}
+  \caption{Round-trip transfer: lat/lon \(\to\) intermediate \(\to\) lat/lon
+  in Mercator projection.  Top row: cubed-sphere intermediate.  Bottom row:
+  icosahedral dual (Voronoi) intermediate.  Each row shows source exact
+  divergence, round-tripped field, and error.  The Voronoi mesh produces lower
+  error with a more uniform spatial distribution.
+  Polar caps (\(|\mathrm{lat}|>85^\circ\)) are excluded.}
   \label{fig:mercator-roundtrip}
 \end{figure}
 

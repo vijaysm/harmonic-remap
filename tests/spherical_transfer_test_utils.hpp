@@ -368,6 +368,271 @@ inline double max_direct_sparse_delta(const MimeticInterpolator& interpolator,
     return max_delta;
 }
 
+/// Generate an icosahedral triangular mesh on the unit sphere with the given
+/// refinement level.  Level 0 gives the base 20-triangle icosahedron (12 vertices).
+/// Level n subdivides each triangle into n^2 sub-triangles, giving 20*n^2 faces
+/// and 10*n^2+2 vertices.
+inline std::vector<moab::EntityHandle> generate_icosahedral_triangles(
+    moab::Core& mb, int refine_level)
+{
+    constexpr double kPi = 3.14159265358979323846;
+    const double node_lat = std::atan(0.5);
+
+    // 12 base icosahedral vertices in (lon, lat)
+    struct LL { double lon, lat; };
+    const LL base_ll[12] = {
+        {0.0,               -0.5*kPi},                    // 0: south pole
+        {0.0,               -node_lat},                    // 1-5: southern ring
+        {2.0*kPi*0.2,       -node_lat},
+        {2.0*kPi*0.4,       -node_lat},
+        {2.0*kPi*0.6,       -node_lat},
+        {2.0*kPi*0.8,       -node_lat},
+        {2.0*kPi*0.1,       +node_lat},                   // 6-10: northern ring
+        {2.0*kPi*0.3,       +node_lat},
+        {2.0*kPi*0.5,       +node_lat},
+        {2.0*kPi*0.7,       +node_lat},
+        {2.0*kPi*0.9,       +node_lat},
+        {0.0,               +0.5*kPi},                    // 11: north pole
+    };
+
+    // Convert to Cartesian on unit sphere
+    std::vector<Eigen::Vector3d> nodes;
+    nodes.reserve(12);
+    for (int i = 0; i < 12; ++i) {
+        nodes.push_back(Eigen::Vector3d(
+            std::sin(base_ll[i].lon) * std::cos(base_ll[i].lat),
+            std::cos(base_ll[i].lon) * std::cos(base_ll[i].lat),
+            std::sin(base_ll[i].lat)));
+    }
+
+    // Insert a sub-node along the great-circle arc from nodes[i0] to nodes[i1]
+    // at fraction alpha in [0,1], projected back to the sphere.
+    auto insert_sub_node = [&](int i0, int i1, double alpha) -> int {
+        const Eigen::Vector3d& a = nodes[i0];
+        const Eigen::Vector3d& b = nodes[i1];
+        const double theta = std::acos(std::max(-1.0, std::min(1.0, a.dot(b))));
+        Eigen::Vector3d p;
+        if (theta < 1e-14) {
+            p = a;
+        } else {
+            p = (std::sin((1.0 - alpha) * theta) * a + std::sin(alpha * theta) * b) / std::sin(theta);
+        }
+        p.normalize();
+        const int idx = static_cast<int>(nodes.size());
+        nodes.push_back(p);
+        return idx;
+    };
+
+    // Generate edge vertices: returns list of node indices along the edge
+    using Edge = std::vector<int>;
+    auto gen_edge = [&](int i0, int i1) -> Edge {
+        Edge e;
+        e.push_back(i0);
+        for (int k = 1; k < refine_level; ++k) {
+            e.push_back(insert_sub_node(i0, i1, static_cast<double>(k) / refine_level));
+        }
+        e.push_back(i1);
+        return e;
+    };
+    auto flip_edge = [](const Edge& e) -> Edge {
+        Edge f(e.rbegin(), e.rend());
+        return f;
+    };
+
+    // 30 edges of the icosahedron, each subdivided
+    std::vector<Edge> edges(30);
+    for (int i = 0; i < 5; ++i) edges[i] = gen_edge(0, i + 1);
+    for (int i = 0; i < 5; ++i) edges[i + 5] = gen_edge(i + 1, ((i + 1) % 5) + 1);
+    edges[10] = gen_edge(1, 6);  edges[11] = gen_edge(6, 2);
+    edges[12] = gen_edge(2, 7);  edges[13] = gen_edge(7, 3);
+    edges[14] = gen_edge(3, 8);  edges[15] = gen_edge(8, 4);
+    edges[16] = gen_edge(4, 9);  edges[17] = gen_edge(9, 5);
+    edges[18] = gen_edge(5, 10); edges[19] = gen_edge(10, 1);
+    for (int i = 0; i < 5; ++i) edges[i + 20] = gen_edge(i + 6, ((i + 1) % 5) + 6);
+    for (int i = 0; i < 5; ++i) edges[i + 25] = gen_edge(i + 6, 11);
+
+    // Generate sub-triangles from one icosahedral face defined by 3 edges
+    struct Tri { int v[3]; };
+    std::vector<Tri> triangles;
+    auto gen_faces = [&](const Edge& e0, const Edge& e1, const Edge& e2) {
+        Edge bot;
+        bot.push_back(e0[0]);
+        for (int j = 0; j < refine_level; ++j) {
+            Edge top;
+            if (j == refine_level - 1) {
+                top = e2;
+            } else {
+                top.push_back(e0[j + 1]);
+                for (int k = 1; k <= j; ++k) {
+                    top.push_back(insert_sub_node(e0[j + 1], e1[j + 1],
+                                                  static_cast<double>(k) / (j + 1)));
+                }
+                top.push_back(e1[j + 1]);
+            }
+            for (int i = 0; i < 2 * j + 1; ++i) {
+                if (i % 2 == 0) {
+                    triangles.push_back(Tri{{bot[i / 2], top[i / 2], top[i / 2 + 1]}});
+                } else {
+                    triangles.push_back(Tri{{top[(i + 1) / 2], bot[(i + 1) / 2], bot[(i - 1) / 2]}});
+                }
+            }
+            bot = top;
+        }
+    };
+
+    // 20 icosahedral faces
+    for (int i = 0; i < 5; ++i)
+        gen_faces(edges[i], edges[(i + 1) % 5], edges[i + 5]);
+    for (int i = 0; i < 5; ++i)
+        gen_faces(edges[2 * i + 10], edges[i + 5], edges[2 * i + 11]);
+    for (int i = 0; i < 5; ++i)
+        gen_faces(edges[i + 20], edges[2 * i + 11], flip_edge(edges[2 * ((i + 1) % 5) + 10]));
+    for (int i = 0; i < 5; ++i)
+        gen_faces(edges[i + 25], edges[i + 20], flip_edge(edges[((i + 1) % 5) + 25]));
+
+    // Create MOAB vertices
+    std::vector<moab::EntityHandle> moab_verts(nodes.size(), 0);
+    for (std::size_t i = 0; i < nodes.size(); ++i) {
+        const double xyz[3] = {nodes[i].x(), nodes[i].y(), nodes[i].z()};
+        check_moab(mb.create_vertex(xyz, moab_verts[i]), "ico vertex");
+    }
+
+    // Create MOAB triangles
+    std::vector<moab::EntityHandle> cells;
+    cells.reserve(triangles.size());
+    for (const Tri& t : triangles) {
+        moab::EntityHandle conn[3] = {moab_verts[t.v[0]], moab_verts[t.v[1]], moab_verts[t.v[2]]};
+        moab::EntityHandle tri = 0;
+        check_moab(mb.create_element(moab::MBPOLYGON, conn, 3, tri), "ico tri");
+        for (int k = 0; k < 3; ++k)
+            find_or_create_edge(mb, conn[k], conn[(k + 1) % 3]);
+        cells.push_back(tri);
+    }
+    return cells;
+}
+
+/// Generate the dual (Voronoi) mesh of an icosahedral triangulation.
+/// Each original vertex becomes a Voronoi cell whose vertices are the
+/// circumcenters (normalized centroids) of the surrounding triangles.
+inline std::vector<moab::EntityHandle> generate_icosahedral_dual(
+    moab::Core& mb, int refine_level)
+{
+    // First generate the triangular mesh to get vertices and faces
+    moab::Core tri_mb;
+    const std::vector<moab::EntityHandle> tri_cells =
+        generate_icosahedral_triangles(tri_mb, refine_level);
+
+    // Collect all vertices and triangle connectivity
+    struct TriConn { int v[3]; };
+    std::vector<Eigen::Vector3d> tri_nodes;
+    std::vector<TriConn> tri_faces;
+
+    // Build node list
+    std::map<moab::EntityHandle, int> vert_to_idx;
+    for (const moab::EntityHandle tri : tri_cells) {
+        const moab::EntityHandle* conn = nullptr;
+        int nv = 0;
+        check_moab(tri_mb.get_connectivity(tri, conn, nv), "get tri conn");
+        for (int i = 0; i < nv; ++i) {
+            if (vert_to_idx.find(conn[i]) == vert_to_idx.end()) {
+                double xyz[3];
+                check_moab(tri_mb.get_coords(&conn[i], 1, xyz), "get tri coords");
+                vert_to_idx[conn[i]] = static_cast<int>(tri_nodes.size());
+                tri_nodes.push_back(Eigen::Vector3d(xyz[0], xyz[1], xyz[2]).normalized());
+            }
+        }
+    }
+    for (const moab::EntityHandle tri : tri_cells) {
+        const moab::EntityHandle* conn = nullptr;
+        int nv = 0;
+        check_moab(tri_mb.get_connectivity(tri, conn, nv), "get tri conn");
+        tri_faces.push_back(TriConn{{vert_to_idx[conn[0]], vert_to_idx[conn[1]], vert_to_idx[conn[2]]}});
+    }
+
+    // Compute circumcenter (normalized centroid) for each triangle
+    std::vector<Eigen::Vector3d> circumcenters(tri_faces.size());
+    for (std::size_t i = 0; i < tri_faces.size(); ++i) {
+        const Eigen::Vector3d c = (tri_nodes[tri_faces[i].v[0]] +
+                                   tri_nodes[tri_faces[i].v[1]] +
+                                   tri_nodes[tri_faces[i].v[2]]).normalized();
+        circumcenters[i] = c;
+    }
+
+    // For each original vertex, collect surrounding triangle indices (in order)
+    // vertex_to_tris[v] = list of triangle indices sharing vertex v
+    std::vector<std::vector<int>> vertex_to_tris(tri_nodes.size());
+    for (std::size_t fi = 0; fi < tri_faces.size(); ++fi) {
+        for (int k = 0; k < 3; ++k) {
+            vertex_to_tris[tri_faces[fi].v[k]].push_back(static_cast<int>(fi));
+        }
+    }
+
+    // Order the triangles around each vertex by adjacency
+    auto order_ring = [&](int vi) -> std::vector<int> {
+        std::vector<int> ring;
+        const std::vector<int>& tris = vertex_to_tris[vi];
+        if (tris.empty()) return ring;
+
+        std::vector<bool> used(tris.size(), false);
+        ring.push_back(tris[0]);
+        used[0] = true;
+
+        for (std::size_t step = 1; step < tris.size(); ++step) {
+            const int last_tri = ring.back();
+            bool found = false;
+            for (std::size_t j = 0; j < tris.size(); ++j) {
+                if (used[j]) continue;
+                // Check if tris[j] shares an edge with last_tri that includes vi
+                int shared = 0;
+                for (int a = 0; a < 3; ++a) {
+                    for (int b = 0; b < 3; ++b) {
+                        if (tri_faces[last_tri].v[a] == tri_faces[tris[j]].v[b])
+                            ++shared;
+                    }
+                }
+                if (shared >= 2) {  // share vertex vi plus one other vertex = adjacent
+                    ring.push_back(tris[j]);
+                    used[j] = true;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) break;  // incomplete ring (shouldn't happen on closed manifold)
+        }
+        return ring;
+    };
+
+    // Create Voronoi cells in the target MOAB instance
+    std::vector<moab::EntityHandle> dual_cells;
+    dual_cells.reserve(tri_nodes.size());
+
+    for (std::size_t vi = 0; vi < tri_nodes.size(); ++vi) {
+        const std::vector<int> ring = order_ring(static_cast<int>(vi));
+        if (ring.size() < 3) continue;
+
+        // Voronoi cell vertices are the circumcenters of the ring triangles
+        std::vector<Eigen::Vector3d> cell_pts;
+        cell_pts.reserve(ring.size());
+        for (const int fi : ring) {
+            cell_pts.push_back(circumcenters[fi]);
+        }
+
+        // Ensure counter-clockwise orientation (outward normal = vertex direction)
+        const Eigen::Vector3d center = tri_nodes[vi];
+        Eigen::Vector3d cross_sum = Eigen::Vector3d::Zero();
+        for (std::size_t k = 0; k < cell_pts.size(); ++k) {
+            cross_sum += cell_pts[k].cross(cell_pts[(k + 1) % cell_pts.size()]);
+        }
+        if (cross_sum.dot(center) < 0) {
+            std::reverse(cell_pts.begin(), cell_pts.end());
+        }
+
+        dual_cells.push_back(create_spherical_polygon(mb, cell_pts));
+    }
+
+    return dual_cells;
+}
+
 }  // namespace test_sphere
 }  // namespace mimetic
 
