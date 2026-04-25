@@ -31,12 +31,16 @@ if(NOT MOAB_LIBRARY)
   message(FATAL_ERROR "Could not find MOAB library")
 endif()
 
+find_path(NANOFLANN_INCLUDE_DIR nanoflann.hpp
+  HINTS /opt/homebrew/include /usr/local/include)
+
 add_library(mimetic STATIC src/mimetic.cpp)
 target_link_libraries(mimetic PUBLIC Eigen3::Eigen ${MOAB_LIBRARY})
 target_include_directories(mimetic
   PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${MOAB_INCLUDE_DIR}
+    ${NANOFLANN_INCLUDE_DIR}
 )
 
 add_executable(patch_test tests/patch_test.cpp)

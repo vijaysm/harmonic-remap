@@ -1,6 +1,7 @@
 #include "mimetic/mimetic.hpp"
 
 #include <moab/MergeMesh.hpp>
+#include <nanoflann.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -13,6 +14,64 @@ namespace mimetic {
 
 namespace {
 constexpr double kPi = 3.141592653589793238462643383279502884;
+
+/// Nanoflann adapter for a vector of 3D points (source cell centroids).
+struct PointCloud3D {
+    std::vector<Eigen::Vector3d> pts;
+
+    inline std::size_t kdtree_get_point_count() const { return pts.size(); }
+    inline double kdtree_get_pt(const std::size_t idx, const std::size_t dim) const {
+        return pts[idx](static_cast<Eigen::Index>(dim));
+    }
+    template <class BBOX> bool kdtree_get_bbox(BBOX&) const { return false; }
+};
+
+using KDTree3D = nanoflann::KDTreeSingleIndexAdaptor<
+    nanoflann::L2_Simple_Adaptor<double, PointCloud3D>,
+    PointCloud3D, 3>;
+
+/// Build a k-d tree from source cell centroids (3D normalized for spherical).
+struct SpatialIndex {
+    PointCloud3D cloud;
+    std::unique_ptr<KDTree3D> tree;
+    std::vector<double> cell_radius;  // max chord distance per cell
+    double max_radius = 0;            // max over all cell radii
+
+    void build(const std::vector<Eigen::Vector3d>& centers,
+               const std::vector<double>& radii) {
+        cloud.pts = centers;
+        cell_radius = radii;
+        max_radius = radii.empty() ? 0 : *std::max_element(radii.begin(), radii.end());
+        tree = std::make_unique<KDTree3D>(3, cloud, nanoflann::KDTreeSingleIndexAdaptorParams(10));
+        tree->buildIndex();
+    }
+
+    /// Find source cell indices whose centroid is within search_radius of query_point.
+    /// search_radius is in Euclidean 3D distance (not angular).
+    std::vector<std::size_t> find_candidates(const Eigen::Vector3d& query_point,
+                                              double search_radius) const {
+        std::vector<nanoflann::ResultItem<unsigned int, double>> matches;
+        nanoflann::SearchParameters params;
+        params.sorted = false;
+        const double query_pt[3] = {query_point.x(), query_point.y(), query_point.z()};
+        tree->radiusSearch(query_pt, search_radius * search_radius, matches, params);
+        std::vector<std::size_t> indices;
+        indices.reserve(matches.size());
+        for (const auto& m : matches) indices.push_back(m.first);
+        return indices;
+    }
+};
+
+/// Build spatial index from source cell local polygons.
+SpatialIndex build_source_spatial_index(
+    const std::vector<Eigen::Vector3d>& centers_3d,
+    const std::vector<double>& max_radii)
+{
+    SpatialIndex idx;
+    idx.build(centers_3d, max_radii);
+    return idx;
+}
+
 }
 
 void check_moab(const moab::ErrorCode code, const std::string& message)
@@ -2131,18 +2190,46 @@ EdgeTransferResult MimeticInterpolator::transfer_source_to_target_edges(
         LocalPolygon local;
         std::vector<Eigen::Vector2d> absolute_points;
         ReconstructionCoeffs coeffs;
+        Eigen::Vector3d center_3d;    // normalized cell center (for spherical pre-filter)
+        double min_cos_angle;          // cos(max angular radius from center to any vertex)
     };
 
     std::vector<SourceCache> sources;
     sources.reserve(source_polygons.size());
     for (const moab::EntityHandle source_polygon : source_polygons) {
         const LocalPolygon local = local_polygon(mb_, source_polygon, options_);
-        sources.push_back(SourceCache{
+        SourceCache cache{
             source_polygon,
             local,
             absolute_points(local),
             read_coefficients(mb_, tag_coeffs_, source_polygon),
-        });
+            Eigen::Vector3d::Zero(),
+            -1.0,
+        };
+        if (is_spherical()) {
+            cache.center_3d = local.n;  // normalized cell normal = chart center
+            double min_cos = 1.0;
+            for (const Eigen::Vector3d& p3d : local.points_3d) {
+                min_cos = std::min(min_cos, cache.center_3d.dot(p3d.normalized()));
+            }
+            cache.min_cos_angle = min_cos - 0.1;  // expand by ~6° margin
+        }
+        sources.push_back(cache);
+    }
+
+    // Build spatial index for source cells
+    SpatialIndex src_index;
+    if (is_spherical() && sources.size() > 50) {
+        std::vector<Eigen::Vector3d> centers(sources.size());
+        std::vector<double> radii(sources.size());
+        for (std::size_t i = 0; i < sources.size(); ++i) {
+            centers[i] = sources[i].center_3d;
+            // Convert angular radius to Euclidean 3D distance for radius search
+            // chord_length = 2*sin(angle/2), where angle = acos(min_cos_angle)
+            const double angle = std::acos(std::max(-1.0, sources[i].min_cos_angle));
+            radii[i] = 2.0 * std::sin(std::min(angle, kPi) / 2.0);
+        }
+        src_index.build(centers, radii);
     }
 
     EdgeTransferResult result;
@@ -2160,7 +2247,24 @@ EdgeTransferResult MimeticInterpolator::transfer_source_to_target_edges(
             Eigen::Vector3d v_t1 = target.points_3d[edge_index];
             Eigen::Vector3d v_t2 = target.points_3d[(edge_index + 1) % target.points_3d.size()];
 
-            for (const SourceCache& source : sources) {
+            // Determine which source cells to check
+            std::vector<std::size_t> candidates;
+            if (src_index.tree && is_spherical()) {
+                const Eigen::Vector3d mid = (v_t1.normalized() + v_t2.normalized()).normalized();
+                const double edge_angle = std::acos(std::max(-1.0, std::min(1.0,
+                    v_t1.normalized().dot(v_t2.normalized()))));
+                const double search_angle = edge_angle / 2.0 + src_index.max_radius + 0.05;
+                const double search_dist = 2.0 * std::sin(std::min(search_angle, kPi) / 2.0);
+                candidates = src_index.find_candidates(mid, search_dist);
+            } else {
+                // No spatial index: check all sources
+                candidates.resize(sources.size());
+                for (std::size_t i = 0; i < sources.size(); ++i) candidates[i] = i;
+            }
+
+            for (const std::size_t si : candidates) {
+                const SourceCache& source = sources[si];
+
                 Eigen::Vector2d target_a;
                 Eigen::Vector2d target_b;
 
@@ -2836,6 +2940,22 @@ EdgeMomentTransferResult PlanarMomentInterpolator::transfer_source_to_target_edg
         });
     }
 
+    // Build spatial index for source cells
+    SpatialIndex ho_src_index;
+    if (is_spherical() && sources.size() > 50) {
+        std::vector<Eigen::Vector3d> centers(sources.size());
+        std::vector<double> radii(sources.size());
+        for (std::size_t i = 0; i < sources.size(); ++i) {
+            centers[i] = sources[i].local.n;
+            double mc = 1.0;
+            for (const Eigen::Vector3d& p3d : sources[i].local.points_3d)
+                mc = std::min(mc, centers[i].dot(p3d.normalized()));
+            const double angle = std::acos(std::max(-1.0, mc - 0.1));
+            radii[i] = 2.0 * std::sin(std::min(angle, kPi) / 2.0);
+        }
+        ho_src_index.build(centers, radii);
+    }
+
     EdgeMomentTransferResult result;
     const std::vector<GaussLegendrePoint> quadrature = gauss_legendre_rule(10);
 
@@ -2856,7 +2976,20 @@ EdgeMomentTransferResult PlanarMomentInterpolator::transfer_source_to_target_edg
                 ? std::acos(clamp_unit(target_a3.dot(target_b3)))
                 : 0.0;
 
-            for (const SourceCache& source : sources) {
+            // Use spatial index for candidate selection
+            std::vector<std::size_t> ho_candidates;
+            if (ho_src_index.tree && is_spherical()) {
+                const Eigen::Vector3d mid = (target_a3 + target_b3).normalized();
+                const double ea = std::acos(std::max(-1.0, std::min(1.0, target_a3.dot(target_b3))));
+                const double sa = ea / 2.0 + ho_src_index.max_radius + 0.05;
+                ho_candidates = ho_src_index.find_candidates(mid, 2.0 * std::sin(std::min(sa, kPi) / 2.0));
+            } else {
+                ho_candidates.resize(sources.size());
+                for (std::size_t i = 0; i < sources.size(); ++i) ho_candidates[i] = i;
+            }
+
+            for (const std::size_t si : ho_candidates) {
+                const SourceCache& source = sources[si];
                 Eigen::Vector2d whole_a = target.centroid + target_edge.a;
                 Eigen::Vector2d whole_b = target.centroid + target_edge.b;
                 GnomonicFrame source_frame;
@@ -2937,6 +3070,22 @@ PlanarMomentInterpolator::transfer_source_to_target_cell_moments(
         sources.push_back(SourceCache{source_polygon, local, absolute_points(local), it->second});
     }
 
+    // Build spatial index for cell moment transfer
+    SpatialIndex cm_src_index;
+    if (options_.mode == GeometryMode::SphericalGnomonic && sources.size() > 50) {
+        std::vector<Eigen::Vector3d> centers(sources.size());
+        std::vector<double> radii(sources.size());
+        for (std::size_t si = 0; si < sources.size(); ++si) {
+            centers[si] = sources[si].local.n;
+            double mc = 1.0;
+            for (const Eigen::Vector3d& p3d : sources[si].local.points_3d)
+                mc = std::min(mc, centers[si].dot(p3d.normalized()));
+            const double angle = std::acos(std::max(-1.0, mc - 0.1));
+            radii[si] = 2.0 * std::sin(std::min(angle, kPi) / 2.0);
+        }
+        cm_src_index.build(centers, radii);
+    }
+
     const std::vector<GaussLegendrePoint> quadrature = gauss_legendre_rule(10);
     std::map<moab::EntityHandle, std::vector<Eigen::Vector2d>> result;
 
@@ -2948,7 +3097,31 @@ PlanarMomentInterpolator::transfer_source_to_target_cell_moments(
         for (int td = 0; td <= cell_moment_order; ++td) n_cm += td + 1;
         std::vector<Eigen::Vector2d> moments(n_cm, Eigen::Vector2d::Zero());
 
-        for (const SourceCache& source : sources) {
+        // Use k-d tree to find candidate source cells near this target
+        Eigen::Vector3d target_center_3d = Eigen::Vector3d::Zero();
+        if (options_.mode == GeometryMode::SphericalGnomonic) {
+            for (const Eigen::Vector3d& p3d : target.points_3d)
+                target_center_3d += p3d.normalized();
+            target_center_3d.normalize();
+        }
+
+        std::vector<std::size_t> cm_candidates;
+        if (cm_src_index.tree && options_.mode == GeometryMode::SphericalGnomonic) {
+            // Target cell angular radius
+            double target_max_angle = 0;
+            for (const Eigen::Vector3d& p3d : target.points_3d)
+                target_max_angle = std::max(target_max_angle,
+                    std::acos(std::max(-1.0, std::min(1.0, target_center_3d.dot(p3d.normalized())))));
+            const double sa = target_max_angle + cm_src_index.max_radius + 0.05;
+            cm_candidates = cm_src_index.find_candidates(target_center_3d,
+                2.0 * std::sin(std::min(sa, kPi) / 2.0));
+        } else {
+            cm_candidates.resize(sources.size());
+            for (std::size_t i = 0; i < sources.size(); ++i) cm_candidates[i] = i;
+        }
+
+        for (const std::size_t si : cm_candidates) {
+            const SourceCache& source = sources[si];
             // Compute source-target overlap in the source chart
             std::vector<Eigen::Vector2d> target_in_source;
             if (options_.mode == GeometryMode::SphericalGnomonic) {

@@ -350,13 +350,6 @@ def render_mercator_roundtrip(prefix: str, input_dir: Path, output_dir: Path):
     if nrows == 1:
         axes = axes.reshape(1, -1)
 
-    # Mercator axis formatting: x = longitude (rad), y = ln(tan(pi/4 + lat/2))
-    import matplotlib.ticker as mticker
-    lon_ticks_deg = np.array([-180, -120, -60, 0, 60, 120, 180])
-    lon_ticks_rad = np.deg2rad(lon_ticks_deg)
-    lat_ticks_deg = np.array([-80, -60, -40, -20, 0, 20, 40, 60, 80])
-    lat_ticks_merc = np.log(np.tan(np.pi / 4 + np.deg2rad(lat_ticks_deg) / 2))
-
     def fill_panel(ax, polys, vals, cmap, clim, title):
         coll = PolyCollection(polys, array=vals, cmap=cmap, edgecolors="none", linewidths=0.1)
         coll.set_clim(*clim)
@@ -365,12 +358,10 @@ def render_mercator_roundtrip(prefix: str, input_dir: Path, output_dir: Path):
         ax.set_ylim(ylo, yhi)
         ax.set_aspect("equal")
         ax.set_title(title, fontsize=10)
-        # Longitude ticks (degrees)
-        ax.set_xticks(lon_ticks_rad)
-        ax.set_xticklabels([f"{int(d)}°" for d in lon_ticks_deg], fontsize=7)
-        # Latitude ticks (degrees, from Mercator y)
-        ax.set_yticks(lat_ticks_merc)
-        ax.set_yticklabels([f"{int(d)}°" for d in lat_ticks_deg], fontsize=7)
+        # Axes are already in degrees (equirectangular projection)
+        ax.set_xlabel("Longitude (°)", fontsize=8)
+        ax.set_ylabel("Latitude (°)", fontsize=8)
+        ax.tick_params(labelsize=7)
         return coll
 
     value_mappable = None
@@ -398,7 +389,7 @@ def render_mercator_roundtrip(prefix: str, input_dir: Path, output_dir: Path):
                      orientation="horizontal", fraction=0.06, pad=0.12,
                      label="Round-trip divergence error")
 
-    fig.suptitle(r"Round-trip transfer error (Mercator, $\nabla_S Y_2^0$)", fontsize=14)
+    fig.suptitle(r"Round-trip transfer error (equirectangular, $\nabla_S Y_2^0$)", fontsize=14)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / f"{prefix}_mercator.png"
     fig.savefig(output_path, dpi=200, bbox_inches="tight")

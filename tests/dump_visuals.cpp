@@ -804,20 +804,19 @@ void compute_order_comparison(const std::string& prefix,
 // Forward declarations for functions defined later in the file.
 std::vector<moab::EntityHandle> generate_latlon_grid(moab::Core& mb, int nlon, int nlat);
 
-/// Dump cells in Mercator projection: (lon, lat) -> (lon, ln(tan(pi/4 + lat/2)))
+/// Dump cells in equirectangular (plate carrée) projection: (lon, lat) in degrees.
+/// No area distortion, no polar singularity, linear mapping.
 void dump_mercator_mesh(const std::string& filename, moab::Core& mb,
                         const std::vector<moab::EntityHandle>& cells,
                         const std::vector<double>& values)
 {
     std::ofstream out(filename);
     if (!out) return;
-    auto to_mercator = [](const Eigen::Vector3d& p3) -> Eigen::Vector2d {
+    auto to_lonlat = [](const Eigen::Vector3d& p3) -> Eigen::Vector2d {
         const Eigen::Vector3d u = p3.normalized();
-        const double lon = std::atan2(u.y(), u.x());
-        double lat = std::asin(std::max(-1.0, std::min(1.0, u.z())));
-        lat = std::max(-85.0 * PI / 180.0, std::min(85.0 * PI / 180.0, lat));
-        const double y = std::log(std::tan(PI / 4.0 + lat / 2.0));
-        return Eigen::Vector2d(lon, y);
+        const double lon = std::atan2(u.y(), u.x()) * 180.0 / PI;
+        const double lat = std::asin(std::max(-1.0, std::min(1.0, u.z()))) * 180.0 / PI;
+        return Eigen::Vector2d(lon, lat);
     };
     for (std::size_t i = 0; i < cells.size(); ++i) {
         const moab::EntityHandle* conn = nullptr;
@@ -825,22 +824,18 @@ void dump_mercator_mesh(const std::string& filename, moab::Core& mb,
         mimetic::check_moab(mb.get_connectivity(cells[i], conn, nv), "get conn");
         if (nv < 3) continue;
         std::vector<Eigen::Vector2d> projected;
-        bool skip = false;
         for (int v = 0; v < nv; ++v) {
             double xyz[3];
             mimetic::check_moab(mb.get_coords(&conn[v], 1, xyz), "get coords");
-            const Eigen::Vector3d p(xyz[0], xyz[1], xyz[2]);
-            if (std::abs(p.normalized().z()) > std::sin(85.0 * PI / 180.0)) { skip = true; break; }
-            projected.push_back(to_mercator(p));
+            projected.push_back(to_lonlat(Eigen::Vector3d(xyz[0], xyz[1], xyz[2])));
         }
-        if (skip || projected.size() < 3) continue;
-        // Fix longitude wrapping
+        // Fix longitude wrapping at ±180°
         double lon_avg = 0;
         for (const auto& q : projected) lon_avg += q.x();
         lon_avg /= projected.size();
         for (auto& q : projected) {
-            if (q.x() - lon_avg > PI) q.x() -= 2 * PI;
-            if (q.x() - lon_avg < -PI) q.x() += 2 * PI;
+            if (q.x() - lon_avg > 180.0) q.x() -= 360.0;
+            if (q.x() - lon_avg < -180.0) q.x() += 360.0;
         }
         Eigen::Vector2d centroid = Eigen::Vector2d::Zero();
         for (const auto& q : projected) centroid += q;
@@ -1641,9 +1636,9 @@ int main()
             spherical.metric_weighted = true;
 
             moab::Core mb;
-            const auto ll = generate_latlon_grid(mb, 90, 45);
-            const auto cs = mimetic::test_sphere::generate_cubed_sphere(mb, 15);
-            const auto vor = mimetic::test_sphere::generate_icosahedral_dual(mb, 12);
+            const auto ll = generate_latlon_grid(mb, 120, 60);
+            const auto cs = mimetic::test_sphere::generate_cubed_sphere(mb, 20);
+            const auto vor = mimetic::test_sphere::generate_icosahedral_dual(mb, 14);
 
             std::cout << "  lat/lon: " << ll.size() << ", CS: " << cs.size()
                       << ", Voronoi: " << vor.size() << " cells\n";
