@@ -299,7 +299,7 @@ def render_order_comparison(source_file: Path, output_dir: Path):
 
 
 def render_mercator_roundtrip(prefix: str, input_dir: Path, output_dir: Path):
-    """Render 2×5 Mercator round-trip: source | p=1 error | p=3 error × CS/Voronoi rows."""
+    """Render Mercator round-trip panels with dynamic p-order columns for CS and Voronoi rows."""
     src_file = input_dir / f"{prefix}_source_exact.txt"
     files = {}
     for mesh in ["cs", "vor"]:
@@ -350,6 +350,13 @@ def render_mercator_roundtrip(prefix: str, input_dir: Path, output_dir: Path):
     if nrows == 1:
         axes = axes.reshape(1, -1)
 
+    # Mercator axis formatting: x = longitude (rad), y = ln(tan(pi/4 + lat/2))
+    import matplotlib.ticker as mticker
+    lon_ticks_deg = np.array([-180, -120, -60, 0, 60, 120, 180])
+    lon_ticks_rad = np.deg2rad(lon_ticks_deg)
+    lat_ticks_deg = np.array([-60, -30, 0, 30, 60])
+    lat_ticks_merc = np.log(np.tan(np.pi / 4 + np.deg2rad(lat_ticks_deg) / 2))
+
     def fill_panel(ax, polys, vals, cmap, clim, title):
         coll = PolyCollection(polys, array=vals, cmap=cmap, edgecolors="none", linewidths=0.1)
         coll.set_clim(*clim)
@@ -358,6 +365,12 @@ def render_mercator_roundtrip(prefix: str, input_dir: Path, output_dir: Path):
         ax.set_ylim(ylo, yhi)
         ax.set_aspect("equal")
         ax.set_title(title, fontsize=10)
+        # Longitude ticks (degrees)
+        ax.set_xticks(lon_ticks_rad)
+        ax.set_xticklabels([f"{int(d)}°" for d in lon_ticks_deg], fontsize=7)
+        # Latitude ticks (degrees, from Mercator y)
+        ax.set_yticks(lat_ticks_merc)
+        ax.set_yticklabels([f"{int(d)}°" for d in lat_ticks_deg], fontsize=7)
         return coll
 
     value_mappable = None
