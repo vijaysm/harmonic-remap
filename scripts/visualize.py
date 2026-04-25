@@ -354,7 +354,7 @@ def render_mercator_roundtrip(prefix: str, input_dir: Path, output_dir: Path):
     import matplotlib.ticker as mticker
     lon_ticks_deg = np.array([-180, -120, -60, 0, 60, 120, 180])
     lon_ticks_rad = np.deg2rad(lon_ticks_deg)
-    lat_ticks_deg = np.array([-60, -30, 0, 30, 60])
+    lat_ticks_deg = np.array([-80, -60, -40, -20, 0, 20, 40, 60, 80])
     lat_ticks_merc = np.log(np.tan(np.pi / 4 + np.deg2rad(lat_ticks_deg) / 2))
 
     def fill_panel(ax, polys, vals, cmap, clim, title):
