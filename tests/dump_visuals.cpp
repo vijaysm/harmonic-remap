@@ -1636,9 +1636,9 @@ int main()
             spherical.metric_weighted = true;
 
             moab::Core mb;
-            const auto ll = generate_latlon_grid(mb, 120, 60);
-            const auto cs = mimetic::test_sphere::generate_cubed_sphere(mb, 20);
-            const auto vor = mimetic::test_sphere::generate_icosahedral_dual(mb, 14);
+            const auto ll = generate_latlon_grid(mb, 180, 90);
+            const auto cs = mimetic::test_sphere::generate_cubed_sphere(mb, 52);
+            const auto vor = mimetic::test_sphere::generate_icosahedral_dual(mb, 20);
 
             std::cout << "  lat/lon: " << ll.size() << ", CS: " << cs.size()
                       << ", Voronoi: " << vor.size() << " cells\n";

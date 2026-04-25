@@ -62,14 +62,45 @@ struct SpatialIndex {
     }
 };
 
-/// Build spatial index from source cell local polygons.
-SpatialIndex build_source_spatial_index(
-    const std::vector<Eigen::Vector3d>& centers_3d,
-    const std::vector<double>& max_radii)
+/// Build a spatial index from source cell LocalPolygons.
+/// Works for any container of structs that have a `.local` field of type LocalPolygon.
+template <typename SourceVec>
+SpatialIndex build_spatial_index_from_sources(const SourceVec& sources, bool is_spherical)
 {
     SpatialIndex idx;
-    idx.build(centers_3d, max_radii);
+    if (!is_spherical || sources.size() <= 50) return idx;
+
+    std::vector<Eigen::Vector3d> centers(sources.size());
+    std::vector<double> radii(sources.size());
+    for (std::size_t i = 0; i < sources.size(); ++i) {
+        centers[i] = sources[i].local.n;
+        double mc = 1.0;
+        for (const Eigen::Vector3d& p3d : sources[i].local.points_3d)
+            mc = std::min(mc, centers[i].dot(p3d.normalized()));
+        const double angle = std::acos(std::max(-1.0, mc - 0.1));
+        radii[i] = 2.0 * std::sin(std::min(angle, kPi) / 2.0);
+    }
+    idx.build(centers, radii);
     return idx;
+}
+
+/// Find candidate source indices for a target cell or edge using the spatial index.
+/// For a target cell, pass its 3D center and angular radius.
+/// For a target edge, pass the midpoint of its 3D endpoints and the half-angle.
+std::vector<std::size_t> find_overlap_candidates(
+    const SpatialIndex& idx,
+    const Eigen::Vector3d& query_center,
+    double query_angle,
+    std::size_t total_sources)
+{
+    if (!idx.tree) {
+        std::vector<std::size_t> all(total_sources);
+        for (std::size_t i = 0; i < total_sources; ++i) all[i] = i;
+        return all;
+    }
+    const double search_angle = query_angle + idx.max_radius + 0.05;
+    const double search_dist = 2.0 * std::sin(std::min(search_angle, kPi) / 2.0);
+    return idx.find_candidates(query_center, search_dist);
 }
 
 }
@@ -1261,11 +1292,24 @@ std::vector<double> target_divergence_rhs(moab::Core& mb,
         });
     }
 
+    const SpatialIndex div_idx = build_spatial_index_from_sources(
+        sources, options.mode == GeometryMode::SphericalGnomonic);
+
     std::vector<double> rhs(target_polygons.size(), 0.0);
     for (std::size_t target_index = 0; target_index < target_polygons.size(); ++target_index) {
         const moab::EntityHandle target_polygon = target_polygons[target_index];
         const LocalPolygon target = local_polygon(mb, target_polygon, options);
-        for (const SourceCache& source : sources) {
+
+        double tgt_angle = 0;
+        if (options.mode == GeometryMode::SphericalGnomonic) {
+            for (const Eigen::Vector3d& p3d : target.points_3d)
+                tgt_angle = std::max(tgt_angle,
+                    std::acos(std::max(-1.0, std::min(1.0, target.n.dot(p3d.normalized())))));
+        }
+        const auto div_cands = find_overlap_candidates(div_idx, target.n, tgt_angle, sources.size());
+
+        for (const std::size_t si : div_cands) {
+            const SourceCache& source = sources[si];
             std::vector<Eigen::Vector2d> target_in_source;
             if (options.mode == GeometryMode::SphericalGnomonic) {
                 const GnomonicFrame source_frame{source.local.n, source.local.e_x, source.local.e_y, options.radius};
@@ -1360,11 +1404,24 @@ std::vector<double> target_divergence_rhs(moab::Core& mb,
     }
 
     const std::vector<GaussLegendrePoint> quadrature = gauss_legendre_rule(10);
+    const SpatialIndex div_idx = build_spatial_index_from_sources(
+        sources, options.mode == GeometryMode::SphericalGnomonic);
+
     std::vector<double> rhs(target_polygons.size(), 0.0);
     for (std::size_t target_index = 0; target_index < target_polygons.size(); ++target_index) {
         const moab::EntityHandle target_polygon = target_polygons[target_index];
         const LocalPolygon target = local_polygon(mb, target_polygon, options);
-        for (const SourceCache& source : sources) {
+
+        double tgt_angle = 0;
+        if (options.mode == GeometryMode::SphericalGnomonic) {
+            for (const Eigen::Vector3d& p3d : target.points_3d)
+                tgt_angle = std::max(tgt_angle,
+                    std::acos(std::max(-1.0, std::min(1.0, target.n.dot(p3d.normalized())))));
+        }
+        const auto div_cands = find_overlap_candidates(div_idx, target.n, tgt_angle, sources.size());
+
+        for (const std::size_t si : div_cands) {
+            const SourceCache& source = sources[si];
             std::vector<Eigen::Vector2d> target_in_source;
             if (options.mode == GeometryMode::SphericalGnomonic) {
                 const GnomonicFrame source_frame{source.local.n, source.local.e_x, source.local.e_y, options.radius};
@@ -2217,20 +2274,7 @@ EdgeTransferResult MimeticInterpolator::transfer_source_to_target_edges(
         sources.push_back(cache);
     }
 
-    // Build spatial index for source cells
-    SpatialIndex src_index;
-    if (is_spherical() && sources.size() > 50) {
-        std::vector<Eigen::Vector3d> centers(sources.size());
-        std::vector<double> radii(sources.size());
-        for (std::size_t i = 0; i < sources.size(); ++i) {
-            centers[i] = sources[i].center_3d;
-            // Convert angular radius to Euclidean 3D distance for radius search
-            // chord_length = 2*sin(angle/2), where angle = acos(min_cos_angle)
-            const double angle = std::acos(std::max(-1.0, sources[i].min_cos_angle));
-            radii[i] = 2.0 * std::sin(std::min(angle, kPi) / 2.0);
-        }
-        src_index.build(centers, radii);
-    }
+    const SpatialIndex src_index = build_spatial_index_from_sources(sources, is_spherical());
 
     EdgeTransferResult result;
 
@@ -2247,20 +2291,10 @@ EdgeTransferResult MimeticInterpolator::transfer_source_to_target_edges(
             Eigen::Vector3d v_t1 = target.points_3d[edge_index];
             Eigen::Vector3d v_t2 = target.points_3d[(edge_index + 1) % target.points_3d.size()];
 
-            // Determine which source cells to check
-            std::vector<std::size_t> candidates;
-            if (src_index.tree && is_spherical()) {
-                const Eigen::Vector3d mid = (v_t1.normalized() + v_t2.normalized()).normalized();
-                const double edge_angle = std::acos(std::max(-1.0, std::min(1.0,
-                    v_t1.normalized().dot(v_t2.normalized()))));
-                const double search_angle = edge_angle / 2.0 + src_index.max_radius + 0.05;
-                const double search_dist = 2.0 * std::sin(std::min(search_angle, kPi) / 2.0);
-                candidates = src_index.find_candidates(mid, search_dist);
-            } else {
-                // No spatial index: check all sources
-                candidates.resize(sources.size());
-                for (std::size_t i = 0; i < sources.size(); ++i) candidates[i] = i;
-            }
+            const Eigen::Vector3d edge_mid = (v_t1.normalized() + v_t2.normalized()).normalized();
+            const double edge_half = 0.5 * std::acos(std::max(-1.0, std::min(1.0,
+                v_t1.normalized().dot(v_t2.normalized()))));
+            const auto candidates = find_overlap_candidates(src_index, edge_mid, edge_half, sources.size());
 
             for (const std::size_t si : candidates) {
                 const SourceCache& source = sources[si];
@@ -2342,6 +2376,8 @@ CellAverageTransferResult MimeticInterpolator::transfer_source_to_target_cell_av
         });
     }
 
+    const SpatialIndex avg_index = build_spatial_index_from_sources(sources, is_spherical());
+
     CellAverageTransferResult result;
     result.target_cells = target_polygons;
     result.target_areas.reserve(target_polygons.size());
@@ -2357,7 +2393,16 @@ CellAverageTransferResult MimeticInterpolator::transfer_source_to_target_cell_av
         }
         result.target_areas.push_back(target_area);
 
-        for (const SourceCache& source : sources) {
+        double tgt_angle = 0;
+        if (is_spherical()) {
+            for (const Eigen::Vector3d& p3d : target.points_3d)
+                tgt_angle = std::max(tgt_angle,
+                    std::acos(std::max(-1.0, std::min(1.0, target.n.dot(p3d.normalized())))));
+        }
+        const auto avg_cands = find_overlap_candidates(avg_index, target.n, tgt_angle, sources.size());
+
+        for (const std::size_t si : avg_cands) {
+            const SourceCache& source = sources[si];
             std::vector<Eigen::Vector2d> target_in_source;
             if (is_spherical()) {
                 const GnomonicFrame source_frame{source.local.n, source.local.e_x, source.local.e_y, options_.radius};
@@ -2445,6 +2490,8 @@ SparseEdgeProjection MimeticInterpolator::assemble_edge_projection_operator(
         sources.push_back(cache);
     }
 
+    const SpatialIndex proj_index = build_spatial_index_from_sources(sources, is_spherical());
+
     std::vector<Eigen::Triplet<double>> triplets;
     for (const moab::EntityHandle target_polygon : target_polygons) {
         const LocalPolygon target = local_polygon(mb_, target_polygon, options_);
@@ -2458,7 +2505,14 @@ SparseEdgeProjection MimeticInterpolator::assemble_edge_projection_operator(
             const std::size_t target_dof = projection.target_edges.size();
             projection.target_edges.push_back(DirectedEdgeDof{target_polygon, target_edge.handle, edge_index});
 
-            for (const SourceCache& source : sources) {
+            const Eigen::Vector3d proj_mid = is_spherical()
+                ? (v_t1.normalized() + v_t2.normalized()).normalized() : Eigen::Vector3d::Zero();
+            const double proj_half = is_spherical()
+                ? 0.5 * std::acos(std::max(-1.0, std::min(1.0, v_t1.normalized().dot(v_t2.normalized())))) : 0;
+            const auto proj_cands = find_overlap_candidates(proj_index, proj_mid, proj_half, sources.size());
+
+            for (const std::size_t si : proj_cands) {
+                const SourceCache& source = sources[si];
                 Eigen::Vector2d target_a;
                 Eigen::Vector2d target_b;
                 if (is_spherical()) {
@@ -2940,21 +2994,7 @@ EdgeMomentTransferResult PlanarMomentInterpolator::transfer_source_to_target_edg
         });
     }
 
-    // Build spatial index for source cells
-    SpatialIndex ho_src_index;
-    if (is_spherical() && sources.size() > 50) {
-        std::vector<Eigen::Vector3d> centers(sources.size());
-        std::vector<double> radii(sources.size());
-        for (std::size_t i = 0; i < sources.size(); ++i) {
-            centers[i] = sources[i].local.n;
-            double mc = 1.0;
-            for (const Eigen::Vector3d& p3d : sources[i].local.points_3d)
-                mc = std::min(mc, centers[i].dot(p3d.normalized()));
-            const double angle = std::acos(std::max(-1.0, mc - 0.1));
-            radii[i] = 2.0 * std::sin(std::min(angle, kPi) / 2.0);
-        }
-        ho_src_index.build(centers, radii);
-    }
+    const SpatialIndex ho_src_index = build_spatial_index_from_sources(sources, is_spherical());
 
     EdgeMomentTransferResult result;
     const std::vector<GaussLegendrePoint> quadrature = gauss_legendre_rule(10);
@@ -2976,17 +3016,9 @@ EdgeMomentTransferResult PlanarMomentInterpolator::transfer_source_to_target_edg
                 ? std::acos(clamp_unit(target_a3.dot(target_b3)))
                 : 0.0;
 
-            // Use spatial index for candidate selection
-            std::vector<std::size_t> ho_candidates;
-            if (ho_src_index.tree && is_spherical()) {
-                const Eigen::Vector3d mid = (target_a3 + target_b3).normalized();
-                const double ea = std::acos(std::max(-1.0, std::min(1.0, target_a3.dot(target_b3))));
-                const double sa = ea / 2.0 + ho_src_index.max_radius + 0.05;
-                ho_candidates = ho_src_index.find_candidates(mid, 2.0 * std::sin(std::min(sa, kPi) / 2.0));
-            } else {
-                ho_candidates.resize(sources.size());
-                for (std::size_t i = 0; i < sources.size(); ++i) ho_candidates[i] = i;
-            }
+            const Eigen::Vector3d ho_mid = (target_a3 + target_b3).normalized();
+            const double ho_half = 0.5 * std::acos(std::max(-1.0, std::min(1.0, target_a3.dot(target_b3))));
+            const auto ho_candidates = find_overlap_candidates(ho_src_index, ho_mid, ho_half, sources.size());
 
             for (const std::size_t si : ho_candidates) {
                 const SourceCache& source = sources[si];
@@ -3070,21 +3102,8 @@ PlanarMomentInterpolator::transfer_source_to_target_cell_moments(
         sources.push_back(SourceCache{source_polygon, local, absolute_points(local), it->second});
     }
 
-    // Build spatial index for cell moment transfer
-    SpatialIndex cm_src_index;
-    if (options_.mode == GeometryMode::SphericalGnomonic && sources.size() > 50) {
-        std::vector<Eigen::Vector3d> centers(sources.size());
-        std::vector<double> radii(sources.size());
-        for (std::size_t si = 0; si < sources.size(); ++si) {
-            centers[si] = sources[si].local.n;
-            double mc = 1.0;
-            for (const Eigen::Vector3d& p3d : sources[si].local.points_3d)
-                mc = std::min(mc, centers[si].dot(p3d.normalized()));
-            const double angle = std::acos(std::max(-1.0, mc - 0.1));
-            radii[si] = 2.0 * std::sin(std::min(angle, kPi) / 2.0);
-        }
-        cm_src_index.build(centers, radii);
-    }
+    const SpatialIndex cm_src_index = build_spatial_index_from_sources(
+        sources, options_.mode == GeometryMode::SphericalGnomonic);
 
     const std::vector<GaussLegendrePoint> quadrature = gauss_legendre_rule(10);
     std::map<moab::EntityHandle, std::vector<Eigen::Vector2d>> result;
@@ -3097,28 +3116,16 @@ PlanarMomentInterpolator::transfer_source_to_target_cell_moments(
         for (int td = 0; td <= cell_moment_order; ++td) n_cm += td + 1;
         std::vector<Eigen::Vector2d> moments(n_cm, Eigen::Vector2d::Zero());
 
-        // Use k-d tree to find candidate source cells near this target
-        Eigen::Vector3d target_center_3d = Eigen::Vector3d::Zero();
+        // Find candidates using spatial index
+        Eigen::Vector3d target_center_3d = target.n;
+        double target_max_angle = 0;
         if (options_.mode == GeometryMode::SphericalGnomonic) {
-            for (const Eigen::Vector3d& p3d : target.points_3d)
-                target_center_3d += p3d.normalized();
-            target_center_3d.normalize();
-        }
-
-        std::vector<std::size_t> cm_candidates;
-        if (cm_src_index.tree && options_.mode == GeometryMode::SphericalGnomonic) {
-            // Target cell angular radius
-            double target_max_angle = 0;
             for (const Eigen::Vector3d& p3d : target.points_3d)
                 target_max_angle = std::max(target_max_angle,
                     std::acos(std::max(-1.0, std::min(1.0, target_center_3d.dot(p3d.normalized())))));
-            const double sa = target_max_angle + cm_src_index.max_radius + 0.05;
-            cm_candidates = cm_src_index.find_candidates(target_center_3d,
-                2.0 * std::sin(std::min(sa, kPi) / 2.0));
-        } else {
-            cm_candidates.resize(sources.size());
-            for (std::size_t i = 0; i < sources.size(); ++i) cm_candidates[i] = i;
         }
+        const auto cm_candidates = find_overlap_candidates(
+            cm_src_index, target_center_3d, target_max_angle, sources.size());
 
         for (const std::size_t si : cm_candidates) {
             const SourceCache& source = sources[si];
