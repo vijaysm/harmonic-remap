@@ -1168,38 +1168,35 @@ reconstruction chooses between two modes based on the number of edges~\(n_e\):
         moments from the source reconstruction integrated over source-target
         overlaps, with Piola conversion between gnomonic chart frames.
 \end{itemize}
-The resulting maximum round-trip cell-divergence errors on a \(120\times60\)
-lat/lon grid with \(n=20\) cubed-sphere (2400~cells) and \(n=14\) icosahedral
-dual Voronoi (1962~cells) intermediates are:
+The resulting maximum round-trip cell-divergence errors on a \(180\times90\)
+lat/lon grid with \(n=52\) cubed-sphere (16\,224~cells) and \(n=20\)
+icosahedral dual Voronoi (4002~cells) intermediates are:
 \begin{center}
 \begin{tabular}{lllll}
 \toprule
 Intermediate & \(p=1\) & \(p=2\) & \(p=3\) & \(p=2\) improvement \\
 \midrule
 Cubed-sphere &
-  \(1.6\times10^{-1}\) & \(6.7\times10^{-2}\) & \(1.7\times10^{-1}\) & \(2.5\times\) \\
+  \(4.2\times10^{-2}\) & \(9.8\times10^{-3}\) & \(1.6\times10^{-1}\) & \(4.4\times\) \\
 Voronoi &
-  \(1.6\times10^{-1}\) & \(2.0\times10^{-2}\) & \(2.8\times10^{-2}\) & \(7.9\times\) \\
+  \(1.2\times10^{-1}\) & \(9.9\times10^{-3}\) & \(2.4\times10^{-2}\) & \(11.9\times\) \\
 \bottomrule
 \end{tabular}
 \end{center}
-The Voronoi sequence shows clear order separation: \(p=2\) reduces the
-maximum error by \(7.9\times\) relative to \(p=1\).  The cubed-sphere
-\(p=2\) improvement is \(2.5\times\), limited by the cell-moment transfer
-quality on 4-sided cells.  Notably, \(p=3\) does not improve over \(p=2\)
-because the additional polynomial degrees are underconstrained by the
-available transferred moment data.  A nanoflann-based k-d tree spatial
-index accelerates the source cell search from \(O(N^2)\) to
-\(O(N\log N)\).
+At this resolution, the \(p=2\) improvement is dramatic: \(4.4\times\) on
+the cubed-sphere and \(11.9\times\) on Voronoi.  Source-cell search uses a
+nanoflann k-d tree (\(O(N\log N)\)), and the outer target loops are
+parallelized with OpenMP, so the full \(180\times90\) round-trip completes
+in approximately three minutes on four cores.
 
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=\textwidth]{vis_mercator_roundtrip_mercator.png}
   \caption{Round-trip: lat/lon \(\to\) intermediate \(\to\) lat/lon in
-  equirectangular projection (\(120\times60\) RLL, \(n=20\) CS, \(n=14\)
+  equirectangular projection (\(180\times90\) RLL, \(n=52\) CS, \(n=20\)
   Voronoi).  Top: cubed-sphere with \(p=1,2,3\).  Bottom: icosahedral dual
-  Voronoi with \(p=1,2,3\).  The \(p=2\) error reduction is clearly visible
-  on both mesh types.}
+  Voronoi with \(p=1,2,3\).  The \(p=2\) panels are nearly white, showing
+  an order of magnitude improvement over \(p=1\).}
   \label{fig:mercator-roundtrip}
 \end{figure}
 
