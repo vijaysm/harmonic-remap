@@ -1021,7 +1021,7 @@ std::vector<double> roundtrip_highorder(moab::Core& mb_shared,
     opts.regularization = 1.0e-12;
     opts.exact_constraints = false;
 
-    // Forward: p=3 source → intermediate (fresh MOAB)
+    // Forward: high-order source → intermediate (fresh MOAB)
     moab::Core mb_fwd;
     auto src_fwd = duplicate_mesh(mb_shared, source_cells, mb_fwd);
     auto inter_fwd = duplicate_mesh(mb_shared, inter_cells, mb_fwd);
@@ -1062,7 +1062,7 @@ std::vector<double> roundtrip_highorder(moab::Core& mb_shared,
 
     // Adaptive per-cell reconstruction:
     // - Cells strictly overdetermined by edge moments alone (edge_constraints > basis_dim):
-    //   ignore cell moments (cell_weight = 0) to avoid quadrature noise.
+    //   ignore cell moments (cell_weight = 0).
     // - Cells exactly or under-determined: use transferred cell moments.
     const int p = opts.edge_moment_order;
     const int basis_dim = (p + 1) * (p + 2);  // dim([P_p]^2)
@@ -1641,9 +1641,9 @@ int main()
             spherical.metric_weighted = true;
 
             moab::Core mb;
-            const auto ll = generate_latlon_grid(mb, 72, 36);
-            const auto cs = mimetic::test_sphere::generate_cubed_sphere(mb, 8);
-            const auto vor = mimetic::test_sphere::generate_icosahedral_dual(mb, 8);
+            const auto ll = generate_latlon_grid(mb, 90, 45);
+            const auto cs = mimetic::test_sphere::generate_cubed_sphere(mb, 15);
+            const auto vor = mimetic::test_sphere::generate_icosahedral_dual(mb, 12);
 
             std::cout << "  lat/lon: " << ll.size() << ", CS: " << cs.size()
                       << ", Voronoi: " << vor.size() << " cells\n";
@@ -1656,6 +1656,8 @@ int main()
             const auto ll_vor_p1 = roundtrip_p1(mb, ll, vor, spherical);
             std::cout << "  CS p=2 round-trip...\n";
             const auto ll_cs_p2 = roundtrip_highorder(mb, ll, cs, spherical, 2);
+            std::cout << "  Voronoi p=2 round-trip...\n";
+            const auto ll_vor_p2 = roundtrip_highorder(mb, ll, vor, spherical, 2);
             std::cout << "  CS p=3 round-trip (with cell moments)...\n";
             const auto ll_cs_p3 = roundtrip_highorder(mb, ll, cs, spherical, 3);
             std::cout << "  Voronoi p=3 round-trip...\n";
@@ -1678,6 +1680,7 @@ int main()
             dump_errors("cs_p1", ll_cs_p1);
             dump_errors("cs_p2", ll_cs_p2);
             dump_errors("vor_p1", ll_vor_p1);
+            dump_errors("vor_p2", ll_vor_p2);
             dump_errors("cs_p3", ll_cs_p3);
             dump_errors("vor_p3", ll_vor_p3);
         }
