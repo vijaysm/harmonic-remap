@@ -3,6 +3,7 @@ project(MimeticPatchTest LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+option(MIMETIC_ENABLE_OPENMP "Enable OpenMP parallel acceleration" OFF)
 
 find_package(Eigen3 3.3 REQUIRED NO_MODULE)
 
@@ -42,6 +43,38 @@ target_include_directories(mimetic
     ${MOAB_INCLUDE_DIR}
     ${NANOFLANN_INCLUDE_DIR}
 )
+
+if(MIMETIC_ENABLE_OPENMP)
+  set(_openmp_configured OFF)
+  if(APPLE AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    find_path(OPENMP_OMP_INCLUDE_DIR
+      omp.h
+      HINTS
+        ${OpenMP_ROOT}/include
+        /opt/homebrew/opt/libomp/include
+        /opt/homebrew/Cellar/libomp/21.1.3/include
+    )
+    find_library(OPENMP_OMP_LIBRARY
+      NAMES omp
+      HINTS
+        ${OpenMP_ROOT}/lib
+        /opt/homebrew/opt/libomp/lib
+        /opt/homebrew/Cellar/libomp/21.1.3/lib
+    )
+    if(OPENMP_OMP_INCLUDE_DIR AND OPENMP_OMP_LIBRARY)
+      target_compile_options(mimetic PUBLIC -Xpreprocessor -fopenmp)
+      target_include_directories(mimetic PUBLIC ${OPENMP_OMP_INCLUDE_DIR})
+      target_link_libraries(mimetic PUBLIC ${OPENMP_OMP_LIBRARY})
+      set(_openmp_configured ON)
+    endif()
+  endif()
+
+  if(NOT _openmp_configured)
+    find_package(OpenMP REQUIRED)
+    target_link_libraries(mimetic PUBLIC OpenMP::OpenMP_CXX)
+  endif()
+  target_compile_definitions(mimetic PUBLIC MIMETIC_ENABLE_OPENMP=1)
+endif()
 
 add_executable(patch_test tests/patch_test.cpp)
 target_link_libraries(patch_test PRIVATE mimetic)

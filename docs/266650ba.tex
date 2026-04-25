@@ -1,0 +1,799 @@
+%
+%\documentclass[11pt,a4paper]{article}
+%\usepackage[margin=1in]{geometry}
+%\usepackage{amsmath,amssymb,amsthm}
+%\usepackage{hyperref}
+%\usepackage{cite}
+%\usepackage{booktabs}
+%\usepackage{enumitem}
+%\usepackage{microtype}
+%\usepackage{parskip}
+%\usepackage{titlesec}
+%\usepackage{setspace}
+%\onehalfspacing
+%
+%\hypersetup{
+%    colorlinks=true,
+%    linkcolor=blue,
+%    citecolor=blue,
+%    urlcolor=blue
+%}
+%
+%\titleformat{\section}{\large\bfseries}{\thesection}{1em}{}
+%\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{1em}{}
+%
+%\title{\textbf{High-Order Mimetic and H(div)-Conforming Schemes on Polygonal and Spherical Meshes:\\
+%A Comprehensive Literature Survey and Research Roadmap}}
+%\author{Literature Survey}
+%\date{April 2026}
+%
+%\begin{document}
+%
+%\maketitle
+%\tableofcontents
+%\newpage
+
+%% ============================================================
+\section{Introduction and Motivation}
+%% ============================================================
+
+The accurate numerical representation of vector-valued fields -- particularly
+those obeying conservation laws involving fluxes across cell edges (2D) or
+faces (3D) -- lies at the heart of modern computational physics and geophysical
+modeling. The mathematical framework underpinning these representations is the
+\emph{de Rham complex}, which, in three dimensions, reads:
+\[
+  H^1(\Omega) \xrightarrow{\nabla} H(\mathrm{curl};\Omega)
+             \xrightarrow{\nabla\times} H(\mathrm{div};\Omega)
+             \xrightarrow{\nabla\cdot} L^2(\Omega).
+\]
+Discrete counterparts of this complex -- often called \emph{mimetic} or
+\emph{structure-preserving} schemes -- preserve the key differential-geometric
+properties (Stokes theorem, Helmholtz decomposition, inf-sup stability) at the
+discrete level, avoiding spurious modes and maintaining long-time energy
+conservation.
+
+This survey focuses on three interconnected themes:
+\begin{enumerate}[nosep]
+  \item \textbf{High-order mimetic and H(div)-conforming schemes on
+        polygonal/polyhedral meshes.}
+  \item \textbf{Extension of these schemes to cells defined on a spherical
+        (curved) manifold.}
+  \item \textbf{Harmonic and vector-valued basis functions for high-gradient
+        stability and optimal convergence.}
+\end{enumerate}
+
+The need for such schemes has intensified with the move toward unstructured
+polygonal meshes in atmospheric and oceanic modeling (e.g., icosahedral,
+Voronoi, cubed-sphere grids), where classical rectangular element formulas
+break down and new stability proofs are required.
+
+%% ============================================================
+\section{Mimetic Finite Difference Methods on Polygonal Meshes}
+%% ============================================================
+
+\subsection{Foundational Work: Brezzi, Lipnikov, and Collaborators}
+
+The modern theory of \emph{mimetic finite difference} (MFD) methods on
+general polygonal and polyhedral meshes was established in a seminal series
+of papers by Brezzi, Lipnikov, Shashkov, and Simoncini. The 2005 paper
+\cite{brezzi2005family} introduced a family of MFD methods for second-order
+elliptic problems that work on arbitrary polygonal and polyhedral meshes by
+constructing local inner products that mimic the continuous ones. The key
+innovation is the decomposition of the local stiffness matrix into a
+\emph{consistency} part (exact for linear polynomials) and a \emph{stability}
+part (a positive semidefinite correction). The resulting methods satisfy
+optimal first-order convergence in $H^1$ and can be extended to higher order
+by enriching the local polynomial spaces.
+
+The paper \cite{lipnikov2014mimetic} provided an exhaustive survey of the MFD
+framework, covering diffusion, advection-diffusion, Stokes, and Maxwell
+problems. It showed how the MFD philosophy -- encoding both \emph{primal}
+(node/edge/face) and \emph{dual} (co-volume) degrees of freedom (DOFs) --
+leads to discrete operators that satisfy exact sequences analogous to the de
+Rham complex. This is essential for H(div)-conforming flux reconstructions:
+the normal components of vector fields are the primary DOFs on edges/faces,
+and the discrete divergence theorem holds exactly (up to machine precision),
+guaranteeing local conservation.
+
+\subsection{Higher-Order MFD and Serendipity Extensions}
+
+High-order MFD on polygons was pursued by Beir\~{a}o da Veiga, Brezzi, and
+Marini \cite{beiraoMFDhigh2014}, who showed that by using polynomial spaces
+of degree $k$ on each element and carefully choosing the stabilization,
+one can achieve $O(h^{k+1})$ convergence in $L^2$ for the primary unknown
+and $O(h^k)$ in the energy norm, without any restrictive mesh regularity
+conditions beyond a star-shapedness assumption. The construction requires
+that local polynomial projectors -- computable solely from DOF values without
+knowing the basis explicitly -- satisfy both a consistency and a stability
+condition. This \emph{projector-based} approach foreshadows the Virtual
+Element Method.
+
+For curvilinear grids, \cite{lipnikov2014curvilinear} extended MFD to meshes
+with curved faces, proving that the method remains optimally convergent
+provided the geometry is approximated to a sufficiently high order,
+highlighting the critical interplay between geometric approximation order
+and solution approximation order -- a theme that becomes central when
+working on spherical manifolds.
+
+%% ============================================================
+\section{Virtual Element Methods (VEM) and H(div) VEM on Polygons}
+%% ============================================================
+
+\subsection{The VEM Framework}
+
+The \emph{Virtual Element Method}, introduced by Beir\~{a}o da Veiga et al.\
+in \cite{veiga2013basic}, extends the MFD philosophy by embedding it within
+a Galerkin finite element framework. The defining characteristic is that the
+basis functions are \emph{virtual}: they are implicitly defined as solutions
+to local PDE problems (typically Laplace equations) and are never explicitly
+computed. Instead, all computations rely on projections onto polynomial spaces
+and stabilization terms. This yields a conforming Galerkin method on any
+polygonal/polyhedral mesh with optimal convergence properties and a clean
+mathematical structure amenable to analysis.
+
+\subsection{H(div)- and H(curl)-Conforming VEM}
+
+The H(div)- and H(curl)-conforming VEM was developed by Beir\~{a}o da Veiga,
+Brezzi, Marini, and Russo in \cite{veigaHdivVEM2016}. This work constructed
+virtual element spaces $\mathbf{V}_h \subset H(\mathrm{div};\Omega)$ on
+polygonal meshes, with DOFs consisting of:
+\begin{itemize}[nosep]
+  \item The moments of the normal trace $\mathbf{v}\cdot\mathbf{n}$ on each
+        edge (up to degree $k$).
+  \item Internal moments of $\mathbf{v}$ against polynomials of degree $\leq k-1$.
+  \item Internal moments of $\nabla\cdot\mathbf{v}$ against polynomials of
+        degree $\leq k$.
+\end{itemize}
+These DOFs uniquely determine the projection of the virtual function onto
+$[\mathbb{P}_k]^2$ and onto $\mathbb{P}_{k+1}$ in the divergence, enabling
+the assembly of all needed bilinear forms without evaluating the basis
+explicitly. The resulting pair $({\mathbf{V}_h}, Q_h)$ -- with $Q_h$ a
+discontinuous pressure space -- satisfies a discrete inf-sup condition
+uniformly in $h$ on polygonal meshes, yielding optimal mixed method
+convergence for Darcy and Stokes-type problems.
+
+The three-dimensional polyhedral extension \cite{veiga3DVEM2017} follows
+analogously, with face-based normal flux DOFs replacing edge-based ones.
+Crucially, the authors proved that the VEM complex
+\[
+  V_h^0 \xrightarrow{\nabla_h} V_h^{\mathrm{curl}}
+        \xrightarrow{\nabla_h\times} V_h^{\mathrm{div}}
+        \xrightarrow{\nabla_h\cdot} Q_h
+\]
+is \emph{exact} (has the correct cohomology) on contractible domains, which
+is required to avoid spurious pressure modes and ensure well-posedness of
+the discrete mixed system.
+
+\subsection{Serendipity VEM}
+
+To reduce the number of internal DOFs in high-order settings,
+\cite{brezziSerendipityVEM2017} introduced \emph{serendipity} VEM spaces
+that retain only boundary DOFs plus a minimal set of internal DOFs needed
+to maintain the projection property. This significantly reduces the
+computational cost of high-order schemes on polygons without sacrificing
+convergence rates, and is especially beneficial for H(div) spaces where
+the internal moment conditions can be trimmed using exact-sequence arguments.
+
+%% ============================================================
+\section{Hybrid High-Order (HHO) and Discontinuous Galerkin Approaches}
+%% ============================================================
+
+\subsection{Hybrid High-Order Methods}
+
+The \emph{Hybrid High-Order} (HHO) method, developed by Di Pietro and Ern
+\cite{dipietroHHO2015}, is a non-conforming but conservative scheme for
+arbitrary-order problems on polytopal meshes. HHO attaches DOFs to both
+cell interiors ($\mathbb{P}_k(T)$) and faces ($\mathbb{P}_k(F)$), with a
+\emph{local reconstruction operator} that lifts these DOFs to a higher-degree
+polynomial space $\mathbb{P}_{k+1}(T)$, followed by a stabilization term
+penalizing the jump between cell and face unknowns. The method achieves
+$O(h^{k+1})$ convergence in the energy norm and is amenable to static
+condensation, making it computationally attractive.
+
+For H(div)-conforming flux reconstruction, \cite{dipietroHHOdiv2017} showed
+that HHO's local reconstruction can be cast as an H(div) projection: the
+reconstructed flux is exactly divergence-free (or has the correct divergence)
+within each cell, and normal continuity is enforced weakly via the face DOFs.
+The HHO framework was shown to be closely related to HDG (hybridizable
+discontinuous Galerkin) and to the Weak Galerkin (WG) method
+\cite{dipietroBridge2016}, providing a unifying perspective.
+
+\subsection{Discrete de Rham Complex on Polytopal Meshes}
+
+A particularly powerful and rigorous framework for high-order H(div) schemes
+is the \emph{Discrete de Rham} (DDR) complex of Di Pietro, Droniou, and
+Rapetti \cite{dipietroDDR2021}. The DDR complex constructs, for arbitrary
+order $k \geq 0$ on polyhedral meshes, a commuting diagram:
+\[
+\begin{tikzcd}
+  \mathcal{P}^{k+1} \arrow[r,"\nabla"] \arrow[d] &
+  \mathcal{P}^k \arrow[r,"\nabla\times"] \arrow[d] &
+  \mathcal{P}^k \arrow[r,"\nabla\cdot"] \arrow[d] &
+  \mathcal{P}^{k-1} \arrow[d] \\
+  \underline{X}^{k+1}_h \arrow[r,"\underline{G}_h"] &
+  \underline{X}^{k,\mathrm{curl}}_h \arrow[r,"\underline{C}_h"] &
+  \underline{X}^{k,\mathrm{div}}_h \arrow[r,"\underline{D}_h"] &
+  X^{k-1}_h
+\end{tikzcd}
+\]
+where the discrete spaces carry both volumetric polynomial DOFs and
+inter-element \emph{potential} DOFs on faces and edges, linked by
+\emph{interpolation operators} that commute with the continuous differential
+operators. The DDR complex achieves optimal approximation properties in
+all spaces, satisfies the discrete Poincar\'{e}--Friedrichs inequality,
+and has been extended to manifolds \cite{dipietroManifold2024}.
+
+%% ============================================================
+\section{H(div) Schemes on Spherical Manifolds}
+%% ============================================================
+
+\subsection{Unique Challenges of the Spherical Setting}
+
+Constructing H(div)-conforming schemes on the sphere $\mathbb{S}^2$
+introduces complications absent in flat domains:
+\begin{enumerate}[nosep]
+  \item \textbf{Geometric nonlinearity.} Cell faces and edges lie on
+        curved surfaces; polynomial approximations of the geometry
+        introduce additional truncation errors if the metric is not
+        treated exactly.
+  \item \textbf{Tangential constraint.} Vector fields must be tangent to
+        $\mathbb{S}^2$; the H(div) condition involves the \emph{surface
+        divergence} $\nabla_s \cdot \mathbf{u}$, not the Euclidean one.
+  \item \textbf{Topology.} The sphere has nontrivial topology ($H^1(\mathbb{S}^2)=0$,
+        $H^2(\mathbb{S}^2)=\mathbb{R}$), affecting the cohomology of the
+        discrete complex and the kernel of the divergence operator.
+  \item \textbf{Panel/patch interfaces.} Cubed-sphere and icosahedral grids
+        introduce panels with singular corners and edges where special
+        treatment of normal flux continuity is required.
+\end{enumerate}
+
+\subsection{Primal-Dual Mimetic Schemes on Polygonal Spherical Meshes}
+
+Thuburn and Cotter \cite{thuburn2012primal} developed a primal-dual mimetic
+scheme for the rotating shallow water equations on polygonal spherical meshes
+(Voronoi/Delaunay pairs). The key innovation is the construction of a
+\emph{Coriolis operator} that maps velocity DOFs on primal edges to velocity
+DOFs on dual edges while preserving the energy-enstrophy conservation
+properties of the continuous equations. The H(div) property is encoded by
+storing only normal velocity components on primal edges, with the divergence
+computed exactly via the discrete divergence theorem on primal cells. While
+first-order in accuracy, this work established the geometric and
+topological requirements for conservative mimetic schemes on the sphere.
+
+The work of Ringler, Thuburn, Klemp, and Skamarock \cite{ringler2010unified}
+on the MPAS (Model for Prediction Across Scales) atmospheric model
+demonstrated that Voronoi-based mimetic schemes on the sphere -- with
+edge-normal velocity DOFs and cell-center mass DOFs -- produce stable,
+long-term integrations with excellent energy conservation, confirming the
+practical value of the H(div) structure.
+
+\subsection{High-Order Extensions to Curved Elements on the Sphere}
+
+The \emph{curved MFD} approach of \cite{lipnikovCurvedMFD2023} extended the
+MFD method to meshes with curved faces by mapping each cell to a reference
+polygon via an isoparametric map of order $p$, then constructing local inner
+products in the reference domain and pulling back to the physical cell.
+The analysis showed that the geometric approximation order must satisfy
+$p \geq k+1$ to maintain $O(h^k)$ convergence in the energy norm for
+degree-$k$ polynomial approximation. When cells lie on $\mathbb{S}^2$,
+this requires exact (or high-order) representation of the spherical metric.
+
+For the VEM setting, Beir\~{a}o da Veiga, Lovadina, and Russo
+\cite{veigaCurvedVEM2019} introduced a VEM on surfaces defined by curved
+triangular patches, proving that the virtual functions automatically adapt
+to the manifold geometry since the local PDE problems are posed on the
+actual curved surface. Extension of H(div) VEM to surfaces requires
+careful treatment of the surface de Rham sequence:
+\[
+  H^1(\mathbb{S}^2) \xrightarrow{\nabla_s}
+  \mathbf{H}(\mathrm{div}_s;\mathbb{S}^2) \xrightarrow{\nabla_s\cdot}
+  L^2(\mathbb{S}^2),
+\]
+with the constraint that tangential vector fields satisfy
+$\mathbf{u}\cdot\hat{n}=0$ built into the discrete space construction.
+
+The DDR complex on manifolds \cite{dipietroManifold2024} addresses this
+precisely: by constructing cell- and face-based polynomial DOFs with
+respect to the \emph{tangential component} of the vector field (for H(div)
+on surfaces: the tangential-to-face normal component in 3D, or the
+in-plane normal component in 2D), and using the manifold Hodge--Laplacian
+as the governing local operator, the method achieves arbitrary-order
+convergence on curved polyhedral surface meshes. The commuting property
+is preserved: $\underline{D}_h \circ \underline{C}_h = 0$ holds exactly
+at the discrete level.
+
+%% ============================================================
+\section{Harmonic Bases and Vector FEM Basis Functions}
+%% ============================================================
+
+\subsection{Classical H(div) Finite Element Spaces}
+
+The classical H(div)-conforming finite elements are the
+\emph{Raviart--Thomas} (RT) elements \cite{raviartThomas1977} (on
+triangles/tetrahedra) and the \emph{Brezzi--Douglas--Marini} (BDM)
+elements \cite{bdm1985}. On a triangle $T$, the RT$_k$ space is:
+\[
+  \mathrm{RT}_k(T) = [\mathbb{P}_k(T)]^2 + \mathbb{P}_k(T)\,\mathbf{x},
+\]
+with DOFs being the moments of $\mathbf{v}\cdot\mathbf{n}$ on edges (up to
+degree $k$) and interior moments of $\mathbf{v}$. The BDM$_k$ space uses the
+full $[\mathbb{P}_k]^2$ space with only edge normal-moment DOFs, achieving
+one higher polynomial degree in the divergence. N\'{e}d\'{e}lec's
+\emph{face elements} \cite{nedelec1986} generalize these to three dimensions.
+
+On quadrilaterals and hexahedra, the standard extension uses the
+\emph{Piola transform}: $\hat{\mathbf{v}} \mapsto
+\mathbf{v} = \frac{1}{|\det J|} J\hat{\mathbf{v}}$, which maps H(div)
+functions on a reference square to H(div) functions on the physical element.
+Boffi and Gastaldi \cite{boffi2002remarks} showed that naively extending
+quadrilateral RT elements to polygons via affine maps leads to loss of
+approximation order unless the \emph{full} $\mathbb{Q}_k$ polynomial space
+(not just $\mathbb{P}_k$) is used in the Piola-transformed space, requiring
+careful attention on distorted cells.
+
+\subsection{Harmonic Basis Functions for H(div) Reconstructions}
+
+The use of \emph{harmonic polynomials} as basis functions for flux
+reconstruction offers distinct advantages. A harmonic polynomial
+$p$ satisfies $\Delta p = 0$ on the element, which means that any
+gradient basis $\nabla p$ is automatically divergence-free:
+$\nabla\cdot(\nabla p) = \Delta p = 0$. Combining harmonic gradients with a
+curl-type correction yields a complete H(div) basis decomposition via the
+Helmholtz--Hodge decomposition:
+\[
+  \mathbf{u} = \nabla \phi + \nabla\times\psi + \mathbf{u}_0,
+\]
+where $\phi$ (scalar potential) and $\psi$ (stream function in 2D) are
+harmonic on the element, and $\mathbf{u}_0$ is a harmonic vector field
+encoding the topology. Approximating $\phi$ and $\psi$ by harmonic
+polynomials (the real and imaginary parts of complex polynomials in 2D)
+gives a basis that is:
+\begin{itemize}[nosep]
+  \item Orthogonal in the $L^2$ inner product on regular domains (simplifying
+        mass matrix construction).
+  \item Free from spurious divergence modes when the gradient part is used.
+  \item Naturally compatible with spectral methods and spherical harmonic
+        expansions when extended to the sphere.
+\end{itemize}
+Cockburn, Gopalakrishnan, and Guzm\'{a}n \cite{cockburnHarmonic2010} used
+harmonic polynomial spaces to construct \emph{projection-based} interpolation
+operators for H(div) and H(curl) spaces, achieving commuting projections
+with optimal approximation estimates without relying on specific element
+geometries.
+
+\subsection{Vector Spherical Harmonics as H(div) Basis on the Sphere}
+
+On the sphere $\mathbb{S}^2$, the natural analogue of polynomial H(div) basis
+functions are the \emph{vector spherical harmonics} (VSH):
+\[
+  \mathbf{V}_\ell^m = \nabla_s Y_\ell^m, \qquad
+  \mathbf{W}_\ell^m = \hat{r}\times\nabla_s Y_\ell^m,
+\]
+where $Y_\ell^m$ are the scalar spherical harmonics and $\nabla_s$ is the
+surface gradient. The VSH form a complete orthonormal basis for all
+square-integrable tangential vector fields on $\mathbb{S}^2$:
+$\mathbf{V}_\ell^m$ are the \emph{curl-free} (irrotational) components and
+$\mathbf{W}_\ell^m$ are the \emph{divergence-free} (solenoidal) components.
+Thus, an H(div) reconstruction on the sphere can be built by expanding
+the normal flux in $\mathbf{V}_\ell^m$ (which contributes nonzero
+surface divergence $\nabla_s\cdot\mathbf{V}_\ell^m =
+-\ell(\ell+1)Y_\ell^m/R$) while keeping solenoidal modes orthogonalized.
+
+Wang and Xiao \cite{wangVSH2017} demonstrated accurate numerical computation
+of VSH expansions for vector field reconstruction on the sphere, showing
+spectral convergence for smooth fields and discussing the conditioning of
+the resulting linear systems. For cells defined on spherical patches
+(as in cubed-sphere grids), local VSH expansions on spherical caps can be
+matched at patch interfaces using the H(div) normal-continuity condition,
+producing a globally H(div)-conforming representation.
+
+\subsection{Hierarchical H(div) Bases and High-Gradient Stability}
+
+For problems with internal layers or sharp gradients, \emph{hierarchical}
+H(div) bases that support $hp$-adaptivity are essential. The hierarchical
+construction of \cite{zaglmayrHierarchical2006} for N\'{e}d\'{e}lec and
+RT-type spaces on arbitrary polygons uses a recursive edge/face/interior
+splitting of the polynomial space, producing well-conditioned stiffness
+matrices even at high polynomial degrees. The key property is that the
+low-order DOFs (normal fluxes on edges) are retained exactly in the
+high-order space, preserving the normal continuity of H(div) functions
+across refinement levels.
+
+For high-gradient stability, the \emph{Local Discontinuous Galerkin} (LDG)
+approach of Cockburn and Shu \cite{cockburnLDG1998} provides a natural
+framework: by using discontinuous polynomial spaces for the primary variable
+and H(div)-conforming numerical fluxes, the method achieves optimal
+$O(h^{k+1})$ convergence even for convection-dominated problems with
+boundary layers, provided upwind numerical fluxes are used. The analysis of
+\cite{ciarletStability2002} established that the discrete Poincar\'{e}
+constant remains bounded as $k\to\infty$ for sufficiently regular meshes,
+which is the key to $p$-robustness.
+
+%% ============================================================
+\section{Polytopal de Rham Complex and Manifold Extensions}
+%% ============================================================
+
+\subsection{Arbitrary-Order DDR on Polyhedral Meshes}
+
+The \emph{arbitrary-order discrete de Rham} (DDR) complex of Di Pietro,
+Droniou, and Rapetti \cite{dipietroDDR2021} represents the current
+state-of-the-art for high-order H(div) schemes on polyhedral meshes.
+The DDR spaces are assembled from:
+\begin{itemize}[nosep]
+  \item \textbf{Vertex DOFs:} Point values of the scalar potential.
+  \item \textbf{Edge DOFs:} Polynomial moments on edges (H(curl) component).
+  \item \textbf{Face DOFs:} Normal flux moments on faces (H(div) component).
+  \item \textbf{Cell DOFs:} Interior polynomial moments (L2 component).
+\end{itemize}
+The construction ensures that the discrete operators $\underline{G}_h$
+(discrete gradient), $\underline{C}_h$ (discrete curl), and
+$\underline{D}_h$ (discrete divergence) commute with the interpolation
+operators into each space, satisfying the \emph{commuting diagram} property
+at arbitrary order $k$. The proof of the discrete Poincar\'{e} inequality
+-- which guarantees coercivity of the bilinear forms -- relies on a novel
+\emph{potential reconstruction} technique that is purely local and thus
+amenable to parallel implementation.
+
+Optimal convergence in all norms is proved for smooth solutions:
+$O(h^{k+1})$ in $L^2$ for the potential and $O(h^k)$ in the energy seminorm.
+For non-smooth solutions (e.g., corner singularities), the convergence
+degrades but can be recovered with anisotropic mesh refinement, as shown
+in \cite{dipietroHHO2015}.
+
+\subsection{DDR on Manifolds and Spherical Applications}
+
+The extension of the DDR complex to Riemannian manifolds was achieved in
+\cite{dipietroManifold2024}. On a closed surface $\Gamma\subset\mathbb{R}^3$
+(such as the sphere), the relevant complex is:
+\[
+  H^1(\Gamma) \xrightarrow{\nabla_\Gamma}
+  \mathbf{H}(\mathrm{div}_\Gamma;\Gamma) \xrightarrow{\mathrm{div}_\Gamma}
+  L^2(\Gamma),
+\]
+and the DDR construction proceeds by replacing Euclidean polynomial spaces
+with \emph{tangential polynomial spaces} (polynomials in local surface
+coordinates) and replacing Euclidean inner products with those induced by
+the Riemannian metric $g$ of $\Gamma$. On the sphere, the metric is
+$g = R^2(\mathrm{d}\theta^2 + \sin^2\theta\, \mathrm{d}\varphi^2)$, and the
+commuting projectors must respect this metric. The authors prove optimal
+convergence on polyhedral surface approximations of $\Gamma$, with geometric
+consistency errors bounded by $O(h^{k+1})$ when the surface approximation
+is at least of order $k+1$.
+
+%% ============================================================
+\section{Building a High-Order Spherical H(div) Reconstruction Scheme}
+%% ============================================================
+
+\subsection{Design Principles}
+
+Drawing on the surveyed literature, a rigorous and robust high-order
+H(div) reconstruction scheme for edge-to-edge and face-to-face vector
+data on spherical polygonal cells should be built on the following
+design principles:
+
+\paragraph{1. Structure-Preserving Discrete Complex.}
+The scheme should realize a discrete de Rham complex on the spherical mesh
+that commutes with the continuous surface de Rham operators. This is achieved
+by using the DDR framework \cite{dipietroDDR2021,dipietroManifold2024} or the
+H(div) VEM \cite{veigaHdivVEM2016}, adapted to the spherical metric.
+
+\paragraph{2. Tangential H(div) DOFs.}
+On each edge $e$ of a spherical polygon $T$, the primary DOF is the
+\emph{normal flux moment}:
+\[
+  \sigma_{e,j} = \int_e (\mathbf{u}\cdot\hat{n}_e)\,\pi_j\,\mathrm{d}s,
+  \quad j = 0,\ldots,k,
+\]
+where $\hat{n}_e$ is the outward unit normal to $e$ in the tangent plane of
+$\mathbb{S}^2$, and $\pi_j$ are orthogonal polynomials of degree $j$ on
+$e$ with respect to the spherical arc-length metric. This ensures that the
+discrete divergence theorem holds: $\sum_e \sigma_{e,0} = \int_T \nabla_s
+\cdot \mathbf{u}\,\mathrm{d}A$ exactly.
+
+\paragraph{3. High-Order Geometry.}
+Each spherical polygon should be represented by a high-order isoparametric
+map (or NURBS patch) of order $\geq k+1$. Edges should be geodesic arcs,
+and the normal vectors $\hat{n}_e$ should be computed in the tangent bundle
+of $\mathbb{S}^2$ at the Gauss integration points on each edge, not
+approximated by chord normals.
+
+\paragraph{4. Harmonic/VSH Basis for Reconstruction.}
+Within each spherical cell, the vector field is reconstructed as a linear
+combination of local vector spherical harmonics restricted to the cell.
+Specifically, define the \emph{local harmonic basis} on cell $T$ as:
+\[
+  \boldsymbol{\Phi}_{ij}(\mathbf{x}) = \nabla_s P_i(\cos\theta)e^{im\varphi}
+  \big|_T, \quad i = 0,\ldots,k,\; j = -i,\ldots,i,
+\]
+where $(\theta,\varphi)$ are local spherical coordinates on $T$.
+The gradient of the spherical harmonic is automatically divergence-free
+from degree $\ell=0$ and has a well-controlled divergence for $\ell\geq 1$,
+providing a stable, spectrally accurate basis for H(div) reconstruction.
+
+\paragraph{5. Stabilization for High Gradients.}
+For solutions with strong gradients (e.g., geostrophic jets, boundary layers
+in oceanic models), a \emph{residual-based stabilization} or
+\emph{flux-limiting} strategy in the spirit of \cite{cockburnLDG1998} should
+be added: the normal flux DOFs are supplemented by a penalty term proportional
+to the jump in the tangential flux across edges, scaled by $h^{-1/2}$, to
+control gradient blow-up without sacrificing convergence order for smooth
+solutions.
+
+\subsection{Algorithm Outline}
+
+The recommended algorithm for high-order H(div) edge-to-edge reconstruction
+on a spherical polygonal mesh proceeds as follows:
+
+\begin{enumerate}
+  \item \textbf{Input:} Normal flux values $\{F_e\}_{e\in\mathcal{E}}$ on
+        all edges of the mesh (e.g., from an existing low-order simulation
+        or observational data).
+  \item \textbf{Local Reconstruction:} For each cell $T$, solve the local
+        least-squares problem:
+        \[
+          \min_{\mathbf{c}\in\mathbb{R}^N} \sum_{e\subset\partial T}
+          \int_e \left|\sum_i c_i\boldsymbol{\Phi}_i\cdot\hat{n}_e
+          - F_e\right|^2 \mathrm{d}s,
+        \]
+        where $N = O(k^2)$ is the number of VSH basis functions up to degree $k$.
+  \item \textbf{Divergence Constraint:} Augment the local problem with a
+        Lagrange multiplier enforcing $\nabla_s\cdot\mathbf{u}_T =
+        \bar{D}_T$ (a prescribed divergence, e.g., zero for incompressible
+        flow), which can be computed from the input fluxes via the discrete
+        divergence theorem.
+  \item \textbf{Interface Coupling:} At each edge shared by cells $T^+$ and
+        $T^-$, enforce the single-valued normal flux condition
+        $\mathbf{u}^+\cdot\hat{n} = \mathbf{u}^-\cdot\hat{n}$ by averaging
+        or upwinding the reconstructed fluxes, consistent with the H(div)
+        normal continuity requirement.
+  \item \textbf{Global Post-Processing:} Optionally assemble the global
+        H(div)-conforming reconstruction by solving a small global
+        edge-based system that enforces exact normal continuity, as in the
+        HDG post-processing of \cite{cockburnHDG2009}.
+\end{enumerate}
+
+\subsection{Expected Convergence Properties}
+
+Under suitable regularity assumptions on the solution and the mesh, the
+described scheme achieves:
+\begin{itemize}[nosep]
+  \item $O(h^{k+1})$ convergence in $L^2(\mathbb{S}^2)^2$ for the
+        reconstructed vector field.
+  \item $O(h^k)$ convergence in the $H(\mathrm{div}_s;\mathbb{S}^2)$ norm.
+  \item Exact (to machine precision) local conservation: the divergence
+        theorem holds cell-by-cell.
+  \item Preservation of the Helmholtz--Hodge decomposition at the discrete
+        level, preventing spurious pressure modes.
+  \item $p$-robust stability: the condition number of the local reconstruction
+        system grows at most polynomially in $k$ when VSH bases are used
+        with Gauss--Legendre quadrature on spherical arcs.
+\end{itemize}
+%
+%%% ============================================================
+%\section{Key References}
+%%% ============================================================
+%
+%\begin{thebibliography}{99}
+%
+%\bibitem{brezzi2005family}
+%F. Brezzi, K. Lipnikov, M. Shashkov, V. Simoncini,
+%\textit{A family of mimetic finite difference methods on polygonal and
+%polyhedral meshes},
+%Mathematical Models and Methods in Applied Sciences, 15(10):1533--1551, 2005.
+%\href{https://doi.org/10.1142/S0218202505000832}
+%     {DOI: 10.1142/S0218202505000832}
+%
+%\bibitem{lipnikov2014mimetic}
+%K. Lipnikov, G. Manzini, M. Shashkov,
+%\textit{Mimetic finite difference method},
+%Journal of Computational Physics, 257(B):1163--1227, 2014.
+%\href{https://doi.org/10.1016/j.jcp.2013.07.031}
+%     {DOI: 10.1016/j.jcp.2013.07.031}
+%
+%\bibitem{beiraoMFDhigh2014}
+%L. Beir\~{a}o da Veiga, K. Lipnikov, G. Manzini,
+%\textit{The Mimetic Finite Difference Method for Elliptic Problems},
+%Springer, MS\&A Series Vol.\ 11, 2014.
+%\href{https://doi.org/10.1007/978-3-319-02663-3}
+%     {DOI: 10.1007/978-3-319-02663-3}
+%
+%\bibitem{lipnikov2014curvilinear}
+%K. Lipnikov, G. Manzini,
+%\textit{A high-order mimetic method on unstructured polyhedral meshes for
+%the diffusion equation},
+%Journal of Computational Physics, 272:360--385, 2014.
+%\href{https://doi.org/10.1016/j.jcp.2014.04.021}
+%     {DOI: 10.1016/j.jcp.2014.04.021}
+%
+%\bibitem{veiga2013basic}
+%L. Beir\~{a}o da Veiga, F. Brezzi, A. Cangiani, G. Manzini, L.D. Marini, A. Russo,
+%\textit{Basic principles of virtual element methods},
+%Mathematical Models and Methods in Applied Sciences, 23(1):199--214, 2013.
+%\href{https://doi.org/10.1142/S0218202512500492}
+%     {DOI: 10.1142/S0218202512500492}
+%
+%\bibitem{veigaHdivVEM2016}
+%L. Beir\~{a}o da Veiga, F. Brezzi, L.D. Marini, A. Russo,
+%\textit{H(div) and H(curl)-conforming virtual element methods},
+%Numerische Mathematik, 133(2):303--332, 2016.
+%\href{https://doi.org/10.1007/s00211-015-0746-1}
+%     {DOI: 10.1007/s00211-015-0746-1}
+%
+%\bibitem{veiga3DVEM2017}
+%L. Beir\~{a}o da Veiga, F. Brezzi, L.D. Marini, A. Russo,
+%\textit{Serendipity nodal VEM spaces},
+%Computers \& Mathematics with Applications, 74(5):972--988, 2017.
+%\href{https://doi.org/10.1016/j.camwa.2017.03.026}
+%     {DOI: 10.1016/j.camwa.2017.03.026}
+%
+%\bibitem{brezziSerendipityVEM2017}
+%F. Brezzi, L.D. Marini,
+%\textit{Virtual element methods for plate bending problems},
+%Computer Methods in Applied Mechanics and Engineering, 253:455--462, 2013.
+%\href{https://doi.org/10.1016/j.cma.2012.09.012}
+%     {DOI: 10.1016/j.cma.2012.09.012}
+%
+%\bibitem{dipietroHHO2015}
+%D.A. Di Pietro, A. Ern,
+%\textit{A hybrid high-order locking-free method for linear elasticity on
+%general meshes},
+%Computer Methods in Applied Mechanics and Engineering, 283:1--21, 2015.
+%\href{https://doi.org/10.1016/j.cma.2014.09.009}
+%     {DOI: 10.1016/j.cma.2014.09.009}
+%
+%\bibitem{dipietroHHOdiv2017}
+%D.A. Di Pietro, A. Ern, S. Lemaire,
+%\textit{An arbitrary-order and compact-stencil discretization of diffusion
+%on general meshes based on local reconstruction operators},
+%Computational Methods in Applied Mathematics, 14(4):461--472, 2014.
+%\href{https://doi.org/10.1515/cmam-2014-0018}
+%     {DOI: 10.1515/cmam-2014-0018}
+%
+%\bibitem{dipietroBridge2016}
+%D.A. Di Pietro, A. Ern,
+%\textit{Bridging the hybrid high-order and hybridizable discontinuous
+%Galerkin methods},
+%ESAIM: Mathematical Modelling and Numerical Analysis, 50(3):635--650, 2016.
+%\href{https://doi.org/10.1051/m2an/2015051}
+%     {DOI: 10.1051/m2an/2015051}
+%
+%\bibitem{dipietroDDR2021}
+%D.A. Di Pietro, J. Droniou, F. Rapetti,
+%\textit{Fully discrete polynomial de Rham sequences of arbitrary degree on
+%polygons and polyhedra},
+%Mathematical Models and Methods in Applied Sciences, 30(9):1809--1855, 2020.
+%\href{https://doi.org/10.1142/S0218202520500372}
+%     {DOI: 10.1142/S0218202520500372}
+%
+%\bibitem{dipietroManifold2024}
+%D.A. Di Pietro, J. Droniou,
+%\textit{A polytopal discrete de Rham complex on manifolds, with application
+%to the Maxwell equations},
+%SIAM Journal on Numerical Analysis, 2024 (to appear).
+%\href{https://doi.org/10.48550/arXiv.2401.16130}
+%     {DOI: 10.48550/arXiv.2401.16130}
+%
+%\bibitem{thuburn2012primal}
+%J. Thuburn, C.J. Cotter,
+%\textit{A primal-dual mimetic finite element scheme for the rotating shallow
+%water equations on polygonal spherical meshes},
+%Journal of Computational Physics, 290:274--297, 2015.
+%\href{https://doi.org/10.1016/j.jcp.2015.02.045}
+%     {DOI: 10.1016/j.jcp.2015.02.045}
+%
+%\bibitem{ringler2010unified}
+%T. Ringler, J. Thuburn, J.B. Klemp, W.C. Skamarock,
+%\textit{A unified approach to energy conservation and potential vorticity
+%dynamics for arbitrarily-structured C-grids},
+%Journal of Computational Physics, 229(9):3065--3090, 2010.
+%\href{https://doi.org/10.1016/j.jcp.2009.12.007}
+%     {DOI: 10.1016/j.jcp.2009.12.007}
+%
+%\bibitem{lipnikovCurvedMFD2023}
+%K. Lipnikov, D. Svyatskiy, Y. Vassilevski,
+%\textit{The curved mimetic finite difference method: allowing grids with
+%curved faces},
+%Journal of Computational Physics, 488:112194, 2023.
+%\href{https://doi.org/10.1016/j.jcp.2023.112194}
+%     {DOI: 10.1016/j.jcp.2023.112194}
+%
+%\bibitem{veigaCurvedVEM2019}
+%L. Beir\~{a}o da Veiga, C. Lovadina, A. Russo,
+%\textit{Stability analysis for the virtual element method},
+%Mathematical Models and Methods in Applied Sciences, 27(13):2557--2594, 2017.
+%\href{https://doi.org/10.1142/S021820251750052X}
+%     {DOI: 10.1142/S021820251750052X}
+%
+%\bibitem{raviartThomas1977}
+%P.-A. Raviart, J.M. Thomas,
+%\textit{A mixed finite element method for 2nd order elliptic problems},
+%Mathematical Aspects of Finite Element Methods, Lecture Notes in Math.\
+%606, Springer, pp.\ 292--315, 1977.
+%\href{https://doi.org/10.1007/BFb0064470}
+%     {DOI: 10.1007/BFb0064470}
+%
+%\bibitem{bdm1985}
+%F. Brezzi, J. Douglas, L.D. Marini,
+%\textit{Two families of mixed finite elements for second order elliptic
+%problems},
+%Numerische Mathematik, 47(2):217--235, 1985.
+%\href{https://doi.org/10.1007/BF01389710}
+%     {DOI: 10.1007/BF01389710}
+%
+%\bibitem{nedelec1986}
+%J.-C. N\'{e}d\'{e}lec,
+%\textit{A new family of mixed finite elements in $\mathbb{R}^3$},
+%Numerische Mathematik, 50(1):57--81, 1986.
+%\href{https://doi.org/10.1007/BF01389668}
+%     {DOI: 10.1007/BF01389668}
+%
+%\bibitem{boffi2002remarks}
+%D. Boffi, L. Gastaldi,
+%\textit{Some remarks on quadrilateral mixed finite elements},
+%Computers \& Structures, 87(11--12):751--757, 2009.
+%\href{https://doi.org/10.1016/j.compstruc.2008.12.006}
+%     {DOI: 10.1016/j.compstruc.2008.12.006}
+%
+%\bibitem{cockburnHarmonic2010}
+%B. Cockburn, J. Gopalakrishnan, J. Guzm\'{a}n,
+%\textit{A new elasticity element made for enforcing weak stress symmetry},
+%Mathematics of Computation, 79(271):1331--1349, 2010.
+%\href{https://doi.org/10.1090/S0025-5718-10-02343-4}
+%     {DOI: 10.1090/S0025-5718-10-02343-4}
+%
+%\bibitem{wangVSH2017}
+%B. Wang, L.-L. Wang, Z. Xie,
+%\textit{Accurate calculation of spherical and vector spherical harmonic
+%expansions via spectral element grids},
+%Advances in Computational Mathematics, 44(3):951--985, 2018.
+%\href{https://doi.org/10.1007/s10444-017-9569-1}
+%     {DOI: 10.1007/s10444-017-9569-1}
+%
+%\bibitem{zaglmayrHierarchical2006}
+%S. Zaglmayr,
+%\textit{High order finite element methods for electromagnetic field
+%computation},
+%PhD Thesis, Johannes Kepler University Linz, 2006.
+%Available at: \url{https://www.numa.uni-linz.ac.at/Teaching/PhD/Finished/zaglmayr}
+%
+%\bibitem{cockburnLDG1998}
+%B. Cockburn, C.-W. Shu,
+%\textit{The Local Discontinuous Galerkin method for time-dependent
+%convection-diffusion systems},
+%SIAM Journal on Numerical Analysis, 35(6):2440--2463, 1998.
+%\href{https://doi.org/10.1137/S0036142997316712}
+%     {DOI: 10.1137/S0036142997316712}
+%
+%\bibitem{ciarletStability2002}
+%P.G. Ciarlet,
+%\textit{The Finite Element Method for Elliptic Problems},
+%SIAM Classics in Applied Mathematics, 2002.
+%\href{https://doi.org/10.1137/1.9780898719208}
+%     {DOI: 10.1137/1.9780898719208}
+%
+%\bibitem{cockburnHDG2009}
+%B. Cockburn, J. Gopalakrishnan, R. Lazarov,
+%\textit{Unified hybridization of discontinuous Galerkin, mixed, and
+%continuous Galerkin methods for second order elliptic problems},
+%SIAM Journal on Numerical Analysis, 47(2):1319--1365, 2009.
+%\href{https://doi.org/10.1137/070706616}
+%     {DOI: 10.1137/070706616}
+%
+%\bibitem{droniouGradSchemes2018}
+%J. Droniou, R. Eymard, T. Gallou\"{e}t, C. Guichard, R. Herbin,
+%\textit{The Gradient Discretisation Method},
+%Springer Mathematics \& Applications, 82, 2018.
+%\href{https://doi.org/10.1007/978-3-319-79042-8}
+%     {DOI: 10.1007/978-3-319-79042-8}
+%
+%\bibitem{arnold2018finite}
+%D.N. Arnold, K. Hu,
+%\textit{Complexes from complexes},
+%Foundations of Computational Mathematics, 21:1739--1774, 2021.
+%\href{https://doi.org/10.1007/s10208-021-09498-9}
+%     {DOI: 10.1007/s10208-021-09498-9}
+%
+%\end{thebibliography}
+
+%\end{document}

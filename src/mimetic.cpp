@@ -7,13 +7,24 @@
 #include <cmath>
 #include <complex>
 #include <fstream>
+#include <limits>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
+
+#ifdef MIMETIC_ENABLE_OPENMP
+#include <omp.h>
+#endif
 
 namespace mimetic {
 
 namespace {
 constexpr double kPi = 3.141592653589793238462643383279502884;
+
+struct PolygonSearchGeometry {
+    Eigen::Vector3d center = Eigen::Vector3d::Zero();
+    double radius = 0.0;
+};
 
 /// Nanoflann adapter for a vector of 3D points (source cell centroids).
 struct PointCloud3D {
@@ -62,45 +73,77 @@ struct SpatialIndex {
     }
 };
 
+double clamp_unit(const double value)
+{
+    return std::max(-1.0, std::min(1.0, value));
+}
+
+PolygonSearchGeometry polygon_search_geometry(const LocalPolygon& polygon,
+                                              const GeometryOptions& options)
+{
+    PolygonSearchGeometry geometry;
+    if (options.mode == GeometryMode::SphericalGnomonic) {
+        geometry.center = polygon.n.normalized();
+        for (const Eigen::Vector3d& p3d : polygon.points_3d) {
+            const double dist = (geometry.center - p3d.normalized()).norm();
+            geometry.radius = std::max(geometry.radius, dist);
+        }
+    } else {
+        geometry.center = polygon.centroid_3d;
+        for (const Eigen::Vector3d& p3d : polygon.points_3d) {
+            const double dist = (geometry.center - p3d).norm();
+            geometry.radius = std::max(geometry.radius, dist);
+        }
+    }
+    return geometry;
+}
+
 /// Build a spatial index from source cell LocalPolygons.
 /// Works for any container of structs that have a `.local` field of type LocalPolygon.
 template <typename SourceVec>
 SpatialIndex build_spatial_index_from_sources(const SourceVec& sources, bool is_spherical)
 {
     SpatialIndex idx;
-    if (!is_spherical || sources.size() <= 50) return idx;
+    if (sources.size() <= 50) return idx;
 
     std::vector<Eigen::Vector3d> centers(sources.size());
     std::vector<double> radii(sources.size());
+    GeometryOptions options;
+    options.mode = is_spherical ? GeometryMode::SphericalGnomonic : GeometryMode::Planar;
     for (std::size_t i = 0; i < sources.size(); ++i) {
-        centers[i] = sources[i].local.n;
-        double mc = 1.0;
-        for (const Eigen::Vector3d& p3d : sources[i].local.points_3d)
-            mc = std::min(mc, centers[i].dot(p3d.normalized()));
-        const double angle = std::acos(std::max(-1.0, mc - 0.1));
-        radii[i] = 2.0 * std::sin(std::min(angle, kPi) / 2.0);
+        const PolygonSearchGeometry geometry = polygon_search_geometry(sources[i].local, options);
+        centers[i] = geometry.center;
+        radii[i] = geometry.radius;
     }
     idx.build(centers, radii);
     return idx;
 }
 
 /// Find candidate source indices for a target cell or edge using the spatial index.
-/// For a target cell, pass its 3D center and angular radius.
-/// For a target edge, pass the midpoint of its 3D endpoints and the half-angle.
 std::vector<std::size_t> find_overlap_candidates(
     const SpatialIndex& idx,
     const Eigen::Vector3d& query_center,
-    double query_angle,
-    std::size_t total_sources)
+    const double query_radius,
+    const std::size_t total_sources)
 {
     if (!idx.tree) {
         std::vector<std::size_t> all(total_sources);
         for (std::size_t i = 0; i < total_sources; ++i) all[i] = i;
         return all;
     }
-    const double search_angle = query_angle + idx.max_radius + 0.05;
-    const double search_dist = 2.0 * std::sin(std::min(search_angle, kPi) / 2.0);
-    return idx.find_candidates(query_center, search_dist);
+
+    const double padding = std::max(10.0 * kTolerance, 0.25 * (query_radius + idx.max_radius));
+    const double broad_radius = query_radius + idx.max_radius + padding;
+    std::vector<std::size_t> filtered;
+    const std::vector<std::size_t> candidates = idx.find_candidates(query_center, broad_radius);
+    filtered.reserve(candidates.size());
+    for (const std::size_t index : candidates) {
+        const double dist = (query_center - idx.cloud.pts[index]).norm();
+        if (dist <= query_radius + idx.cell_radius[index] + padding) {
+            filtered.push_back(index);
+        }
+    }
+    return filtered;
 }
 
 }
@@ -126,11 +169,6 @@ void eval_harmonic_basis(int k, const Eigen::Vector2d& p,
 }
 
 namespace {
-
-double clamp_unit(const double value)
-{
-    return std::max(-1.0, std::min(1.0, value));
-}
 
 Eigen::Vector3d normalized_or_throw(const Eigen::Vector3d& v, const std::string& message)
 {
@@ -603,6 +641,23 @@ struct VectorBasisTerm {
     int b = 0;
 };
 
+struct EdgeMomentSample {
+    double value = 0.0;
+    double t = 0.0;
+};
+
+struct MonomialScratch {
+    std::vector<double> x_powers;
+    std::vector<double> y_powers;
+    std::vector<double> legendre;
+};
+
+MonomialScratch& monomial_scratch()
+{
+    static thread_local MonomialScratch scratch;
+    return scratch;
+}
+
 double legendre_polynomial(const int degree, const double x)
 {
     if (degree == 0) {
@@ -698,6 +753,22 @@ std::vector<VectorBasisTerm> build_vector_polynomial_basis(const int degree)
                 basis.push_back(term);
             }
         }
+    }
+    return basis;
+}
+
+const std::vector<VectorBasisTerm>& cached_vector_polynomial_basis(const int degree)
+{
+    static thread_local std::vector<std::vector<VectorBasisTerm>> cache;
+    if (degree < 0) {
+        throw std::runtime_error("Negative vector polynomial degree");
+    }
+    if (cache.size() <= static_cast<std::size_t>(degree)) {
+        cache.resize(static_cast<std::size_t>(degree + 1));
+    }
+    std::vector<VectorBasisTerm>& basis = cache[static_cast<std::size_t>(degree)];
+    if (basis.empty()) {
+        basis = build_vector_polynomial_basis(degree);
     }
     return basis;
 }
@@ -1007,6 +1078,81 @@ Eigen::Vector2d vector_basis_value(const VectorBasisTerm& term,
     return Eigen::Vector2d(0.0, value);
 }
 
+template <typename Func>
+void accumulate_edge_moment_bundle(const Eigen::Vector2d& a,
+                                   const Eigen::Vector2d& b,
+                                   const std::vector<GaussLegendrePoint>& rule,
+                                   const int order,
+                                   std::vector<double>& moments,
+                                   const Func& sample_func)
+{
+    moments.assign(static_cast<std::size_t>(order + 1), 0.0);
+    const double length = (b - a).norm();
+    if (length <= kTolerance) {
+        return;
+    }
+
+    MonomialScratch& scratch = monomial_scratch();
+    scratch.legendre.resize(static_cast<std::size_t>(order + 1), 0.0);
+
+    const Eigen::Vector2d mid = 0.5 * (a + b);
+    const Eigen::Vector2d half_delta = 0.5 * (b - a);
+    for (const GaussLegendrePoint& q : rule) {
+        const EdgeMomentSample sample = sample_func(mid + q.x * half_delta);
+        scratch.legendre[0] = 1.0;
+        if (order >= 1) {
+            scratch.legendre[1] = sample.t;
+        }
+        for (int degree = 2; degree <= order; ++degree) {
+            scratch.legendre[static_cast<std::size_t>(degree)] =
+                ((2.0 * degree - 1.0) * sample.t * scratch.legendre[static_cast<std::size_t>(degree - 1)] -
+                 (degree - 1.0) * scratch.legendre[static_cast<std::size_t>(degree - 2)]) /
+                static_cast<double>(degree);
+        }
+        for (int degree = 0; degree <= order; ++degree) {
+            moments[static_cast<std::size_t>(degree)] +=
+                q.w * sample.value * scratch.legendre[static_cast<std::size_t>(degree)];
+        }
+    }
+
+    const double scale = 0.5 * length;
+    for (double& value : moments) {
+        value *= scale;
+    }
+}
+
+void accumulate_vector_cell_moments(const Eigen::Vector2d& velocity,
+                                    const Eigen::Vector2d& local_point,
+                                    const int degree,
+                                    const double weight,
+                                    std::vector<Eigen::Vector2d>& moments)
+{
+    if (degree < 0) {
+        return;
+    }
+
+    MonomialScratch& scratch = monomial_scratch();
+    scratch.x_powers.resize(static_cast<std::size_t>(degree + 1), 1.0);
+    scratch.y_powers.resize(static_cast<std::size_t>(degree + 1), 1.0);
+    for (int i = 1; i <= degree; ++i) {
+        scratch.x_powers[static_cast<std::size_t>(i)] =
+            scratch.x_powers[static_cast<std::size_t>(i - 1)] * local_point.x();
+        scratch.y_powers[static_cast<std::size_t>(i)] =
+            scratch.y_powers[static_cast<std::size_t>(i - 1)] * local_point.y();
+    }
+
+    int moment_index = 0;
+    for (int total_degree = 0; total_degree <= degree; ++total_degree) {
+        for (int a = total_degree; a >= 0; --a, ++moment_index) {
+            const int b = total_degree - a;
+            const double monomial =
+                scratch.x_powers[static_cast<std::size_t>(a)] *
+                scratch.y_powers[static_cast<std::size_t>(b)];
+            moments[static_cast<std::size_t>(moment_index)] += weight * monomial * velocity;
+        }
+    }
+}
+
 int resolved_cell_moment_order(const int num_edges, const MomentMethodOptions& options)
 {
     if (options.cell_moment_order >= 0) {
@@ -1029,14 +1175,31 @@ int resolved_cell_moment_order(const int num_edges, const MomentMethodOptions& o
 
 Eigen::Vector2d moment_velocity_value(const MomentReconstruction& reconstruction, const Eigen::Vector2d& p)
 {
-    const std::vector<VectorBasisTerm> basis = build_vector_polynomial_basis(reconstruction.vector_polynomial_degree);
+    const std::vector<VectorBasisTerm>& basis =
+        cached_vector_polynomial_basis(reconstruction.vector_polynomial_degree);
     if (basis.size() != reconstruction.coefficients.size()) {
         throw std::runtime_error("Moment reconstruction basis size mismatch");
     }
 
+    MonomialScratch& scratch = monomial_scratch();
+    const int degree = reconstruction.vector_polynomial_degree;
+    scratch.x_powers.resize(static_cast<std::size_t>(degree + 1), 1.0);
+    scratch.y_powers.resize(static_cast<std::size_t>(degree + 1), 1.0);
+    const double x_scaled = p.x() / reconstruction.length_scale;
+    const double y_scaled = p.y() / reconstruction.length_scale;
+    for (int i = 1; i <= degree; ++i) {
+        scratch.x_powers[static_cast<std::size_t>(i)] =
+            scratch.x_powers[static_cast<std::size_t>(i - 1)] * x_scaled;
+        scratch.y_powers[static_cast<std::size_t>(i)] =
+            scratch.y_powers[static_cast<std::size_t>(i - 1)] * y_scaled;
+    }
+
     Eigen::Vector2d value = Eigen::Vector2d::Zero();
     for (std::size_t i = 0; i < basis.size(); ++i) {
-        value += reconstruction.coefficients[i] * vector_basis_value(basis[i], p, reconstruction.length_scale);
+        const double monomial =
+            scratch.x_powers[static_cast<std::size_t>(basis[i].a)] *
+            scratch.y_powers[static_cast<std::size_t>(basis[i].b)];
+        value[basis[i].component] += reconstruction.coefficients[i] * monomial;
     }
     return value;
 }
@@ -1050,7 +1213,7 @@ std::vector<double> basis_edge_moments(const VectorBasisTerm& term,
                                        const double scale,
                                        const GeometryOptions& options)
 {
-    std::vector<double> moments(static_cast<std::size_t>(order + 1), 0.0);
+    std::vector<double> moments;
     const Eigen::Vector2d delta = edge.b - edge.a;
     const double denom = delta.squaredNorm();
     Eigen::Vector3d a3 = Eigen::Vector3d::Zero();
@@ -1062,8 +1225,7 @@ std::vector<double> basis_edge_moments(const VectorBasisTerm& term,
         total_angle = std::acos(clamp_unit(a3.dot(b3)));
         frame = GnomonicFrame{polygon.n, polygon.e_x, polygon.e_y, options.radius};
     }
-    for (int degree = 0; degree <= order; ++degree) {
-        moments[degree] = integrate_edge_highorder_rule(edge.a, edge.b, quadrature, [&](const Eigen::Vector2d& p) {
+    accumulate_edge_moment_bundle(edge.a, edge.b, quadrature, order, moments, [&](const Eigen::Vector2d& p) {
             double t = 0.0;
             if (options.mode == GeometryMode::SphericalGnomonic) {
                 if (total_angle > kTolerance) {
@@ -1077,9 +1239,8 @@ std::vector<double> basis_edge_moments(const VectorBasisTerm& term,
                     ? (2.0 * (p - edge.a).dot(delta) / denom - 1.0)
                     : 0.0;
             }
-            return vector_basis_value(term, p, scale).dot(edge.outward_normal) * legendre_polynomial(degree, t);
+            return EdgeMomentSample{vector_basis_value(term, p, scale).dot(edge.outward_normal), t};
         });
-    }
     return moments;
 }
 
@@ -1093,17 +1254,22 @@ std::vector<Eigen::Vector2d> basis_cell_vector_moments(const VectorBasisTerm& te
     if (degree < 0) {
         return moments;
     }
-    moments.reserve(static_cast<std::size_t>(vector_moment_basis_count(degree)));
-    for (int total_degree = 0; total_degree <= degree; ++total_degree) {
-        for (int a = total_degree; a >= 0; --a) {
-            const int b = total_degree - a;
-            const double moment_x = integrate_polygon_scalar_duffy(edges, quadrature, [&](const Eigen::Vector2d& p) {
-                return vector_basis_value(term, p, scale).x() * std::pow(p.x(), a) * std::pow(p.y(), b);
-            });
-            const double moment_y = integrate_polygon_scalar_duffy(edges, quadrature, [&](const Eigen::Vector2d& p) {
-                return vector_basis_value(term, p, scale).y() * std::pow(p.x(), a) * std::pow(p.y(), b);
-            });
-            moments.push_back(Eigen::Vector2d(moment_x, moment_y));
+    moments.assign(static_cast<std::size_t>(vector_moment_basis_count(degree)), Eigen::Vector2d::Zero());
+    const Eigen::Vector2d origin = Eigen::Vector2d::Zero();
+    for (const LocalEdge& edge : edges) {
+        const Eigen::Vector2d ab = edge.a - origin;
+        const Eigen::Vector2d bc = edge.b - edge.a;
+        const double det_j = std::abs(ab.x() * bc.y() - ab.y() * bc.x());
+        for (const GaussLegendrePoint& qu : quadrature) {
+            const double u = 0.5 * (qu.x + 1.0);
+            const double wu = 0.5 * qu.w;
+            for (const GaussLegendrePoint& qv : quadrature) {
+                const double v = 0.5 * (qv.x + 1.0);
+                const double wv = 0.5 * qv.w;
+                const Eigen::Vector2d p = origin + u * ab + (u * v) * bc;
+                const double weight = det_j * wu * wv * u;
+                accumulate_vector_cell_moments(vector_basis_value(term, p, scale), p, degree, weight, moments);
+            }
         }
     }
     return moments;
@@ -1278,6 +1444,14 @@ std::vector<double> target_divergence_rhs(moab::Core& mb,
         LocalPolygon local;
         std::vector<Eigen::Vector2d> absolute;
         ReconstructionCoeffs coeffs;
+        GnomonicFrame frame;
+        PolygonSearchGeometry search;
+    };
+
+    struct TargetCache {
+        moab::EntityHandle polygon;
+        LocalPolygon local;
+        PolygonSearchGeometry search;
     };
 
     std::vector<SourceCache> sources;
@@ -1289,35 +1463,45 @@ std::vector<double> target_divergence_rhs(moab::Core& mb,
             local,
             absolute_points(local),
             read_coefficients(mb, coeff_tag, source_polygon),
+            GnomonicFrame{local.n, local.e_x, local.e_y, options.radius},
+            polygon_search_geometry(local, options),
         });
     }
 
     const SpatialIndex div_idx = build_spatial_index_from_sources(
         sources, options.mode == GeometryMode::SphericalGnomonic);
 
-    std::vector<double> rhs(target_polygons.size(), 0.0);
-    for (std::size_t target_index = 0; target_index < target_polygons.size(); ++target_index) {
-        const moab::EntityHandle target_polygon = target_polygons[target_index];
-        const LocalPolygon target = local_polygon(mb, target_polygon, options);
+    std::vector<TargetCache> targets;
+    targets.reserve(target_polygons.size());
+    for (const moab::EntityHandle target_polygon : target_polygons) {
+        const LocalPolygon local = local_polygon(mb, target_polygon, options);
+        targets.push_back(TargetCache{
+            target_polygon,
+            local,
+            polygon_search_geometry(local, options),
+        });
+    }
 
-        double tgt_angle = 0;
-        if (options.mode == GeometryMode::SphericalGnomonic) {
-            for (const Eigen::Vector3d& p3d : target.points_3d)
-                tgt_angle = std::max(tgt_angle,
-                    std::acos(std::max(-1.0, std::min(1.0, target.n.dot(p3d.normalized())))));
-        }
-        const auto div_cands = find_overlap_candidates(div_idx, target.n, tgt_angle, sources.size());
+    std::vector<double> rhs(target_polygons.size(), 0.0);
+#ifdef MIMETIC_ENABLE_OPENMP
+#pragma omp parallel for schedule(dynamic, 16) if(targets.size() >= 64)
+#endif
+    for (int target_index = 0; target_index < static_cast<int>(targets.size()); ++target_index) {
+        const TargetCache& target = targets[static_cast<std::size_t>(target_index)];
+        const auto div_cands = find_overlap_candidates(div_idx,
+                                                       target.search.center,
+                                                       target.search.radius,
+                                                       sources.size());
 
         for (const std::size_t si : div_cands) {
             const SourceCache& source = sources[si];
             std::vector<Eigen::Vector2d> target_in_source;
             if (options.mode == GeometryMode::SphericalGnomonic) {
-                const GnomonicFrame source_frame{source.local.n, source.local.e_x, source.local.e_y, options.radius};
-                target_in_source.reserve(target.points_3d.size());
+                target_in_source.reserve(target.local.points_3d.size());
                 bool valid_projection = true;
-                for (const Eigen::Vector3d& p3d : target.points_3d) {
+                for (const Eigen::Vector3d& p3d : target.local.points_3d) {
                     try {
-                        target_in_source.push_back(project_gnomonic(p3d, source_frame));
+                        target_in_source.push_back(project_gnomonic(p3d, source.frame));
                     } catch (const std::runtime_error&) {
                         valid_projection = false;
                         break;
@@ -1327,7 +1511,7 @@ std::vector<double> target_divergence_rhs(moab::Core& mb,
                     continue;
                 }
             } else {
-                target_in_source = absolute_points(target);
+                target_in_source = absolute_points(target.local);
             }
 
             const std::vector<Eigen::Vector2d> overlap =
@@ -1336,7 +1520,7 @@ std::vector<double> target_divergence_rhs(moab::Core& mb,
             if (overlap_chart_area <= options.geometry_tolerance) {
                 continue;
             }
-            rhs[target_index] += source.coeffs.d * overlap_chart_area;
+            rhs[static_cast<std::size_t>(target_index)] += source.coeffs.d * overlap_chart_area;
         }
     }
     return rhs;
@@ -1385,6 +1569,14 @@ std::vector<double> target_divergence_rhs(moab::Core& mb,
         LocalPolygon local;
         std::vector<Eigen::Vector2d> absolute;
         MomentReconstruction reconstruction;
+        GnomonicFrame frame;
+        PolygonSearchGeometry search;
+    };
+
+    struct TargetCache {
+        moab::EntityHandle polygon;
+        LocalPolygon local;
+        PolygonSearchGeometry search;
     };
 
     std::vector<SourceCache> sources;
@@ -1400,6 +1592,8 @@ std::vector<double> target_divergence_rhs(moab::Core& mb,
             local,
             absolute_points(local),
             it->second,
+            GnomonicFrame{local.n, local.e_x, local.e_y, options.radius},
+            polygon_search_geometry(local, options),
         });
     }
 
@@ -1407,29 +1601,37 @@ std::vector<double> target_divergence_rhs(moab::Core& mb,
     const SpatialIndex div_idx = build_spatial_index_from_sources(
         sources, options.mode == GeometryMode::SphericalGnomonic);
 
-    std::vector<double> rhs(target_polygons.size(), 0.0);
-    for (std::size_t target_index = 0; target_index < target_polygons.size(); ++target_index) {
-        const moab::EntityHandle target_polygon = target_polygons[target_index];
-        const LocalPolygon target = local_polygon(mb, target_polygon, options);
+    std::vector<TargetCache> targets;
+    targets.reserve(target_polygons.size());
+    for (const moab::EntityHandle target_polygon : target_polygons) {
+        const LocalPolygon local = local_polygon(mb, target_polygon, options);
+        targets.push_back(TargetCache{
+            target_polygon,
+            local,
+            polygon_search_geometry(local, options),
+        });
+    }
 
-        double tgt_angle = 0;
-        if (options.mode == GeometryMode::SphericalGnomonic) {
-            for (const Eigen::Vector3d& p3d : target.points_3d)
-                tgt_angle = std::max(tgt_angle,
-                    std::acos(std::max(-1.0, std::min(1.0, target.n.dot(p3d.normalized())))));
-        }
-        const auto div_cands = find_overlap_candidates(div_idx, target.n, tgt_angle, sources.size());
+    std::vector<double> rhs(target_polygons.size(), 0.0);
+#ifdef MIMETIC_ENABLE_OPENMP
+#pragma omp parallel for schedule(dynamic, 16) if(targets.size() >= 64)
+#endif
+    for (int target_index = 0; target_index < static_cast<int>(targets.size()); ++target_index) {
+        const TargetCache& target = targets[static_cast<std::size_t>(target_index)];
+        const auto div_cands = find_overlap_candidates(div_idx,
+                                                       target.search.center,
+                                                       target.search.radius,
+                                                       sources.size());
 
         for (const std::size_t si : div_cands) {
             const SourceCache& source = sources[si];
             std::vector<Eigen::Vector2d> target_in_source;
             if (options.mode == GeometryMode::SphericalGnomonic) {
-                const GnomonicFrame source_frame{source.local.n, source.local.e_x, source.local.e_y, options.radius};
-                target_in_source.reserve(target.points_3d.size());
+                target_in_source.reserve(target.local.points_3d.size());
                 bool valid_projection = true;
-                for (const Eigen::Vector3d& p3d : target.points_3d) {
+                for (const Eigen::Vector3d& p3d : target.local.points_3d) {
                     try {
-                        target_in_source.push_back(project_gnomonic(p3d, source_frame));
+                        target_in_source.push_back(project_gnomonic(p3d, source.frame));
                     } catch (const std::runtime_error&) {
                         valid_projection = false;
                         break;
@@ -1439,14 +1641,14 @@ std::vector<double> target_divergence_rhs(moab::Core& mb,
                     continue;
                 }
             } else {
-                target_in_source = absolute_points(target);
+                target_in_source = absolute_points(target.local);
             }
             const std::vector<Eigen::Vector2d> overlap =
                 convex_polygon_intersection(target_in_source, source.absolute, options.geometry_tolerance);
             if (polygon_area_abs(overlap) <= options.geometry_tolerance) {
                 continue;
             }
-            rhs[target_index] += moment_polygon_boundary_flux(
+            rhs[static_cast<std::size_t>(target_index)] += moment_polygon_boundary_flux(
                 source.reconstruction, overlap, source.local.centroid, quadrature);
         }
     }
@@ -2247,72 +2449,98 @@ EdgeTransferResult MimeticInterpolator::transfer_source_to_target_edges(
         LocalPolygon local;
         std::vector<Eigen::Vector2d> absolute_points;
         ReconstructionCoeffs coeffs;
-        Eigen::Vector3d center_3d;    // normalized cell center (for spherical pre-filter)
-        double min_cos_angle;          // cos(max angular radius from center to any vertex)
+        GnomonicFrame frame;
+        PolygonSearchGeometry search;
+    };
+
+    struct TargetCache {
+        moab::EntityHandle polygon;
+        LocalPolygon local;
+        std::vector<LocalEdge> edges;
+        PolygonSearchGeometry search;
     };
 
     std::vector<SourceCache> sources;
     sources.reserve(source_polygons.size());
     for (const moab::EntityHandle source_polygon : source_polygons) {
         const LocalPolygon local = local_polygon(mb_, source_polygon, options_);
-        SourceCache cache{
+        sources.push_back(SourceCache{
             source_polygon,
             local,
             absolute_points(local),
             read_coefficients(mb_, tag_coeffs_, source_polygon),
-            Eigen::Vector3d::Zero(),
-            -1.0,
-        };
-        if (is_spherical()) {
-            cache.center_3d = local.n;  // normalized cell normal = chart center
-            double min_cos = 1.0;
-            for (const Eigen::Vector3d& p3d : local.points_3d) {
-                min_cos = std::min(min_cos, cache.center_3d.dot(p3d.normalized()));
-            }
-            cache.min_cos_angle = min_cos - 0.1;  // expand by ~6° margin
-        }
-        sources.push_back(cache);
+            GnomonicFrame{local.n, local.e_x, local.e_y, options_.radius},
+            polygon_search_geometry(local, options_),
+        });
+    }
+
+    std::vector<TargetCache> targets;
+    targets.reserve(target_polygons.size());
+    for (const moab::EntityHandle target_polygon : target_polygons) {
+        const LocalPolygon local = local_polygon(mb_, target_polygon, options_);
+        targets.push_back(TargetCache{
+            target_polygon,
+            local,
+            local_edges(mb_, local),
+            polygon_search_geometry(local, options_),
+        });
     }
 
     const SpatialIndex src_index = build_spatial_index_from_sources(sources, is_spherical());
 
     EdgeTransferResult result;
+    std::vector<std::size_t> target_offsets(targets.size() + 1, 0);
+    for (std::size_t i = 0; i < targets.size(); ++i) {
+        target_offsets[i + 1] = target_offsets[i] + targets[i].edges.size();
+    }
+    result.target_edges.resize(target_offsets.back());
+    result.target_fluxes.assign(target_offsets.back(), 0.0);
+    std::vector<std::vector<EdgeTransferContribution>> contribution_buckets(targets.size());
+    for (std::size_t target_index = 0; target_index < targets.size(); ++target_index) {
+        const TargetCache& target = targets[target_index];
+        for (std::size_t edge_index = 0; edge_index < target.edges.size(); ++edge_index) {
+            result.target_edges[target_offsets[target_index] + edge_index] =
+                DirectedEdgeDof{target.polygon, target.edges[edge_index].handle, edge_index};
+        }
+    }
 
-    for (const moab::EntityHandle target_polygon : target_polygons) {
-        const LocalPolygon target = local_polygon(mb_, target_polygon, options_);
-        const std::vector<LocalEdge> target_edges = local_edges(mb_, target);
+#ifdef MIMETIC_ENABLE_OPENMP
+#pragma omp parallel for schedule(dynamic, 16) if(targets.size() >= 64)
+#endif
+    for (int target_index = 0; target_index < static_cast<int>(targets.size()); ++target_index) {
+        const TargetCache& target = targets[static_cast<std::size_t>(target_index)];
+        std::vector<EdgeTransferContribution>& target_contributions =
+            contribution_buckets[static_cast<std::size_t>(target_index)];
+        target_contributions.reserve(target.edges.size());
 
-        for (std::size_t edge_index = 0; edge_index < target_edges.size(); ++edge_index) {
-            const LocalEdge& target_edge = target_edges[edge_index];
-            const std::size_t target_dof = result.target_edges.size();
-            result.target_edges.push_back(DirectedEdgeDof{target_polygon, target_edge.handle, edge_index});
-            result.target_fluxes.push_back(0.0);
+        // Query k-d tree once per target cell (same for all edges of this cell)
+        const auto candidates = find_overlap_candidates(src_index,
+                                                        target.search.center,
+                                                        target.search.radius,
+                                                        sources.size());
 
-            Eigen::Vector3d v_t1 = target.points_3d[edge_index];
-            Eigen::Vector3d v_t2 = target.points_3d[(edge_index + 1) % target.points_3d.size()];
+        for (std::size_t edge_index = 0; edge_index < target.edges.size(); ++edge_index) {
+            const LocalEdge& target_edge = target.edges[edge_index];
+            const std::size_t target_dof = target_offsets[static_cast<std::size_t>(target_index)] + edge_index;
 
-            const Eigen::Vector3d edge_mid = (v_t1.normalized() + v_t2.normalized()).normalized();
-            const double edge_half = 0.5 * std::acos(std::max(-1.0, std::min(1.0,
-                v_t1.normalized().dot(v_t2.normalized()))));
-            const auto candidates = find_overlap_candidates(src_index, edge_mid, edge_half, sources.size());
+            const Eigen::Vector3d v_t1 = target.local.points_3d[edge_index];
+            const Eigen::Vector3d v_t2 = target.local.points_3d[(edge_index + 1) % target.local.points_3d.size()];
 
             for (const std::size_t si : candidates) {
                 const SourceCache& source = sources[si];
 
                 Eigen::Vector2d target_a;
                 Eigen::Vector2d target_b;
-
                 if (is_spherical()) {
-                    const GnomonicFrame source_frame{source.local.n, source.local.e_x, source.local.e_y, options_.radius};
                     try {
-                        target_a = project_gnomonic(v_t1, source_frame);
-                        target_b = project_gnomonic(v_t2, source_frame);
+                        target_a = project_gnomonic(v_t1, source.frame);
+                        target_b = project_gnomonic(v_t2, source.frame);
                     } catch (const std::runtime_error&) {
                         continue;
                     }
                 } else {
-                    target_a = target.centroid + target_edge.a;
-                    target_b = target.centroid + target_edge.b;
+                    target_a = target.local.centroid + target_edge.a;
+                    target_b = target.local.centroid + target_edge.b;
                 }
 
                 Eigen::Vector2d clipped_a;
@@ -2330,7 +2558,7 @@ EdgeTransferResult MimeticInterpolator::transfer_source_to_target_edges(
                 const Eigen::Vector2d local_b = clipped_b - source.local.centroid;
                 const double flux = edge_flux(source.coeffs, local_a, local_b);
                 result.target_fluxes[target_dof] += flux;
-                result.contributions.push_back(EdgeTransferContribution{
+                target_contributions.push_back(EdgeTransferContribution{
                     target_dof,
                     source.polygon,
                     clipped_a,
@@ -2338,11 +2566,21 @@ EdgeTransferResult MimeticInterpolator::transfer_source_to_target_edges(
                     flux,
                 });
             }
+        }
+    }
 
-            directed_target_flux_[std::make_pair(target_polygon, edge_index)] = result.target_fluxes[target_dof];
-            check_moab(mb_.tag_set_data(tag_target_flux_, &target_edge.handle, 1, &result.target_fluxes[target_dof]),
+    for (std::size_t target_index = 0; target_index < targets.size(); ++target_index) {
+        const TargetCache& target = targets[target_index];
+        for (std::size_t edge_index = 0; edge_index < target.edges.size(); ++edge_index) {
+            const std::size_t target_dof = target_offsets[target_index] + edge_index;
+            directed_target_flux_[std::make_pair(target.polygon, edge_index)] = result.target_fluxes[target_dof];
+            check_moab(mb_.tag_set_data(tag_target_flux_, &target.edges[edge_index].handle, 1,
+                                        &result.target_fluxes[target_dof]),
                        "Failed to write edge-wise target flux tag");
         }
+        result.contributions.insert(result.contributions.end(),
+                                    contribution_buckets[target_index].begin(),
+                                    contribution_buckets[target_index].end());
     }
 
     return result;
@@ -2362,6 +2600,14 @@ CellAverageTransferResult MimeticInterpolator::transfer_source_to_target_cell_av
         LocalPolygon local;
         std::vector<Eigen::Vector2d> absolute_points;
         ReconstructionCoeffs coeffs;
+        GnomonicFrame frame;
+        PolygonSearchGeometry search;
+    };
+
+    struct TargetCache {
+        moab::EntityHandle polygon;
+        LocalPolygon local;
+        PolygonSearchGeometry search;
     };
 
     std::vector<SourceCache> sources;
@@ -2373,44 +2619,53 @@ CellAverageTransferResult MimeticInterpolator::transfer_source_to_target_cell_av
             local,
             absolute_points(local),
             read_coefficients(mb_, tag_coeffs_, source_polygon),
+            GnomonicFrame{local.n, local.e_x, local.e_y, options_.radius},
+            polygon_search_geometry(local, options_),
         });
     }
 
     const SpatialIndex avg_index = build_spatial_index_from_sources(sources, is_spherical());
+    std::vector<TargetCache> targets;
+    targets.reserve(target_polygons.size());
+    for (const moab::EntityHandle target_polygon : target_polygons) {
+        const LocalPolygon local = local_polygon(mb_, target_polygon, options_);
+        targets.push_back(TargetCache{
+            target_polygon,
+            local,
+            polygon_search_geometry(local, options_),
+        });
+    }
 
     CellAverageTransferResult result;
     result.target_cells = target_polygons;
-    result.target_areas.reserve(target_polygons.size());
-    result.target_integrals.assign(target_polygons.size(), Eigen::Vector3d::Zero());
-    result.target_averages.assign(target_polygons.size(), Eigen::Vector3d::Zero());
+    result.target_areas.resize(targets.size(), 0.0);
+    result.target_integrals.assign(targets.size(), Eigen::Vector3d::Zero());
+    result.target_averages.assign(targets.size(), Eigen::Vector3d::Zero());
+    std::vector<std::vector<CellAverageContribution>> contribution_buckets(targets.size());
 
-    for (std::size_t target_index = 0; target_index < target_polygons.size(); ++target_index) {
-        const moab::EntityHandle target_polygon = target_polygons[target_index];
-        const LocalPolygon target = local_polygon(mb_, target_polygon, options_);
-        const double target_area = is_spherical() ? target.spherical_area : target.area;
+#ifdef MIMETIC_ENABLE_OPENMP
+#pragma omp parallel for schedule(dynamic, 16) if(targets.size() >= 64)
+#endif
+    for (int target_index = 0; target_index < static_cast<int>(targets.size()); ++target_index) {
+        const TargetCache& target = targets[static_cast<std::size_t>(target_index)];
+        const double target_area = is_spherical() ? target.local.spherical_area : target.local.area;
         if (target_area <= options_.geometry_tolerance) {
             throw std::runtime_error("Degenerate target area in transfer_source_to_target_cell_averages");
         }
-        result.target_areas.push_back(target_area);
+        result.target_areas[static_cast<std::size_t>(target_index)] = target_area;
 
-        double tgt_angle = 0;
-        if (is_spherical()) {
-            for (const Eigen::Vector3d& p3d : target.points_3d)
-                tgt_angle = std::max(tgt_angle,
-                    std::acos(std::max(-1.0, std::min(1.0, target.n.dot(p3d.normalized())))));
-        }
-        const auto avg_cands = find_overlap_candidates(avg_index, target.n, tgt_angle, sources.size());
+        const auto avg_cands =
+            find_overlap_candidates(avg_index, target.search.center, target.search.radius, sources.size());
 
         for (const std::size_t si : avg_cands) {
             const SourceCache& source = sources[si];
             std::vector<Eigen::Vector2d> target_in_source;
             if (is_spherical()) {
-                const GnomonicFrame source_frame{source.local.n, source.local.e_x, source.local.e_y, options_.radius};
-                target_in_source.reserve(target.points_3d.size());
+                target_in_source.reserve(target.local.points_3d.size());
                 bool valid_projection = true;
-                for (const Eigen::Vector3d& p3d : target.points_3d) {
+                for (const Eigen::Vector3d& p3d : target.local.points_3d) {
                     try {
-                        target_in_source.push_back(project_gnomonic(p3d, source_frame));
+                        target_in_source.push_back(project_gnomonic(p3d, source.frame));
                     } catch (const std::runtime_error&) {
                         valid_projection = false;
                         break;
@@ -2420,7 +2675,7 @@ CellAverageTransferResult MimeticInterpolator::transfer_source_to_target_cell_av
                     continue;
                 }
             } else {
-                target_in_source = absolute_points(target);
+                target_in_source = absolute_points(target.local);
             }
 
             const std::vector<Eigen::Vector2d> overlap =
@@ -2433,22 +2688,28 @@ CellAverageTransferResult MimeticInterpolator::transfer_source_to_target_cell_av
             const Eigen::Vector3d overlap_integral = reconstruction_integral(options_, source.local, source.coeffs, overlap);
             double overlap_area = overlap_chart_area;
             if (is_spherical()) {
-                const GnomonicFrame source_frame{source.local.n, source.local.e_x, source.local.e_y, options_.radius};
                 overlap_area = integrate_polygon_vector(overlap, [&](const Eigen::Vector2d& xi) {
-                    return Eigen::Vector3d(gnomonic_area_scale(xi, source_frame), 0.0, 0.0);
+                    return Eigen::Vector3d(gnomonic_area_scale(xi, source.frame), 0.0, 0.0);
                 }).x();
             }
 
-            result.target_integrals[target_index] += overlap_integral;
-            result.contributions.push_back(CellAverageContribution{
-                target_index,
+            result.target_integrals[static_cast<std::size_t>(target_index)] += overlap_integral;
+            contribution_buckets[static_cast<std::size_t>(target_index)].push_back(CellAverageContribution{
+                static_cast<std::size_t>(target_index),
                 source.polygon,
                 overlap_area,
                 overlap_integral,
             });
         }
 
-        result.target_averages[target_index] = result.target_integrals[target_index] / target_area;
+        result.target_averages[static_cast<std::size_t>(target_index)] =
+            result.target_integrals[static_cast<std::size_t>(target_index)] / target_area;
+    }
+
+    for (std::size_t target_index = 0; target_index < targets.size(); ++target_index) {
+        result.contributions.insert(result.contributions.end(),
+                                    contribution_buckets[target_index].begin(),
+                                    contribution_buckets[target_index].end());
     }
 
     return result;
@@ -2496,20 +2757,20 @@ SparseEdgeProjection MimeticInterpolator::assemble_edge_projection_operator(
     for (const moab::EntityHandle target_polygon : target_polygons) {
         const LocalPolygon target = local_polygon(mb_, target_polygon, options_);
         const std::vector<LocalEdge> target_edges = local_edges(mb_, target);
+        const PolygonSearchGeometry target_search = polygon_search_geometry(target, options_);
+        const auto proj_cands = find_overlap_candidates(
+            proj_index, target_search.center, target_search.radius, sources.size());
 
         for (std::size_t edge_index = 0; edge_index < target_edges.size(); ++edge_index) {
             const LocalEdge& target_edge = target_edges[edge_index];
-            const Eigen::Vector3d v_t1 = is_spherical() ? target.points_3d[edge_index] : Eigen::Vector3d::Zero();
-            const Eigen::Vector3d v_t2 = is_spherical() ? target.points_3d[(edge_index + 1) % target.points_3d.size()]
-                                                        : Eigen::Vector3d::Zero();
+            const Eigen::Vector3d v_t1 = is_spherical()
+                ? target.points_3d[edge_index]
+                : Eigen::Vector3d(target.centroid.x() + target_edge.a.x(), target.centroid.y() + target_edge.a.y(), 0.0);
+            const Eigen::Vector3d v_t2 = is_spherical()
+                ? target.points_3d[(edge_index + 1) % target.points_3d.size()]
+                : Eigen::Vector3d(target.centroid.x() + target_edge.b.x(), target.centroid.y() + target_edge.b.y(), 0.0);
             const std::size_t target_dof = projection.target_edges.size();
             projection.target_edges.push_back(DirectedEdgeDof{target_polygon, target_edge.handle, edge_index});
-
-            const Eigen::Vector3d proj_mid = is_spherical()
-                ? (v_t1.normalized() + v_t2.normalized()).normalized() : Eigen::Vector3d::Zero();
-            const double proj_half = is_spherical()
-                ? 0.5 * std::acos(std::max(-1.0, std::min(1.0, v_t1.normalized().dot(v_t2.normalized())))) : 0;
-            const auto proj_cands = find_overlap_candidates(proj_index, proj_mid, proj_half, sources.size());
 
             for (const std::size_t si : proj_cands) {
                 const SourceCache& source = sources[si];
@@ -2744,7 +3005,7 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
     // than the O(h^3) Piola crime, so elevation is unnecessary.
     const int degree_elevation = (use_surface_metric && options.edge_moment_order >= 3) ? 2 : 0;
     const int vector_degree = options.edge_moment_order + degree_elevation;
-    const std::vector<VectorBasisTerm> raw_basis = build_vector_polynomial_basis(vector_degree);
+    const std::vector<VectorBasisTerm>& raw_basis = cached_vector_polynomial_basis(vector_degree);
     const int raw_dim = static_cast<int>(raw_basis.size());
     const int cell_moment_order = resolved_cell_moment_order(static_cast<int>(edges.size()), options);
     const int num_cell_scalar_moments =
@@ -2756,9 +3017,12 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
     // Compute the metric-weighted Gram matrix BEFORE building the split basis,
     // so the basis can be orthonormalized against the correct inner product.
     Eigen::MatrixXd G_raw = Eigen::MatrixXd::Zero(raw_dim, raw_dim);
+#ifdef MIMETIC_ENABLE_OPENMP
+#pragma omp parallel for schedule(static) if(raw_dim >= 24)
+#endif
     for (int i = 0; i < raw_dim; ++i) {
-        for (int j = 0; j < raw_dim; ++j) {
-            G_raw(i, j) = integrate_polygon_scalar_duffy(edges, quadrature, [&](const Eigen::Vector2d& p) {
+        for (int j = i; j < raw_dim; ++j) {
+            const double gij = integrate_polygon_scalar_duffy(edges, quadrature, [&](const Eigen::Vector2d& p) {
                 const Eigen::Vector2d vi = vector_basis_value(raw_basis[i], p, scale_length);
                 const Eigen::Vector2d vj = vector_basis_value(raw_basis[j], p, scale_length);
                 if (!use_surface_metric) {
@@ -2767,6 +3031,8 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
                 const Eigen::Matrix2d hodge = gnomonic_hodge_metric(p + poly.centroid, gram_frame);
                 return vi.dot(hodge * vj);
             });
+            G_raw(i, j) = gij;
+            G_raw(j, i) = gij;
         }
     }
 
@@ -2799,7 +3065,21 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
         }
     }
 
+    std::vector<std::vector<Eigen::Vector2d>> cached_basis_cell_moments;
     if (cell_moment_order >= 0) {
+        cached_basis_cell_moments.resize(static_cast<std::size_t>(raw_dim));
+#ifdef MIMETIC_ENABLE_OPENMP
+#pragma omp parallel for schedule(static) if(raw_dim >= 24)
+#endif
+        for (int col = 0; col < raw_dim; ++col) {
+            cached_basis_cell_moments[static_cast<std::size_t>(col)] =
+                basis_cell_vector_moments(raw_basis[static_cast<std::size_t>(col)],
+                                          edges,
+                                          cell_moment_order,
+                                          quadrature,
+                                          scale_length);
+        }
+
         const std::vector<Eigen::Vector2d> cell_moments = source_cell_vector_moments(polygon);
         if (static_cast<int>(cell_moments.size()) != num_cell_scalar_moments) {
             throw std::runtime_error("Source cell vector moments do not match requested cell moment order");
@@ -2811,10 +3091,10 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
                 row_weights(row) = options.cell_weight;
                 row_weights(row + 1) = options.cell_weight;
                 for (int col = 0; col < raw_dim; ++col) {
-                    const std::vector<Eigen::Vector2d> basis_moments =
-                        basis_cell_vector_moments(raw_basis[col], edges, cell_moment_order, quadrature, scale_length);
-                    A_raw(row, col) = basis_moments[moment_index].x();
-                    A_raw(row + 1, col) = basis_moments[moment_index].y();
+                    const Eigen::Vector2d& basis_moment =
+                        cached_basis_cell_moments[static_cast<std::size_t>(col)][static_cast<std::size_t>(moment_index)];
+                    A_raw(row, col) = basis_moment.x();
+                    A_raw(row + 1, col) = basis_moment.y();
                 }
                 row += 2;
             }
@@ -2949,20 +3229,19 @@ std::vector<double> PlanarMomentInterpolator::edge_moments(const MomentReconstru
                                                            const int order) const
 {
     const std::vector<GaussLegendrePoint> quadrature = gauss_legendre_rule(reconstruction.options.quadrature_points);
-    std::vector<double> moments(static_cast<std::size_t>(order + 1), 0.0);
+    std::vector<double> moments;
     const Eigen::Vector2d delta = b - a;
     const double length = delta.norm();
     if (length <= kTolerance) {
+        moments.assign(static_cast<std::size_t>(order + 1), 0.0);
         return moments;
     }
     const double denom = delta.squaredNorm();
     const Eigen::Vector2d normal(delta.y(), -delta.x());
-    for (int degree = 0; degree <= order; ++degree) {
-        moments[degree] = integrate_edge_highorder_rule(a, b, quadrature, [&](const Eigen::Vector2d& p) {
+    accumulate_edge_moment_bundle(a, b, quadrature, order, moments, [&](const Eigen::Vector2d& p) {
             const double t = 2.0 * (p - a).dot(delta) / denom - 1.0;
-            return velocity(reconstruction, p).dot(normal / length) * legendre_polynomial(degree, t);
+            return EdgeMomentSample{velocity(reconstruction, p).dot(normal / length), t};
         });
-    }
     return moments;
 }
 
@@ -2976,6 +3255,15 @@ EdgeMomentTransferResult PlanarMomentInterpolator::transfer_source_to_target_edg
         LocalPolygon local;
         std::vector<Eigen::Vector2d> absolute_points;
         MomentReconstruction reconstruction;
+        GnomonicFrame frame;
+        PolygonSearchGeometry search;
+    };
+
+    struct TargetCache {
+        moab::EntityHandle polygon;
+        LocalPolygon local;
+        std::vector<LocalEdge> edges;
+        PolygonSearchGeometry search;
     };
 
     std::vector<SourceCache> sources;
@@ -2991,6 +3279,20 @@ EdgeMomentTransferResult PlanarMomentInterpolator::transfer_source_to_target_edg
             local,
             absolute_points(local),
             reconstruction_it->second,
+            GnomonicFrame{local.n, local.e_x, local.e_y, options_.radius},
+            polygon_search_geometry(local, options_),
+        });
+    }
+
+    std::vector<TargetCache> targets;
+    targets.reserve(target_polygons.size());
+    for (const moab::EntityHandle target_polygon : target_polygons) {
+        const LocalPolygon local = local_polygon(mb_, target_polygon, options_);
+        targets.push_back(TargetCache{
+            target_polygon,
+            local,
+            local_edges(mb_, local),
+            polygon_search_geometry(local, options_),
         });
     }
 
@@ -2998,38 +3300,53 @@ EdgeMomentTransferResult PlanarMomentInterpolator::transfer_source_to_target_edg
 
     EdgeMomentTransferResult result;
     const std::vector<GaussLegendrePoint> quadrature = gauss_legendre_rule(10);
+    std::vector<std::size_t> target_offsets(targets.size() + 1, 0);
+    for (std::size_t i = 0; i < targets.size(); ++i) {
+        target_offsets[i + 1] = target_offsets[i] + targets[i].edges.size();
+    }
+    result.target_edges.resize(target_offsets.back());
+    result.target_moments.assign(target_offsets.back(),
+                                 std::vector<double>(static_cast<std::size_t>(target_moment_order + 1), 0.0));
+    for (std::size_t target_index = 0; target_index < targets.size(); ++target_index) {
+        const TargetCache& target = targets[target_index];
+        for (std::size_t edge_index = 0; edge_index < target.edges.size(); ++edge_index) {
+            result.target_edges[target_offsets[target_index] + edge_index] =
+                DirectedEdgeDof{target.polygon, target.edges[edge_index].handle, edge_index};
+        }
+    }
 
-    for (const moab::EntityHandle target_polygon : target_polygons) {
-        const LocalPolygon target = local_polygon(mb_, target_polygon, options_);
-        const std::vector<LocalEdge> target_edges = local_edges(mb_, target);
+#ifdef MIMETIC_ENABLE_OPENMP
+#pragma omp parallel for schedule(dynamic, 16) if(targets.size() >= 64)
+#endif
+    for (int target_index = 0; target_index < static_cast<int>(targets.size()); ++target_index) {
+        const TargetCache& target = targets[static_cast<std::size_t>(target_index)];
+        const auto ho_candidates =
+            find_overlap_candidates(ho_src_index,
+                                    target.search.center,
+                                    target.search.radius,
+                                    sources.size());
 
-        for (std::size_t edge_index = 0; edge_index < target_edges.size(); ++edge_index) {
-            const LocalEdge& target_edge = target_edges[edge_index];
-            const std::size_t target_dof = result.target_edges.size();
-            result.target_edges.push_back(DirectedEdgeDof{target_polygon, target_edge.handle, edge_index});
-            result.target_moments.push_back(std::vector<double>(static_cast<std::size_t>(target_moment_order + 1), 0.0));
+        for (std::size_t edge_index = 0; edge_index < target.edges.size(); ++edge_index) {
+            const LocalEdge& target_edge = target.edges[edge_index];
+            const std::size_t target_dof = target_offsets[static_cast<std::size_t>(target_index)] + edge_index;
 
-            // Precompute 3D target edge endpoints for arc-length parametrization.
-            const Eigen::Vector3d target_a3 = target.points_3d[edge_index].normalized();
-            const Eigen::Vector3d target_b3 = target.points_3d[(edge_index + 1) % target.points_3d.size()].normalized();
+            const Eigen::Vector3d target_a3 = target.local.points_3d[edge_index].normalized();
+            const Eigen::Vector3d target_b3 =
+                target.local.points_3d[(edge_index + 1) % target.local.points_3d.size()].normalized();
             const double target_total_angle = (options_.mode == GeometryMode::SphericalGnomonic)
                 ? std::acos(clamp_unit(target_a3.dot(target_b3)))
                 : 0.0;
 
-            const Eigen::Vector3d ho_mid = (target_a3 + target_b3).normalized();
-            const double ho_half = 0.5 * std::acos(std::max(-1.0, std::min(1.0, target_a3.dot(target_b3))));
-            const auto ho_candidates = find_overlap_candidates(ho_src_index, ho_mid, ho_half, sources.size());
-
             for (const std::size_t si : ho_candidates) {
                 const SourceCache& source = sources[si];
-                Eigen::Vector2d whole_a = target.centroid + target_edge.a;
-                Eigen::Vector2d whole_b = target.centroid + target_edge.b;
-                GnomonicFrame source_frame;
+                Eigen::Vector2d whole_a = target.local.centroid + target_edge.a;
+                Eigen::Vector2d whole_b = target.local.centroid + target_edge.b;
                 if (options_.mode == GeometryMode::SphericalGnomonic) {
-                    source_frame = GnomonicFrame{source.local.n, source.local.e_x, source.local.e_y, options_.radius};
                     try {
-                        whole_a = project_gnomonic(target.points_3d[edge_index], source_frame);
-                        whole_b = project_gnomonic(target.points_3d[(edge_index + 1) % target.points_3d.size()], source_frame);
+                        whole_a = project_gnomonic(target.local.points_3d[edge_index], source.frame);
+                        whole_b = project_gnomonic(
+                            target.local.points_3d[(edge_index + 1) % target.local.points_3d.size()],
+                            source.frame);
                     } catch (const std::runtime_error&) {
                         continue;
                     }
@@ -3053,23 +3370,27 @@ EdgeMomentTransferResult PlanarMomentInterpolator::transfer_source_to_target_edg
                     continue;
                 }
 
+                std::vector<double> contribution_moments;
+                accumulate_edge_moment_bundle(
+                    clipped_a, clipped_b, quadrature, target_moment_order, contribution_moments,
+                    [&](const Eigen::Vector2d& global_p) {
+                        double t = 0.0;
+                        if (options_.mode == GeometryMode::SphericalGnomonic && target_total_angle > kTolerance) {
+                            const Eigen::Vector3d point3 = inverse_gnomonic(global_p, source.frame).normalized();
+                            const double angle = std::acos(clamp_unit(target_a3.dot(point3)));
+                            t = 2.0 * (angle / target_total_angle) - 1.0;
+                        } else {
+                            t = 2.0 * (global_p - whole_a).dot(whole_delta) / whole_denom - 1.0;
+                        }
+                        const Eigen::Vector2d local_p = global_p - source.local.centroid;
+                        return EdgeMomentSample{
+                            velocity(source.reconstruction, local_p).dot(whole_normal / whole_length),
+                            t,
+                        };
+                    });
                 for (int degree = 0; degree <= target_moment_order; ++degree) {
-                    const double contribution = integrate_edge_highorder_rule(
-                        clipped_a, clipped_b, quadrature, [&](const Eigen::Vector2d& global_p) {
-                            double t = 0.0;
-                            if (options_.mode == GeometryMode::SphericalGnomonic && target_total_angle > kTolerance) {
-                                // Use great-circle arc-length parametrization for spherical edges.
-                                const Eigen::Vector3d point3 = inverse_gnomonic(global_p, source_frame).normalized();
-                                const double angle = std::acos(clamp_unit(target_a3.dot(point3)));
-                                t = 2.0 * (angle / target_total_angle) - 1.0;
-                            } else {
-                                t = 2.0 * (global_p - whole_a).dot(whole_delta) / whole_denom - 1.0;
-                            }
-                            const Eigen::Vector2d local_p = global_p - source.local.centroid;
-                            return velocity(source.reconstruction, local_p).dot(whole_normal / whole_length) *
-                                   legendre_polynomial(degree, t);
-                        });
-                    result.target_moments[target_dof][degree] += contribution;
+                    result.target_moments[target_dof][static_cast<std::size_t>(degree)] +=
+                        contribution_moments[static_cast<std::size_t>(degree)];
                 }
             }
         }
@@ -3089,6 +3410,15 @@ PlanarMomentInterpolator::transfer_source_to_target_cell_moments(
         LocalPolygon local;
         std::vector<Eigen::Vector2d> absolute_points;
         MomentReconstruction reconstruction;
+        GnomonicFrame frame;
+        PolygonSearchGeometry search;
+    };
+
+    struct TargetCache {
+        moab::EntityHandle polygon;
+        LocalPolygon local;
+        GnomonicFrame frame;
+        PolygonSearchGeometry search;
     };
 
     std::vector<SourceCache> sources;
@@ -3099,50 +3429,65 @@ PlanarMomentInterpolator::transfer_source_to_target_cell_moments(
             throw std::runtime_error("Missing reconstruction for cell moment transfer");
         }
         const LocalPolygon local = local_polygon(mb_, source_polygon, options_);
-        sources.push_back(SourceCache{source_polygon, local, absolute_points(local), it->second});
+        sources.push_back(SourceCache{
+            source_polygon,
+            local,
+            absolute_points(local),
+            it->second,
+            GnomonicFrame{local.n, local.e_x, local.e_y, options_.radius},
+            polygon_search_geometry(local, options_),
+        });
     }
 
     const SpatialIndex cm_src_index = build_spatial_index_from_sources(
         sources, options_.mode == GeometryMode::SphericalGnomonic);
 
-    const std::vector<GaussLegendrePoint> quadrature = gauss_legendre_rule(10);
+    const std::vector<GaussLegendrePoint> quadrature =
+        gauss_legendre_rule(std::max(10, 2 * std::max(1, cell_moment_order + 1)));
     std::map<moab::EntityHandle, std::vector<Eigen::Vector2d>> result;
-
+    std::vector<TargetCache> targets;
+    targets.reserve(target_polygons.size());
     for (const moab::EntityHandle target_polygon : target_polygons) {
-        const LocalPolygon target = local_polygon(mb_, target_polygon, options_);
+        const LocalPolygon local = local_polygon(mb_, target_polygon, options_);
+        targets.push_back(TargetCache{
+            target_polygon,
+            local,
+            GnomonicFrame{local.n, local.e_x, local.e_y, options_.radius},
+            polygon_search_geometry(local, options_),
+        });
+    }
+
+    std::vector<std::vector<Eigen::Vector2d>> all_target_moments(targets.size());
+
+#ifdef MIMETIC_ENABLE_OPENMP
+#pragma omp parallel for schedule(dynamic, 16) if(targets.size() >= 64)
+#endif
+    for (int target_index = 0; target_index < static_cast<int>(targets.size()); ++target_index) {
+        const TargetCache& target = targets[static_cast<std::size_t>(target_index)];
 
         // Initialize cell moments to zero
         int n_cm = 0;
         for (int td = 0; td <= cell_moment_order; ++td) n_cm += td + 1;
         std::vector<Eigen::Vector2d> moments(n_cm, Eigen::Vector2d::Zero());
 
-        // Find candidates using spatial index
-        Eigen::Vector3d target_center_3d = target.n;
-        double target_max_angle = 0;
-        if (options_.mode == GeometryMode::SphericalGnomonic) {
-            for (const Eigen::Vector3d& p3d : target.points_3d)
-                target_max_angle = std::max(target_max_angle,
-                    std::acos(std::max(-1.0, std::min(1.0, target_center_3d.dot(p3d.normalized())))));
-        }
         const auto cm_candidates = find_overlap_candidates(
-            cm_src_index, target_center_3d, target_max_angle, sources.size());
+            cm_src_index, target.search.center, target.search.radius, sources.size());
 
         for (const std::size_t si : cm_candidates) {
             const SourceCache& source = sources[si];
             // Compute source-target overlap in the source chart
             std::vector<Eigen::Vector2d> target_in_source;
             if (options_.mode == GeometryMode::SphericalGnomonic) {
-                const GnomonicFrame source_frame{source.local.n, source.local.e_x, source.local.e_y, options_.radius};
-                target_in_source.reserve(target.points_3d.size());
+                target_in_source.reserve(target.local.points_3d.size());
                 bool valid = true;
-                for (const Eigen::Vector3d& p3d : target.points_3d) {
+                for (const Eigen::Vector3d& p3d : target.local.points_3d) {
                     try {
-                        target_in_source.push_back(project_gnomonic(p3d, source_frame));
+                        target_in_source.push_back(project_gnomonic(p3d, source.frame));
                     } catch (...) { valid = false; break; }
                 }
                 if (!valid) continue;
             } else {
-                target_in_source = absolute_points(target);
+                target_in_source = absolute_points(target.local);
             }
 
             const std::vector<Eigen::Vector2d> overlap =
@@ -3155,9 +3500,6 @@ PlanarMomentInterpolator::transfer_source_to_target_cell_moments(
             // chart coords. The monomials x^a y^b must be in the TARGET cell's
             // centroid-relative local frame. For spherical, this means lifting each
             // source-chart point to the sphere and re-projecting into the target chart.
-            const GnomonicFrame source_frame{source.local.n, source.local.e_x, source.local.e_y, options_.radius};
-            const GnomonicFrame target_frame{target.n, target.e_x, target.e_y, options_.radius};
-
             std::vector<Eigen::Vector2d> overlap_ccw = overlap;
             if (signed_area(overlap_ccw) < 0.0) std::reverse(overlap_ccw.begin(), overlap_ccw.end());
             const Eigen::Vector2d oc = polygon_centroid(overlap_ccw);
@@ -3170,42 +3512,45 @@ PlanarMomentInterpolator::transfer_source_to_target_cell_moments(
                 Eigen::Vector2d tgt_local;
                 if (options_.mode == GeometryMode::SphericalGnomonic) {
                     // Lift to sphere, convert to target chart
-                    const Eigen::Vector3d surface_vel = lift_contravariant_piola(src_vel, p_src, source_frame);
-                    const Eigen::Vector3d sphere_pt = inverse_gnomonic(p_src, source_frame);
-                    const Eigen::Vector2d tgt_xi = project_gnomonic(sphere_pt, target_frame);
-                    tgt_vel = pullback_contravariant_piola(surface_vel, tgt_xi, target_frame);
-                    tgt_local = tgt_xi - target.centroid;
+                    const Eigen::Vector3d surface_vel = lift_contravariant_piola(src_vel, p_src, source.frame);
+                    const Eigen::Vector3d sphere_pt = inverse_gnomonic(p_src, source.frame);
+                    const Eigen::Vector2d tgt_xi = project_gnomonic(sphere_pt, target.frame);
+                    tgt_vel = pullback_contravariant_piola(surface_vel, tgt_xi, target.frame);
+                    tgt_local = tgt_xi - target.local.centroid;
                 } else {
                     tgt_vel = src_vel;
-                    tgt_local = p_src - target.centroid;
+                    tgt_local = p_src - target.local.centroid;
                 }
                 return {tgt_vel, tgt_local};
             };
 
-            int mi = 0;
-            for (int td = 0; td <= cell_moment_order; ++td) {
-                for (int a = td; a >= 0; --a, ++mi) {
-                    const int b = td - a;
-                    for (std::size_t k = 0; k < overlap_ccw.size(); ++k) {
-                        const Eigen::Vector2d& va = overlap_ccw[k];
-                        const Eigen::Vector2d& vb = overlap_ccw[(k + 1) % overlap_ccw.size()];
-                        const double mx = integrate_triangle_adaptive(oc, va, vb,
-                            [&](const Eigen::Vector2d& p_src) {
-                                auto [vel, loc] = eval_in_target_frame(p_src);
-                                return vel.x() * std::pow(loc.x(), a) * std::pow(loc.y(), b);
-                            });
-                        const double my = integrate_triangle_adaptive(oc, va, vb,
-                            [&](const Eigen::Vector2d& p_src) {
-                                auto [vel, loc] = eval_in_target_frame(p_src);
-                                return vel.y() * std::pow(loc.x(), a) * std::pow(loc.y(), b);
-                            });
-                        moments[mi] += Eigen::Vector2d(mx, my);
+            for (std::size_t k = 0; k < overlap_ccw.size(); ++k) {
+                const Eigen::Vector2d& a = oc;
+                const Eigen::Vector2d& b = overlap_ccw[k];
+                const Eigen::Vector2d& c = overlap_ccw[(k + 1) % overlap_ccw.size()];
+                const Eigen::Vector2d ab = b - a;
+                const Eigen::Vector2d bc = c - b;
+                const double det_j = std::abs(ab.x() * bc.y() - ab.y() * bc.x());
+                for (const GaussLegendrePoint& qu : quadrature) {
+                    const double u = 0.5 * (qu.x + 1.0);
+                    const double wu = 0.5 * qu.w;
+                    for (const GaussLegendrePoint& qv : quadrature) {
+                        const double v = 0.5 * (qv.x + 1.0);
+                        const double wv = 0.5 * qv.w;
+                        const Eigen::Vector2d p_src = a + u * ab + (u * v) * bc;
+                        const auto eval = eval_in_target_frame(p_src);
+                        const double weight = det_j * wu * wv * u;
+                        accumulate_vector_cell_moments(eval.first, eval.second, cell_moment_order, weight, moments);
                     }
                 }
             }
         }
 
-        result[target_polygon] = moments;
+        all_target_moments[static_cast<std::size_t>(target_index)] = std::move(moments);
+    }
+
+    for (std::size_t target_index = 0; target_index < targets.size(); ++target_index) {
+        result[targets[target_index].polygon] = std::move(all_target_moments[target_index]);
     }
 
     return result;
