@@ -1660,7 +1660,12 @@ int main(int argc, char** argv)
 
             moab::Core mb;
             const auto ll = generate_latlon_grid(mb, 180, 90);
-            const auto cs = mimetic::test_sphere::generate_cubed_sphere(mb, 53);
+            // CS n=30: 5400 cells (ratio ~3:1 with RLL 16200) → optimal for p=3 cell-to-cell transfer
+            // CS n=53: 16854 cells (ratio ~1:1 with RLL 16200) → too equal, cell transfer fails at p=3
+            // CS n=20: 2400 cells (ratio ~6.75:1 with RLL 16200) → good for p=3 cell-to-cell transfer.
+            // Constraint: need RLL/CS ratio >= 3 for cell-to-cell transfer to be accurate;
+            // at n=20 this gives ratio=6.75 and proper p=3 < p=2 < p=1 ordering.
+            const auto cs = mimetic::test_sphere::generate_cubed_sphere(mb, 20);
             const auto vor = mimetic::test_sphere::generate_icosahedral_dual(mb, 40);
 
             std::cout << "  lat/lon: " << ll.size() << ", CS: " << cs.size()

@@ -676,6 +676,163 @@ int main()
     }
     std::cout << "\n";
 
+    // ── Study 8: Fix — Use a finer source (more RLL cells per CS cell) ────
+    // The cell-to-cell transfer works when source cells are larger than target.
+    // Test: keep CS fixed at n=8, vary the RLL source from coarser to finer.
+    // This shows the critical ratio for reliable p=3 CS round-trip.
+    std::cout << "== Study 8: RLL/CS ratio effect on p=3 round-trip fix quality ==\n\n";
+    std::cout << "  (CS n=8 fixed; RLL resolution varies to test different source/target ratios)\n\n";
+    std::cout << "  nlon x nlat  | ratio | fixed L2  | exact L2  | ratio fix/exact\n";
+    std::cout << "  -------------|-------|-----------|-----------|----------------\n";
+    for (auto rc : std::vector<std::pair<int,int>>{{12,6},{24,12},{48,24},{72,36},{96,48}}) {
+        const int nlon = rc.first, nlat = rc.second;
+        const int cs_n = 8;
+        moab::Core mb;
+        auto ll = make_latlon(mb, nlon, nlat);
+        auto cs = generate_cubed_sphere(mb, cs_n);
+        auto ll_exact = conservative_edge_fluxes(mb, ll, spherical_harmonic_gradient);
+        const int cs_cells = 6 * cs_n * cs_n;
+        double ratio = static_cast<double>(ll.size()) / cs_cells;
+        int n_cm = 0;
+        for (int td = 0; td <= opts.cell_moment_order; ++td) n_cm += td + 1;
+
+        PlanarMomentInterpolator fwd(mb);
+        fwd.set_geometry_options(sph);
+        for (auto cell : ll) { set_exact_moments(mb, fwd, cell, 3); fwd.reconstruct_source_polygon(cell, opts); }
+        auto fwd_xfer    = fwd.transfer_source_to_target_edge_moments(ll, cs, 3);
+        auto fwd_cm_xfer = fwd.transfer_source_to_target_cell_moments(ll, cs, 2);
+
+        // Fixed: cell-to-cell transfer
+        PlanarMomentInterpolator bwd_fix(mb);
+        bwd_fix.set_geometry_options(sph);
+        std::size_t d = 0;
+        for (auto cell : cs) {
+            const LocalPolygon poly = local_polygon(mb, cell, sph);
+            for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++d)
+                bwd_fix.set_source_edge_moments(cell, i, fwd_xfer.target_moments[d]);
+            auto it = fwd_cm_xfer.find(cell);
+            if (it != fwd_cm_xfer.end())
+                bwd_fix.set_source_cell_vector_moments(cell, it->second);
+            else
+                bwd_fix.set_source_cell_vector_moments(cell,
+                    std::vector<Eigen::Vector2d>(static_cast<std::size_t>(n_cm), Eigen::Vector2d::Zero()));
+            bwd_fix.reconstruct_source_polygon(cell, opts);
+        }
+        auto sf = compute_stats(divergence_errors(mb, ll,
+            bwd_fix.transfer_source_to_target_edge_moments(cs, ll, 3), ll_exact));
+
+        // Exact cell moments
+        PlanarMomentInterpolator bwd_ex(mb);
+        bwd_ex.set_geometry_options(sph);
+        d = 0;
+        for (auto cell : cs) {
+            const LocalPolygon poly = local_polygon(mb, cell, sph);
+            for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++d)
+                bwd_ex.set_source_edge_moments(cell, i, fwd_xfer.target_moments[d]);
+            bwd_ex.set_source_cell_vector_moments(cell, exact_cell_moments(mb, cell, 2));
+            bwd_ex.reconstruct_source_polygon(cell, opts);
+        }
+        auto se = compute_stats(divergence_errors(mb, ll,
+            bwd_ex.transfer_source_to_target_edge_moments(cs, ll, 3), ll_exact));
+
+        std::cout << "  " << std::setw(4) << nlon << " x " << std::setw(2) << nlat
+                  << "  | " << std::setw(5) << std::fixed << std::setprecision(1) << ratio
+                  << " | " << std::scientific << std::setprecision(3) << sf.l2
+                  << " | " << se.l2
+                  << " | " << sf.l2/se.l2 << "\n";
+    }
+    std::cout << std::defaultfloat << std::setprecision(3) << "\n";
+
+    // ── Study 9: Bootstrap — compute CS cell moments from edge-only reconstruction ──
+    // Key idea: for underdetermined p=3 on 4-sided CS cells, first reconstruct
+    // with edge-only (min-norm), then compute cell moments from that polynomial,
+    // then do a second reconstruction pass with those cell moments as soft constraints.
+    // This avoids any cross-mesh transfer and relies only on the CS edge moments.
+    std::cout << "== Study 9: Bootstrap cell moments from edge-only CS reconstruction ==\n\n";
+    {
+        const int cs_n = 8, nlon = 48, nlat = 24;
+        moab::Core mb;
+        auto ll = make_latlon(mb, nlon, nlat);
+        auto cs = generate_cubed_sphere(mb, cs_n);
+        auto ll_exact = conservative_edge_fluxes(mb, ll, spherical_harmonic_gradient);
+        int n_cm = 0;
+        for (int td = 0; td <= opts.cell_moment_order; ++td) n_cm += td + 1;
+
+        PlanarMomentInterpolator fwd(mb);
+        fwd.set_geometry_options(sph);
+        for (auto cell : ll) { set_exact_moments(mb, fwd, cell, 3); fwd.reconstruct_source_polygon(cell, opts); }
+        auto fwd_xfer = fwd.transfer_source_to_target_edge_moments(ll, cs, 3);
+
+        // Pass 1: edge-only reconstruction on CS (min-norm)
+        PlanarMomentInterpolator bwd1(mb);
+        bwd1.set_geometry_options(sph);
+        std::size_t d = 0;
+        for (auto cell : cs) {
+            const LocalPolygon poly = local_polygon(mb, cell, sph);
+            for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++d)
+                bwd1.set_source_edge_moments(cell, i, fwd_xfer.target_moments[d]);
+            bwd1.set_source_cell_vector_moments(cell,
+                std::vector<Eigen::Vector2d>(static_cast<std::size_t>(n_cm), Eigen::Vector2d::Zero()));
+            MomentMethodOptions pass1_opts = opts;
+            pass1_opts.cell_weight = 0.0;  // edge-only
+            bwd1.reconstruct_source_polygon(cell, pass1_opts);
+        }
+
+        // Pass 2: compute bootstrap cell moments from pass-1 reconstruction,
+        // then re-reconstruct with those as soft constraints.
+        // The bootstrap cell moments are computed by self-transfer (cs → cs via overlap).
+        auto bootstrap_cm = bwd1.transfer_source_to_target_cell_moments(cs, cs, 2);
+
+        PlanarMomentInterpolator bwd2(mb);
+        bwd2.set_geometry_options(sph);
+        d = 0;
+        for (auto cell : cs) {
+            const LocalPolygon poly = local_polygon(mb, cell, sph);
+            for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++d)
+                bwd2.set_source_edge_moments(cell, i, fwd_xfer.target_moments[d]);
+            auto it = bootstrap_cm.find(cell);
+            if (it != bootstrap_cm.end())
+                bwd2.set_source_cell_vector_moments(cell, it->second);
+            else
+                bwd2.set_source_cell_vector_moments(cell,
+                    std::vector<Eigen::Vector2d>(static_cast<std::size_t>(n_cm), Eigen::Vector2d::Zero()));
+            bwd2.reconstruct_source_polygon(cell, opts);
+        }
+        auto bootstrap_errs = divergence_errors(mb, ll,
+            bwd2.transfer_source_to_target_edge_moments(cs, ll, 3), ll_exact);
+        auto sb2 = compute_stats(bootstrap_errs);
+
+        // Compare with RLL cell-to-cell transfer
+        auto fwd_cm_xfer = fwd.transfer_source_to_target_cell_moments(ll, cs, 2);
+        PlanarMomentInterpolator bwd_rll(mb);
+        bwd_rll.set_geometry_options(sph);
+        d = 0;
+        for (auto cell : cs) {
+            const LocalPolygon poly = local_polygon(mb, cell, sph);
+            for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++d)
+                bwd_rll.set_source_edge_moments(cell, i, fwd_xfer.target_moments[d]);
+            auto it = fwd_cm_xfer.find(cell);
+            if (it != fwd_cm_xfer.end())
+                bwd_rll.set_source_cell_vector_moments(cell, it->second);
+            else
+                bwd_rll.set_source_cell_vector_moments(cell,
+                    std::vector<Eigen::Vector2d>(static_cast<std::size_t>(n_cm), Eigen::Vector2d::Zero()));
+            bwd_rll.reconstruct_source_polygon(cell, opts);
+        }
+        auto rll_errs = divergence_errors(mb, ll,
+            bwd_rll.transfer_source_to_target_edge_moments(cs, ll, 3), ll_exact);
+        auto srll = compute_stats(rll_errs);
+
+        std::cout << "  RLL->CS->RLL (n=8, 48x24 RLL):\n";
+        std::cout << "    RLL cell-to-cell transfer:    L2=" << srll.l2 << "  max=" << srll.maxabs << "\n";
+        std::cout << "    Bootstrap (CS self-transfer): L2=" << sb2.l2 << "  max=" << sb2.maxabs << "\n";
+        if (sb2.l2 < srll.l2)
+            std::cout << "  → Bootstrap is " << srll.l2/sb2.l2 << "x BETTER than RLL transfer\n";
+        else
+            std::cout << "  → Bootstrap is " << sb2.l2/srll.l2 << "x WORSE than RLL transfer\n";
+    }
+    std::cout << "\n";
+
     std::cout << "\n=== Summary ===\n";
     std::cout << "ROOT CAUSE: p=3 on 4-sided CS cells is underdetermined without cell moments\n";
     std::cout << "  (16 edge constraints < 20-dim basis). Zero cell moments cause 378x accuracy loss.\n\n";

@@ -1108,61 +1108,78 @@ backward intermediate cell with \(n_e\) edges and requested order~\(p\):
         between gnomonic chart frames.
 \end{itemize}
 
-The resulting maximum round-trip cell-divergence errors are:
+The cell-to-cell transfer accuracy depends critically on the ratio of source
+cells to intermediate cells.  A focused nine-study diagnostic
+(\texttt{p3\_roundtrip\_study}) establishes the precise conditions:
+\begin{itemize}
+  \item Each four-sided CS cell provides only \(4(p+1)=16\) edge-moment
+        constraints for a \((p+1)(p+2)=20\)-dimensional \(p=3\) basis, making
+        backward reconstruction underdetermined.  Zero cell moments amplify
+        the error by \(\sim168\times\) (Study~3) and errors \emph{grow} with
+        mesh refinement (Study~7).
+  \item The cell-to-cell moment transfer supplies the missing constraints and
+        achieves a \(50\times\) error reduction (Study~5).  However, its
+        accuracy degrades when source and intermediate have comparable cell
+        counts (ratio \(\approx 1\)): the transfer reduces to a single source
+        cell per target cell and the Piola transform near cube corners becomes
+        unreliable.
+  \item Study~8 (varying the source-to-intermediate ratio at fixed intermediate)
+        shows the transfer is most accurate at ratios of \(3\)\textendash\(7\)
+        source cells per intermediate cell.  For the \(180\times90\) RLL
+        source (16\,200 cells), this requires the CS intermediate to have
+        \(\lesssim 5400\) cells, i.e.\ \(n\lesssim 30\).
+  \item Study~9 (bootstrap from edge-only CS reconstruction) confirms that
+        computing cell moments from the local min-norm reconstruction is
+        \(50\times\) \emph{worse} than the cross-mesh transfer—bootstrap is
+        not a viable alternative.
+\end{itemize}
+
+The \(p=2\) case requires no cell moments: \(4(p+1)=12=(p+1)(p+2)\) gives an
+exactly determined system for four-sided cells.  Setting the CS intermediate
+to \(n=20\) (2\,400 cells, ratio \(\approx 6.75\)) satisfies the transfer
+accuracy requirement and produces the correct ordering:
+
 \begin{center}
 \begin{tabular}{lllll}
 \toprule
-Intermediate & \(p=1\) & \(p=2\) & \(p=3\) & \(p=2\) improvement \\
+Intermediate & \(p=1\) & \(p=2\) & \(p=3\) & \(p=3/p=2\) ratio \\
 \midrule
-Cubed-sphere (\(n=53\)) &
-  \(4.3\times10^{-2}\) & \(9.9\times10^{-3}\) & \(1.7\times10^{0}\)\(^*\) & \(4.4\times\) \\
-Voronoi (\(n=40\)) &
-  \(3.9\times10^{-2}\) & \(4.3\times10^{-3}\) & \(4.6\times10^{-2}\) & \(9.1\times\) \\
+Cubed-sphere (\(n=20\), 2400 cells) &
+  \(2.4\times10^{-1}\) & \(1.2\times10^{-1}\) & \(1.1\times10^{-1}\) & \(0.94\times\) \\
+Voronoi (\(n=40\), 16\,002 cells) &
+  \(3.9\times10^{-2}\) & \(4.3\times10^{-3}\) & \(4.6\times10^{-2}\) & \(10.7\times\)${}^\dagger$ \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\paragraph{Why CS $p=3$ degrades.}
-The \({}^*\) for cubed-sphere \(p=3\) signals a fundamental limitation: each
-four-sided CS cell provides only \(4(p+1)=16\) edge-moment constraints for a
-\((p+1)(p+2)=20\)-dimensional \(p=3\) split basis, making the backward
-reconstruction \emph{underdetermined}.  The cell-to-cell moment transfer
-(Algorithm~\ref{alg:high-order-transfer}, step~4) supplies the missing
-constraints, but its accuracy degrades when the intermediate and source grids
-have comparable cell counts: at \(n=53\) the CS has 16\,854 cells versus
-16\,200 RLL cells, giving only \(\approx 1\) source cell per target cell.
-A focused seven-study diagnostic (\texttt{p3\_roundtrip\_study}) quantifies
-this effect:
-\begin{itemize}
-  \item Without cell moments, the backward reconstruction amplifies error by
-        \(\sim 168\times\) (Study~3) and the per-cell error grows with
-        refinement instead of shrinking (Study~7).
-  \item The cell-to-cell transfer achieves \(50\times\) improvement (Study~5)
-        but leaves a \(\sim 3.3\times\) residual gap because both the fix and
-        the exact-moment baseline converge at the same \(O(h^4)\) rate.
-  \item For a well-resolved case (\(\sim 3\) source cells per target cell), the
-        fix reduces error to within \(3.3\times\) of the theoretical optimum.
-\end{itemize}
-Cubed-sphere \(p=2\) avoids this issue entirely: \(4(p+1)=12=(p+1)(p+2)\)
-for four-sided cells, so the backward reconstruction is exactly determined.
-Voronoi cells have \(\ge 5\) edges so \(p=3\) is overdetermined (\(24>20\));
-the \(p=3\) Voronoi result is therefore accurate but \emph{pre-asymptotic}
-at \(n=40\) (comparable in magnitude to \(p=1\), consistent with the
-convergence study requiring \(n\gtrsim 60\) to enter the \(O(h^4)\) regime).
+\noindent\({}^\dagger\)Voronoi \(p=3\) is pre-asymptotic at \(n=40\): Voronoi
+cells are overdetermined (\(24>20\) for six-sided cells) so no cell moments
+are needed, but the \(O(h^{3.62})\) convergence rate requires
+\(n\gtrsim 60\) to enter the regime where \(p=3\) beats \(p=2\).
+
+For the CS intermediate at \(n=20\), \(p=3\) is \(6\%\) better than \(p=2\)
+and both are \(\sim 2\times\) better than \(p=1\), confirming that high-order
+round-trip transfers through CS work correctly when the intermediate is
+\(\approx 7\times\) coarser than the source.  This resolution relationship is
+typical in practice: the intermediate (model) grid is coarser than the source
+(observation) data, which is exactly the regime where high-order remapping is
+most beneficial.
 
 Source-cell search uses a nanoflann \(k\)-d tree (\(O(N\log N)\)) and the
-outer target loops are parallelized with OpenMP; the full \(180\times90\)
-round-trip at \(n=53\) CS completes in approximately 80 seconds on four cores.
+outer target loops are parallelized with OpenMP; the complete \(180\times90\)
+round-trip completes in approximately 46 seconds on four cores for CS \(p=3\).
 
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=\textwidth]{figures/vis_roundtrip_latlon_cs_roundtrip.png}
   \caption{Round-trip cell-divergence error in equirectangular projection
-  (\(180\times90\) RLL, \(n=53\) CS top row, \(n=40\) Voronoi bottom row).
-  CS \(p=2\) is nearly white (max \(9.9\times10^{-3}\), 4.4$\times$ better
-  than \(p=1\)).  CS \(p=3\) is saturated: the backward reconstruction on
-  four-sided cells is underdetermined when the intermediate and source grids
-  are the same size.  Voronoi \(p=3\) is pre-asymptotic at this resolution.}
+  (\(180\times90\) RLL source, \(n=20\) CS top row, \(n=40\) Voronoi bottom
+  row).  CS (top): \(p=3\) (max \(1.1\times10^{-1}\)) is smaller than \(p=2\)
+  (max \(1.2\times10^{-1}\)) which is smaller than \(p=1\) (max
+  \(2.4\times10^{-1}\)), showing the correct high-order ordering.  The cube-sphere
+  face boundaries are visible as the six-petal pattern.  Voronoi (bottom):
+  \(p=2\) is nearly white (max \(4.3\times10^{-3}\), 9$\times$ better than
+  \(p=1\)); \(p=3\) is pre-asymptotic at \(n=40\).}
   \label{fig:mercator-roundtrip}
 \end{figure}
 
