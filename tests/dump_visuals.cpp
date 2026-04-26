@@ -1070,7 +1070,10 @@ std::vector<double> roundtrip_highorder(moab::Core& mb_shared,
 
         mimetic::MomentMethodOptions bwd_opts = opts;
         if (edge_constraints > basis_dim) {
-            // Strictly overdetermined: edge moments alone are robust
+            // Strictly overdetermined: edge moments alone are robust; skip cell moments.
+            // Exactly-determined cells (edge_constraints == basis_dim) still benefit from
+            // transferred cell moments as regularizing soft constraints, so we keep
+            // cell_weight > 0 for those.
             bwd_opts.cell_weight = 0.0;
         }
 
@@ -1666,7 +1669,9 @@ int main(int argc, char** argv)
             // Constraint: need RLL/CS ratio >= 3 for cell-to-cell transfer to be accurate;
             // at n=20 this gives ratio=6.75 and proper p=3 < p=2 < p=1 ordering.
             const auto cs = mimetic::test_sphere::generate_cubed_sphere(mb, 20);
-            const auto vor = mimetic::test_sphere::generate_icosahedral_dual(mb, 40);
+            // Voronoi n=20: 4002 cells (ratio ~4:1 with RLL 16200) → p=3 < p=2 ordering.
+            // Voronoi n=40: 16002 cells (~1:1 with RLL 16200) → pre-asymptotic, p=3 ≈ p=1.
+            const auto vor = mimetic::test_sphere::generate_icosahedral_dual(mb, 20);
 
             std::cout << "  lat/lon: " << ll.size() << ", CS: " << cs.size()
                       << ", Voronoi: " << vor.size() << " cells\n";

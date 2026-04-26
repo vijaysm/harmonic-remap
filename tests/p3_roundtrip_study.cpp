@@ -880,7 +880,7 @@ int main()
                     for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++d)
                         bwd.set_source_edge_moments(cell, i, fwd_xfer.target_moments[d]);
                     MomentMethodOptions bo = mo;
-                    if ((int)poly.vertices.size()*(p+1) > basis_dim) bo.cell_weight = 0.0;
+                    if ((int)poly.vertices.size()*(p+1) >= basis_dim) bo.cell_weight = 0.0;
                     auto it = fwd_cm.find(cell);
                     if (it != fwd_cm.end())
                         bwd.set_source_cell_vector_moments(cell, it->second);
@@ -943,6 +943,167 @@ int main()
     std::cout << "  9. Bootstrap (CS self-transfer) is 50x WORSE than cross-mesh transfer.\n";
     std::cout << " 10. Round-trip convergence rates (~1.5-2 at n=4-8) match one-way pre-asymptotic\n";
     std::cout << "     rates. The fix enables convergence; without it errors diverge.\n\n";
+    // ── Study 11: Voronoi round-trip convergence — clean rate confirmation ──
+    // Voronoi cells (5-7 edges) are OVERDETERMINED at p=3 (24>20): no cell moments needed.
+    // This gives a clean convergence study without the CS underdetermination complication.
+    // Uses fixed RLL 180×90 source and varies Voronoi resolution.
+    std::cout << "== Study 11: Voronoi round-trip convergence (no cell moments needed) ==\n\n";
+    std::cout << "  (Fixed RLL 36x18; Voronoi n varies. All Voronoi cells overdetermined at p=3.)\n\n";
+    std::cout << "  Vor n  | cells |  p=1 L2    |  p=2 L2    |  p=3 L2    |  rate p=1 | rate p=2 | rate p=3\n";
+    std::cout << "  -------|-------|------------|------------|------------|-----------|----------|----------\n";
+    {
+        double prev_l1 = 0, prev_l2 = 0, prev_l3 = 0;
+        int prev_n = 0;
+        for (int vn : {3, 4, 5, 6, 7, 8}) {
+            const int nlon = 36, nlat = 18;  // fixed source
+            moab::Core mb;
+            auto ll = make_latlon(mb, nlon, nlat);
+            auto vor = generate_icosahedral_dual(mb, vn);
+            auto ll_exact = conservative_edge_fluxes(mb, ll, spherical_harmonic_gradient);
+
+            MomentMethodOptions mo_soft = opts;
+            mo_soft.exact_constraints = false;
+
+            // p=1 round-trip (low-order MimeticInterpolator)
+            double l2_p1 = [&]() {
+                MimeticInterpolator fwd(mb), bwd(mb);
+                fwd.set_geometry_options(sph);
+                bwd.set_geometry_options(sph);
+                for (auto cell : ll) {
+                    GeometryOptions sph_in = sph;
+                    const LocalPolygon poly = local_polygon(mb, cell, sph_in);
+                    for (std::size_t ei = 0; ei < poly.vertices.size(); ++ei)
+                        fwd.set_source_edge_flux(cell, ei,
+                            exact_chart_edge_flux(mb, cell, ei, spherical_harmonic_gradient));
+                    fwd.reconstruct_source_polygon(cell);
+                }
+                auto fwd_x = fwd.transfer_source_to_target_edges(ll, vor);
+                std::size_t d = 0;
+                for (auto cell : vor) {
+                    const LocalPolygon poly = local_polygon(mb, cell, sph);
+                    for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++d)
+                        bwd.set_source_edge_flux(cell, i, fwd_x.target_fluxes[d]);
+                    bwd.reconstruct_source_polygon(cell);
+                }
+                auto bwd_x = bwd.transfer_source_to_target_edges(vor, ll);
+                std::vector<double> errs; d = 0;
+                for (auto cell : ll) {
+                    const LocalPolygon poly = local_polygon(mb, cell, sph);
+                    double flux = 0, exact = 0;
+                    for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++d) {
+                        flux += bwd_x.target_fluxes[d];
+                        exact += ll_exact.at({cell, i});
+                    }
+                    errs.push_back((flux - exact) / poly.area);
+                }
+                return compute_stats(errs).l2;
+            }();
+
+            // p=2 and p=3 round-trip (PlanarMomentInterpolator, edge-only for overdetermined Voronoi)
+            auto vor_rt = [&](int p) -> double {
+                MomentMethodOptions mo = mo_soft;
+                mo.edge_moment_order = p;
+                mo.cell_moment_order = std::max(1, p - 1);
+                const int basis_dim = (p+1)*(p+2);
+
+                // Disable degree elevation on backward leg: metric_weighted=true elevates
+                // basis to p+2=5 for p=3, making it 42-dimensional vs only 24 edge constraints
+                // (even for 6-sided Voronoi). This causes catastrophic underdetermination.
+                GeometryOptions sph_bwd = sph;
+                sph_bwd.metric_weighted = false;
+
+                PlanarMomentInterpolator fwd(mb), bwd(mb);
+                fwd.set_geometry_options(sph);
+                bwd.set_geometry_options(sph_bwd);
+
+                // Set exact source moments on RLL
+                for (auto cell : ll) { set_exact_moments(mb, fwd, cell, p); fwd.reconstruct_source_polygon(cell, mo); }
+                auto fwd_xfer = fwd.transfer_source_to_target_edge_moments(ll, vor, p);
+
+                // Backward: Voronoi cells are overdetermined at p=3 → edge-only sufficient
+                // basis_dim now correctly reflects the NON-elevated basis
+                int ncm = 0; for (int td = 0; td <= mo.cell_moment_order; ++td) ncm += td + 1;
+                std::size_t d = 0;
+                for (auto cell : vor) {
+                    const LocalPolygon poly = local_polygon(mb, cell, sph_bwd);
+                    for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++d)
+                        bwd.set_source_edge_moments(cell, i, fwd_xfer.target_moments[d]);
+                    MomentMethodOptions bo = mo;
+                    // Exactly or over-determined: n_edges*(p+1) >= basis_dim → cell_weight=0.
+                    // Using zero cell moments with weight>0 corrupts exactly-determined cells
+                    // (e.g. pentagon Voronoi at p=3: 5*(3+1)=20=(3+1)*(3+2)).
+                    if ((int)poly.vertices.size()*(p+1) >= basis_dim) bo.cell_weight = 0.0;
+                    bwd.set_source_cell_vector_moments(cell,
+                        std::vector<Eigen::Vector2d>(static_cast<std::size_t>(ncm), Eigen::Vector2d::Zero()));
+                    bwd.reconstruct_source_polygon(cell, bo);
+                }
+                auto bwd_xfer = bwd.transfer_source_to_target_edge_moments(vor, ll, p);
+                std::vector<double> errs; d = 0;
+                for (auto cell : ll) {
+                    const LocalPolygon poly = local_polygon(mb, cell, sph);
+                    double flux = 0, exact = 0;
+                    for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++d) {
+                        flux += bwd_xfer.target_moments[d][0];
+                        exact += ll_exact.at({cell, i});
+                    }
+                    errs.push_back((flux - exact) / poly.area);
+                }
+                return compute_stats(errs).l2;
+            };
+
+            double l2_p2 = vor_rt(2);
+            double l2_p3 = vor_rt(3);
+
+            double r1 = 0, r2 = 0, r3 = 0;
+            if (prev_n > 0) {
+                double hr = std::log(static_cast<double>(vn) / prev_n);
+                if (prev_l1 > 0 && l2_p1 > 0) r1 = std::log(prev_l1 / l2_p1) / hr;
+                if (prev_l2 > 0 && l2_p2 > 0) r2 = std::log(prev_l2 / l2_p2) / hr;
+                if (prev_l3 > 0 && l2_p3 > 0) r3 = std::log(prev_l3 / l2_p3) / hr;
+            }
+
+            std::cout << "  n=" << std::setw(2) << vn << "  | " << std::setw(5) << vor.size()
+                      << " |  " << l2_p1 << "  |  " << l2_p2 << "  |  " << l2_p3
+                      << "  |  " << std::fixed << std::setprecision(2) << r1
+                      << "  |  " << r2 << "  |  " << r3
+                      << std::scientific << std::setprecision(3) << "\n";
+            prev_l1 = l2_p1; prev_l2 = l2_p2; prev_l3 = l2_p3; prev_n = vn;
+        }
+        std::cout << "  (Expected one-way rates: p=1→2.05, p=2→2.52, p=3→3.62)\n\n";
+
+        // Diagnostic: check if forward leg alone is accurate
+        std::cout << "  Forward-only error (RLL->Voronoi, no backward):\n";
+        for (int vn : {5, 8}) {
+            moab::Core mb2;
+            auto ll2  = make_latlon(mb2, 36, 18);
+            auto vor2 = generate_icosahedral_dual(mb2, vn);
+            auto ll2_exact = conservative_edge_fluxes(mb2, ll2, spherical_harmonic_gradient);
+            auto vor2_exact = conservative_edge_fluxes(mb2, vor2, spherical_harmonic_gradient);
+
+            MomentMethodOptions mo2 = opts; mo2.exact_constraints = false;
+            for (int p : {2, 3}) {
+                mo2.edge_moment_order = p; mo2.cell_moment_order = std::max(1, p-1);
+                PlanarMomentInterpolator fwd2(mb2);
+                fwd2.set_geometry_options(sph);
+                for (auto cell : ll2) { set_exact_moments(mb2, fwd2, cell, p); fwd2.reconstruct_source_polygon(cell, mo2); }
+                auto xfer2 = fwd2.transfer_source_to_target_edge_moments(ll2, vor2, p);
+                std::vector<double> errs; std::size_t d = 0;
+                for (auto cell : vor2) {
+                    const LocalPolygon poly = local_polygon(mb2, cell, sph);
+                    double flux = 0, exact = 0;
+                    for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++d) {
+                        flux += xfer2.target_moments[d][0];
+                        exact += vor2_exact.at({cell, i});
+                    }
+                    errs.push_back((flux - exact)/poly.area);
+                }
+                auto s = compute_stats(errs);
+                std::cout << "    Voronoi n=" << vn << " p=" << p << " one-way: L2=" << s.l2 << "  max=" << s.maxabs << "\n";
+            }
+        }
+        std::cout << "\n";
+    }
+
     std::cout << "COMPLETE RESOLUTION: use CS n~20 (ratio>=3 with production RLL 180x90).\n";
     std::cout << "  CS p=2: max=0.119 (2x better than p=1=0.244)\n";
     std::cout << "  CS p=3: max=0.112 (correct ordering, 6% better than p=2)\n";

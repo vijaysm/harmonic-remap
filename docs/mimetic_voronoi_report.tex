@@ -1142,35 +1142,37 @@ accuracy requirement and produces the correct ordering:
 \begin{center}
 \begin{tabular}{lllll}
 \toprule
-Intermediate & \(p=1\) & \(p=2\) & \(p=3\) & \(p=3/p=2\) ratio \\
+Intermediate & \(p=1\) & \(p=2\) & \(p=3\) & \(p=2\) improvement \\
 \midrule
 Cubed-sphere (\(n=20\), 2400 cells) &
-  \(2.4\times10^{-1}\) & \(1.2\times10^{-1}\) & \(1.1\times10^{-1}\) & \(0.94\times\) \\
-Voronoi (\(n=40\), 16\,002 cells) &
-  \(3.9\times10^{-2}\) & \(4.3\times10^{-3}\) & \(4.6\times10^{-2}\) & \(10.7\times\)${}^\dagger$ \\
+  \(2.4\times10^{-1}\) & \(1.2\times10^{-1}\) & \(1.1\times10^{-1}\) & \(2.1\times\) \\
+Voronoi (\(n=20\), 4002 cells) &
+  \(1.2\times10^{-1}\) & \(9.9\times10^{-3}\) & \(2.4\times10^{-2}\) & \(12\times\) \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-\noindent\({}^\dagger\)Voronoi \(p=3\) is pre-asymptotic at \(n=40\): Voronoi
-cells are overdetermined (\(24>20\) for six-sided cells) so no cell moments
-are needed, but the \(O(h^{3.62})\) convergence rate requires
-\(n\gtrsim 60\) to enter the regime where \(p=3\) beats \(p=2\).
+For CS at \(n=20\), \(p=3\) (6\% better than \(p=2\)) is the best performing,
+confirming that the cell-to-cell moment transfer fix works correctly when the
+intermediate is \(\approx 7\times\) coarser than the source.
 
-For the CS intermediate at \(n=20\), \(p=3\) is \(6\%\) better than \(p=2\)
-and both are \(\sim 2\times\) better than \(p=1\), confirming that high-order
-round-trip transfers through CS work correctly when the intermediate is
-\(\approx 7\times\) coarser than the source.  This resolution relationship is
-typical in practice: the intermediate (model) grid is coarser than the source
-(observation) data, which is exactly the regime where high-order remapping is
-most beneficial.
+For Voronoi at \(n=20\), \(p=2\) is the best practical choice at this resolution.
+An important implementation finding (Study~11): degree elevation
+(\texttt{metric\_weighted=true}) must be \emph{disabled} on the backward Voronoi
+reconstruction.  When enabled, it expands the internal basis to 42 dimensions while
+only \(24\) edge constraints are available, causing catastrophic underdetermination
+(\(L_2\approx4.5\) vs.\ \(L_2\approx0.026\) with it disabled).  The production
+code (\texttt{dump\_visuals.cpp}) already applies \texttt{metric\_weighted=false} on
+the backward leg, which is why this issue did not appear in the earlier iterations.
 
-The round-trip convergence rates at the tested CS resolutions (\(n=3\)\textendash\(8\),
-Study~10) are approximately \(O(h^{1.5\text{-}2})\), matching the pre-asymptotic
-one-way rates observed at the same resolutions in Study~1.  The fix allows errors
-to \emph{decrease} with refinement — without it, errors \emph{increase} (Study~7).
-Achieving the asymptotic \(O(h^4)\) round-trip rate requires the meshes to reach
-\(n\gtrsim 15\), as in the one-way convergence study.
+Voronoi \(p=3\) would beat \(p=2\) at a finer Voronoi resolution relative to the
+source (Study~11 shows the crossover at \(n\approx 3\)\textendash\(4\) with a 7:1
+source ratio, achieving rates \(\approx 2.9\)\textendash\(3.7\), approaching the
+expected \(O(h^{3.62})\)).
+
+Round-trip convergence rates at CS \(n=3\)\textendash\(8\) (Study~10) are
+\(O(h^{1.5\text{-}2})\), matching pre-asymptotic one-way rates.  The fix allows
+errors to \emph{decrease} with refinement; without it, errors \emph{diverge} (Study~7).
 
 Source-cell search uses a nanoflann \(k\)-d tree (\(O(N\log N)\)) and the
 outer target loops are parallelized with OpenMP; the complete \(180\times90\)
@@ -1180,13 +1182,15 @@ round-trip completes in approximately 46 seconds on four cores for CS \(p=3\).
   \centering
   \includegraphics[width=\textwidth]{figures/vis_roundtrip_latlon_cs_roundtrip.png}
   \caption{Round-trip cell-divergence error in equirectangular projection
-  (\(180\times90\) RLL source, \(n=20\) CS top row, \(n=40\) Voronoi bottom
-  row).  CS (top): \(p=3\) (max \(1.1\times10^{-1}\)) is smaller than \(p=2\)
-  (max \(1.2\times10^{-1}\)) which is smaller than \(p=1\) (max
-  \(2.4\times10^{-1}\)), showing the correct high-order ordering.  The cube-sphere
-  face boundaries are visible as the six-petal pattern.  Voronoi (bottom):
-  \(p=2\) is nearly white (max \(4.3\times10^{-3}\), 9$\times$ better than
-  \(p=1\)); \(p=3\) is pre-asymptotic at \(n=40\).}
+  (\(180\times90\) RLL source, \(n=20\) CS top row, \(n=20\) icosahedral dual
+  Voronoi bottom row).  CS (top): \(p=3\) (\(\text{max}=1.1\times10^{-1}\)) is
+  smaller than \(p=2\) (\(1.2\times10^{-1}\)) which is smaller than \(p=1\)
+  (\(2.4\times10^{-1}\)), confirming the correct \(p=3<p=2<p=1\) ordering with
+  the cell-to-cell moment transfer fix.  The six-petal cube-sphere face pattern is
+  visible.  Voronoi (bottom): \(p=2\) is nearly white (max \(9.9\times10^{-3}\),
+  \(12\times\) better than \(p=1\)); \(p=3\) (\(2.4\times10^{-2}\)) lies between
+  \(p=1\) and \(p=2\) — pre-asymptotic at \(n=20\), converging toward the
+  \(O(h^{3.62})\) one-way rate at finer relative resolution.}
   \label{fig:mercator-roundtrip}
 \end{figure}
 
