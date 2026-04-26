@@ -1484,7 +1484,7 @@ std::vector<double> target_divergence_rhs(moab::Core& mb,
 
     std::vector<double> rhs(target_polygons.size(), 0.0);
 #ifdef MIMETIC_ENABLE_OPENMP
-#pragma omp parallel for schedule(dynamic, 16) if(targets.size() >= 64)
+#pragma omp parallel for schedule(static) if(targets.size() >= 64)
 #endif
     for (int target_index = 0; target_index < static_cast<int>(targets.size()); ++target_index) {
         const TargetCache& target = targets[static_cast<std::size_t>(target_index)];
@@ -1614,7 +1614,7 @@ std::vector<double> target_divergence_rhs(moab::Core& mb,
 
     std::vector<double> rhs(target_polygons.size(), 0.0);
 #ifdef MIMETIC_ENABLE_OPENMP
-#pragma omp parallel for schedule(dynamic, 16) if(targets.size() >= 64)
+#pragma omp parallel for schedule(static) if(targets.size() >= 64)
 #endif
     for (int target_index = 0; target_index < static_cast<int>(targets.size()); ++target_index) {
         const TargetCache& target = targets[static_cast<std::size_t>(target_index)];
@@ -3329,6 +3329,7 @@ EdgeMomentTransferResult PlanarMomentInterpolator::transfer_source_to_target_edg
         for (std::size_t edge_index = 0; edge_index < target.edges.size(); ++edge_index) {
             const LocalEdge& target_edge = target.edges[edge_index];
             const std::size_t target_dof = target_offsets[static_cast<std::size_t>(target_index)] + edge_index;
+            std::vector<double> contribution_moments;
 
             const Eigen::Vector3d target_a3 = target.local.points_3d[edge_index].normalized();
             const Eigen::Vector3d target_b3 =
@@ -3370,7 +3371,6 @@ EdgeMomentTransferResult PlanarMomentInterpolator::transfer_source_to_target_edg
                     continue;
                 }
 
-                std::vector<double> contribution_moments;
                 accumulate_edge_moment_bundle(
                     clipped_a, clipped_b, quadrature, target_moment_order, contribution_moments,
                     [&](const Eigen::Vector2d& global_p) {
@@ -3469,6 +3469,10 @@ PlanarMomentInterpolator::transfer_source_to_target_cell_moments(
         int n_cm = 0;
         for (int td = 0; td <= cell_moment_order; ++td) n_cm += td + 1;
         std::vector<Eigen::Vector2d> moments(n_cm, Eigen::Vector2d::Zero());
+        std::vector<Eigen::Vector2d> target_in_source;
+        if (options_.mode == GeometryMode::SphericalGnomonic) {
+            target_in_source.reserve(target.local.points_3d.size());
+        }
 
         const auto cm_candidates = find_overlap_candidates(
             cm_src_index, target.search.center, target.search.radius, sources.size());
@@ -3476,9 +3480,8 @@ PlanarMomentInterpolator::transfer_source_to_target_cell_moments(
         for (const std::size_t si : cm_candidates) {
             const SourceCache& source = sources[si];
             // Compute source-target overlap in the source chart
-            std::vector<Eigen::Vector2d> target_in_source;
             if (options_.mode == GeometryMode::SphericalGnomonic) {
-                target_in_source.reserve(target.local.points_3d.size());
+                target_in_source.clear();
                 bool valid = true;
                 for (const Eigen::Vector3d& p3d : target.local.points_3d) {
                     try {
@@ -3490,7 +3493,7 @@ PlanarMomentInterpolator::transfer_source_to_target_cell_moments(
                 target_in_source = absolute_points(target.local);
             }
 
-            const std::vector<Eigen::Vector2d> overlap =
+            std::vector<Eigen::Vector2d> overlap =
                 convex_polygon_intersection(target_in_source, source.absolute_points, options_.geometry_tolerance);
             if (overlap.size() < 3 || std::abs(signed_area(overlap)) <= options_.geometry_tolerance)
                 continue;
@@ -3500,9 +3503,8 @@ PlanarMomentInterpolator::transfer_source_to_target_cell_moments(
             // chart coords. The monomials x^a y^b must be in the TARGET cell's
             // centroid-relative local frame. For spherical, this means lifting each
             // source-chart point to the sphere and re-projecting into the target chart.
-            std::vector<Eigen::Vector2d> overlap_ccw = overlap;
-            if (signed_area(overlap_ccw) < 0.0) std::reverse(overlap_ccw.begin(), overlap_ccw.end());
-            const Eigen::Vector2d oc = polygon_centroid(overlap_ccw);
+            if (signed_area(overlap) < 0.0) std::reverse(overlap.begin(), overlap.end());
+            const Eigen::Vector2d oc = polygon_centroid(overlap);
 
             // Helper: evaluate reconstruction and convert to target chart frame
             auto eval_in_target_frame = [&](const Eigen::Vector2d& p_src) -> std::pair<Eigen::Vector2d, Eigen::Vector2d> {
@@ -3524,10 +3526,10 @@ PlanarMomentInterpolator::transfer_source_to_target_cell_moments(
                 return {tgt_vel, tgt_local};
             };
 
-            for (std::size_t k = 0; k < overlap_ccw.size(); ++k) {
+            for (std::size_t k = 0; k < overlap.size(); ++k) {
                 const Eigen::Vector2d& a = oc;
-                const Eigen::Vector2d& b = overlap_ccw[k];
-                const Eigen::Vector2d& c = overlap_ccw[(k + 1) % overlap_ccw.size()];
+                const Eigen::Vector2d& b = overlap[k];
+                const Eigen::Vector2d& c = overlap[(k + 1) % overlap.size()];
                 const Eigen::Vector2d ab = b - a;
                 const Eigen::Vector2d bc = c - b;
                 const double det_j = std::abs(ab.x() * bc.y() - ab.y() * bc.x());
