@@ -1,5 +1,7 @@
 build/
+build-*/
 cmake-build-*/
+docs/node_modules/
 CMakeFiles/
 CMakeCache.txt
 CTestTestfile.cmake
