@@ -1,24 +1,6 @@
-%% Combined Literature Survey — replaces 266650ba.tex and the original Section 2.
-%% All references from both sources are preserved.
+%% Literature Survey — all references preserved.
 
-\section{Background and Literature}
-
-The numerical representation of vector-valued fields obeying conservation laws
--- particularly those involving fluxes across cell edges or faces -- is
-governed by the \emph{de Rham complex}.  In three dimensions:
-\[
-  H^1(\Omega) \xrightarrow{\nabla} H(\mathrm{curl};\Omega)
-             \xrightarrow{\nabla\times} H(\mathrm{div};\Omega)
-             \xrightarrow{\nabla\cdot} L^2(\Omega).
-\]
-Discrete counterparts of this complex, often called \emph{mimetic} or
-\emph{structure-preserving} schemes, preserve the key differential-geometric
-properties (Stokes theorem, Helmholtz decomposition, inf-sup stability) at
-the discrete level, avoiding spurious modes and maintaining long-time energy
-conservation \cite{BochevHyman2006,Mattiussi1997,ArnoldFalkWinther2006}.
-In this view, fluxes belong naturally to $H(\mathrm{div})$-conforming spaces
-whose degrees of freedom are attached to codimension-one entities: edge-normal
-fluxes are the primary unknowns, not vertex values.
+\section{Literature Survey}
 
 \subsection{Classical H(div) Spaces and Mimetic Methods}
 

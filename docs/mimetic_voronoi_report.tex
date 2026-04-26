@@ -65,49 +65,69 @@ for \(p=1,2,3\), with machine-precision target-cell closure throughout.
 
 \section{Introduction}
 
+The accurate numerical representation of vector-valued fields obeying
+conservation laws lies at the heart of computational physics and geophysical
+modeling.  The mathematical framework underpinning these representations is
+the \emph{de Rham complex}, which in two dimensions reads
+\[
+  H^1(\Omega) \xrightarrow{\nabla} H(\mathrm{div};\Omega)
+             \xrightarrow{\nabla\cdot} L^2(\Omega).
+\]
+Edge-normal fluxes belong naturally to $H(\mathrm{div})$-conforming spaces
+whose degrees of freedom are attached to codimension-one entities.  Discrete
+counterparts of this complex -- \emph{mimetic} or \emph{structure-preserving}
+schemes -- maintain the key differential-geometric properties at the discrete
+level, avoiding spurious modes and preserving local conservation
+\cite{BochevHyman2006,Mattiussi1997,ArnoldFalkWinther2006}.
+
 Conservative interpolation between nonmatching polygon meshes is normally
-formulated for cell averages.  In that setting, a source-target overlap mesh
-defines weights that preserve the integral of a scalar conserved quantity
+formulated for cell averages, where a source-target overlap mesh defines
+weights that preserve the integral of a scalar conserved quantity
 \cite{DukowiczKodis1987,Jones1999,UllrichTaylor2015}.  The problem considered
 here is different: the data are signed normal flux integrals on source-cell
 edges, and the desired output is the corresponding signed normal flux integral
-on each directed target-cell edge.  This is an H(div)-type transfer problem.
-It must preserve flux balance around every target cell, but it must also give
-edge-wise degrees of freedom suitable for compatible finite volume or mixed
-finite element discretizations.
+on each directed target-cell edge.  This is an $H(\mathrm{div})$-type transfer
+problem.  It must preserve flux balance around every target cell, but it must
+also give edge-wise degrees of freedom suitable for compatible finite volume or
+mixed finite element discretizations.
 
-The central design requirement is therefore local conservation on arbitrary
-source-target intersections.  If \(O\) is a clipped subregion of a source cell
-\(K\), the reconstructed source field must satisfy
+The central design requirement is local conservation on arbitrary source-target
+intersections.  If \(O\) is a clipped subregion of a source cell \(K\), the
+reconstructed source field must satisfy
 \[
-  \int_{\partial O}\uh\cdot\n\,ds
-  =
-  \int_O \nabla\cdot\uh\,dA
+  \int_{\partial O}\uh\cdot\n\,ds = \int_O \nabla\cdot\uh\,dA
 \]
 with the right-hand side represented consistently from the source edge fluxes.
-The lowest-order compatible case is especially attractive because
-\(\nabla\cdot\uh=d_K\) is constant in each source cell.  The overlap invariant
-then reduces to \(d_K |O|\), which is independent of the detailed shape of the
-clipped polygon.  This constant-divergence structure is the mathematical reason
-the harmonic mimetic reconstruction is a good fit for conservative edge-flux
-transfer.
+The lowest-order compatible case is attractive because
+$\nabla\cdot\uh=d_K$ is constant in each source cell, reducing the overlap
+invariant to $d_K |O|$ independently of the clipped polygon shape.  This
+constant-divergence structure is the mathematical reason \emph{harmonic
+polynomial bases} -- whose gradients are automatically divergence-free via
+$\nabla\cdot(\nabla p) = \Delta p = 0$ -- are a natural fit for conservative
+edge-flux transfer.  The method follows the Perot--Chartrand construction
+\cite{PerotChartrand2021}: in each source cell, signed edge fluxes determine a
+local Raviart--Thomas-like vector field with constant cell divergence and a
+harmonic gradient component.
 
-The contributions of this study are:
+The study extends this baseline in several directions:
 \begin{itemize}
-  \item a planar polygon transfer algorithm based on source-cell mimetic
-        reconstruction and directed target-edge clipping;
   \item a spherical extension using source-cell gnomonic charts, great-circle
-        edge clipping, and a contravariant Piola flux map;
-  \item a sparse directed edge projection operator that reproduces direct
-        source-to-target transfer;
-  \item a unified higher-order polygonal \(H(\mathrm{div})\)-style split-moment
-        family with exact hard conservation of the zeroth edge moment and
-        refinement studies for \(p=1,2,3\);
-  \item verification on rectangular, planar Voronoi, cubed-sphere, and
-        spherical Voronoi nonmatching patches; and
-  \item a comparison with Wachspress and related polygonal bases, including the
-        proof obstruction that prevents a scalar vertex-based Wachspress basis
-        from replacing the RT-like harmonic reconstruction in this setting.
+        edge clipping, and a contravariant Piola flux map that preserves normal
+        fluxes between chart and surface curves;
+  \item a unified higher-order polygonal $H(\mathrm{div})$-style split-moment
+        family with a local decomposition into polynomial-divergence,
+        harmonic-gradient, and divergence-free completion modes, exact hard
+        conservation of the zeroth edge moment, and weighted higher-moment
+        fitting for $p=1,2,3$;
+  \item metric-corrected basis orthogonalization and degree-elevated
+        polynomial enrichment for high-order spherical convergence;
+  \item a cell-to-cell moment transfer for round-trip fidelity on meshes
+        with insufficient edge constraints;
+  \item nanoflann k-d tree spatial acceleration and OpenMP parallelization
+        of the source-cell search; and
+  \item verification on rectangular, planar Voronoi, cubed-sphere,
+        icosahedral dual Voronoi, and lat/lon nonmatching patches, including
+        full-sphere round-trip transfer in equirectangular projection.
 \end{itemize}
 
 \input{literature_merged.tex}
@@ -675,7 +695,8 @@ DOF structure required by this transfer.  Generalized Whitney forms or mixed
 virtual elements remain the credible alternative for \(H(\mathrm{div})\)-compatible
 polygonal bases \cite{GilletteRandBajaj2016}.
 
-\section{Discrete Algorithms}
+The discrete algorithms implementing the methods described in this section are
+listed as Algorithms~\ref{alg:source-reconstruction}--\ref{alg:high-order-transfer}.
 
 \begin{algorithm}[t]
 \caption{Source-Cell Reconstruction}
