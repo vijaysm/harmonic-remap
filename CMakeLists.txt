@@ -146,3 +146,7 @@ target_link_libraries(dump_visuals PRIVATE mimetic ${MOAB_LIBRARY})
 add_executable(roundtrip_analysis tests/roundtrip_analysis.cpp)
 target_link_libraries(roundtrip_analysis PRIVATE mimetic ${MOAB_LIBRARY})
 target_include_directories(roundtrip_analysis PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/tests ${MOAB_INCLUDE_DIRS})
+
+add_executable(p3_roundtrip_study tests/p3_roundtrip_study.cpp)
+target_link_libraries(p3_roundtrip_study PRIVATE mimetic ${MOAB_LIBRARY})
+target_include_directories(p3_roundtrip_study PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/tests ${MOAB_INCLUDE_DIRS})
