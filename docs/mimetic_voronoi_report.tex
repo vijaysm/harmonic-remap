@@ -1165,10 +1165,26 @@ only \(24\) edge constraints are available, causing catastrophic underdeterminat
 code (\texttt{dump\_visuals.cpp}) already applies \texttt{metric\_weighted=false} on
 the backward leg, which is why this issue did not appear in the earlier iterations.
 
-Voronoi \(p=3\) would beat \(p=2\) at a finer Voronoi resolution relative to the
-source (Study~11 shows the crossover at \(n\approx 3\)\textendash\(4\) with a 7:1
-source ratio, achieving rates \(\approx 2.9\)\textendash\(3.7\), approaching the
-expected \(O(h^{3.62})\)).
+Study~12 provides a comprehensive joint convergence sweep for both CS and Voronoi
+with a fixed 9:1 source-to-intermediate ratio and cell-to-cell moment transfer
+applied to both mesh types.  For Voronoi, it reveals that pentagon cells (5 edges,
+exactly determined at \(p=3\): \(5(p+1)=20=(p+1)(p+2)\)) also require the
+cell-to-cell transfer to regularize the reconstruction against Piola frame
+inconsistency between the RLL and Voronoi gnomonic charts.  With this fix,
+Voronoi \(p=3\) beats \(p=2\) at \emph{all} tested resolutions:
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Voronoi \(n\) & \(p=2\) L\(_2\) & \(p=3\) L\(_2\) (vs.\ \(p=2\)) \\
+\midrule
+3 & \(8.5\times10^{-2}\) & \(2.6\times10^{-2}\) (\(3.3\times\) better) \\
+6 & \(2.4\times10^{-2}\) & \(4.1\times10^{-3}\) (\(5.9\times\) better, rate \(\approx3.5\)) \\
+\bottomrule
+\end{tabular}
+\end{center}
+The \(p=3\) round-trip convergence rate \(\approx3.5\) at \(n=4\)\textendash\(6\)
+matches the expected one-way Voronoi rate of \(3.62\), confirming that the method
+achieves its design-time convergence order when the round-trip is correctly implemented.
 
 Round-trip convergence rates at CS \(n=3\)\textendash\(8\) (Study~10) are
 \(O(h^{1.5\text{-}2})\), matching pre-asymptotic one-way rates.  The fix allows
