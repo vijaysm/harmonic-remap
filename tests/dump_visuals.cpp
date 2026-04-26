@@ -6,6 +6,7 @@
 #include <moab/Core.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <exception>
 #include <iomanip>
@@ -1565,17 +1566,38 @@ void compute_roundtrip_comparison(const std::string& prefix,
 
 }  // namespace
 
-int main()
+int main(int argc, char** argv)
 {
     try {
+        bool mercator_only = false;
+        std::string mercator_case = "all";
+        for (int i = 1; i < argc; ++i) {
+            const std::string arg(argv[i]);
+            if (arg == "--mercator-only") {
+                mercator_only = true;
+            } else if (arg.rfind("--mercator-case=", 0) == 0) {
+                mercator_case = arg.substr(std::string("--mercator-case=").size());
+            } else {
+                throw std::runtime_error("Unknown argument: " + arg);
+            }
+        }
+
+        const auto time_seconds = [](const auto& start, const auto& stop) {
+            return std::chrono::duration<double>(stop - start).count();
+        };
+
+        if (mercator_only) {
+            std::cout << "=== Mercator Round-Trip Benchmark ===\n";
+        } else {
         std::cout << "=== Mimetic Remapping Convergence Validation Test ===\n";
         std::cout << "Fields: A (harmonic exact), B (sincos divfree), "
                   << "C (quad vardiv), D (exp divfree)\n";
         std::cout << "Domains: quad->quad, voronoi->voronoi, voronoi->quad\n\n";
+        }
 
         bool ok = true;
 
-        {
+        if (!mercator_only) {
             print_table_header("quad -> quad");
             std::vector<RefinementLevel> levels = {
                 {4, 5}
@@ -1583,7 +1605,7 @@ int main()
             ok = run_refinement_study("quad_quad", DomainType::QuadQuad, levels) && ok;
         }
 
-        {
+        if (!mercator_only) {
             print_table_header("voronoi -> voronoi");
             // h ~ 1/sqrt(N), so doubling N halves h roughly by sqrt(2)
             // Use (src, tgt) pairs where both refine and src != tgt
@@ -1593,7 +1615,7 @@ int main()
             ok = run_refinement_study("voronoi_voronoi", DomainType::VoronoiVoronoi, levels) && ok;
         }
 
-        {
+        if (!mercator_only) {
             print_table_header("voronoi -> quad");
             // Source Voronoi and target quad both refine; h ~ 1/sqrt(N_src) ~ 1/N_tgt
             std::vector<RefinementLevel> levels = {
@@ -1602,20 +1624,22 @@ int main()
             ok = run_refinement_study("voronoi_quad", DomainType::VoronoiQuad, levels) && ok;
         }
 
-        if (!ok) {
+        if (!mercator_only && !ok) {
             std::cout << "\n[FAILED] Some convergence checks did not pass.\n";
             return 1;
         }
 
         // Order comparison: field E (oscillating divergence), p=1 vs p=3
-        std::cout << "\n=== Order Comparison: Field E (oscillating divergence) ===\n";
-        {
+        if (!mercator_only) {
+            std::cout << "\n=== Order Comparison: Field E (oscillating divergence) ===\n";
+        }
+        if (!mercator_only) {
             moab::Core mb;
             auto src = create_quad_mesh(mb, 8, 8);
             auto tgt = create_quad_mesh(mb, 11, 11);
             compute_order_comparison("vis_order_compare_quad_E: oscillating_div", mb, src, tgt, field_E);
         }
-        {
+        if (!mercator_only) {
             moab::Core mb;
             auto src_seeds = halton_seeds(64);
             std::vector<Eigen::Vector2d> tgt_seeds;
@@ -1645,22 +1669,50 @@ int main()
 
             const auto ll_exact = exact_cell_divergence(mb, ll, spherical);
 
-            std::cout << "  CS p=1 round-trip...\n";
-            const auto ll_cs_p1 = roundtrip_p1(mb, ll, cs, spherical);
-            std::cout << "  Voronoi p=1 round-trip...\n";
-            const auto ll_vor_p1 = roundtrip_p1(mb, ll, vor, spherical);
-            std::cout << "  CS p=2 round-trip...\n";
-            const auto ll_cs_p2 = roundtrip_highorder(mb, ll, cs, spherical, 2);
-            std::cout << "  Voronoi p=2 round-trip...\n";
-            const auto ll_vor_p2 = roundtrip_highorder(mb, ll, vor, spherical, 2);
-            std::cout << "  CS p=3 round-trip (with cell moments)...\n";
-            const auto ll_cs_p3 = roundtrip_highorder(mb, ll, cs, spherical, 3);
-            std::cout << "  Voronoi p=3 round-trip...\n";
-            const auto ll_vor_p3 = roundtrip_highorder(mb, ll, vor, spherical, 3);
+            const auto should_run = [&](const std::string& tag) {
+                return mercator_case == "all" || mercator_case == tag;
+            };
 
-            dump_mercator_mesh("vis_mercator_roundtrip_source_exact.txt", mb, ll, ll_exact);
+            auto run_case = [&](const std::string& tag,
+                                const std::string& message,
+                                const auto& func,
+                                std::vector<double>& out_values,
+                                double& seconds) {
+                if (!should_run(tag)) {
+                    return;
+                }
+                std::cout << message << "\n";
+                const auto start = std::chrono::steady_clock::now();
+                out_values = func();
+                const auto stop = std::chrono::steady_clock::now();
+                seconds = time_seconds(start, stop);
+            };
+
+            std::vector<double> ll_cs_p1, ll_vor_p1, ll_cs_p2, ll_vor_p2, ll_cs_p3, ll_vor_p3;
+            double cs_p1_time = 0.0, vor_p1_time = 0.0, cs_p2_time = 0.0;
+            double vor_p2_time = 0.0, cs_p3_time = 0.0, vor_p3_time = 0.0;
+
+            run_case("cs_p1", "  CS p=1 round-trip...",
+                     [&] { return roundtrip_p1(mb, ll, cs, spherical); }, ll_cs_p1, cs_p1_time);
+            run_case("vor_p1", "  Voronoi p=1 round-trip...",
+                     [&] { return roundtrip_p1(mb, ll, vor, spherical); }, ll_vor_p1, vor_p1_time);
+            run_case("cs_p2", "  CS p=2 round-trip...",
+                     [&] { return roundtrip_highorder(mb, ll, cs, spherical, 2); }, ll_cs_p2, cs_p2_time);
+            run_case("vor_p2", "  Voronoi p=2 round-trip...",
+                     [&] { return roundtrip_highorder(mb, ll, vor, spherical, 2); }, ll_vor_p2, vor_p2_time);
+            run_case("cs_p3", "  CS p=3 round-trip (with cell moments)...",
+                     [&] { return roundtrip_highorder(mb, ll, cs, spherical, 3); }, ll_cs_p3, cs_p3_time);
+            run_case("vor_p3", "  Voronoi p=3 round-trip...",
+                     [&] { return roundtrip_highorder(mb, ll, vor, spherical, 3); }, ll_vor_p3, vor_p3_time);
+
+            if (mercator_case == "all" || mercator_case == "source") {
+                dump_mercator_mesh("vis_mercator_roundtrip_source_exact.txt", mb, ll, ll_exact);
+            }
 
             auto dump_errors = [&](const std::string& tag, const std::vector<double>& roundtripped) {
+                if (roundtripped.empty()) {
+                    return;
+                }
                 std::vector<double> err;
                 double max_e = 0;
                 for (std::size_t i = 0; i < ll_exact.size(); ++i) {
@@ -1678,6 +1730,17 @@ int main()
             dump_errors("vor_p2", ll_vor_p2);
             dump_errors("cs_p3", ll_cs_p3);
             dump_errors("vor_p3", ll_vor_p3);
+
+            if (mercator_case != "source") {
+                std::cout << "  timings (s):";
+                if (!ll_cs_p1.empty()) std::cout << " cs_p1=" << cs_p1_time;
+                if (!ll_vor_p1.empty()) std::cout << " vor_p1=" << vor_p1_time;
+                if (!ll_cs_p2.empty()) std::cout << " cs_p2=" << cs_p2_time;
+                if (!ll_vor_p2.empty()) std::cout << " vor_p2=" << vor_p2_time;
+                if (!ll_cs_p3.empty()) std::cout << " cs_p3=" << cs_p3_time;
+                if (!ll_vor_p3.empty()) std::cout << " vor_p3=" << vor_p3_time;
+                std::cout << "\n";
+            }
         }
 
         std::cout << "\n[SUCCESS] All convergence and exact recovery checks passed.\n";
