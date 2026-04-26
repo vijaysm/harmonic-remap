@@ -1661,8 +1661,8 @@ int main(int argc, char** argv)
 
             moab::Core mb;
             const auto ll = generate_latlon_grid(mb, 180, 90);
-            const auto cs = mimetic::test_sphere::generate_cubed_sphere(mb, 51);
-            const auto vor = mimetic::test_sphere::generate_icosahedral_dual(mb, 20);
+            const auto cs = mimetic::test_sphere::generate_cubed_sphere(mb, 53);
+            const auto vor = mimetic::test_sphere::generate_icosahedral_dual(mb, 40);
 
             std::cout << "  lat/lon: " << ll.size() << ", CS: " << cs.size()
                       << ", Voronoi: " << vor.size() << " cells\n";
