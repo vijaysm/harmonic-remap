@@ -1051,17 +1051,18 @@ std::vector<double> roundtrip_highorder(moab::Core& mb_shared,
 
     // Transfer cell vector moments from source to intermediate using
     // the forward reconstruction (provides interior constraints for
-    // cells with insufficient edge data).
+    // cells with insufficient edge data, e.g. 4-sided CS quads at p=3).
     const int cmo = std::max(1, opts.edge_moment_order - 1);
     const auto cell_moments =
         fwd.transfer_source_to_target_cell_moments(src_fwd, inter_fwd, cmo);
 
     // Adaptive per-cell reconstruction:
-    // - Cells strictly overdetermined by edge moments alone (edge_constraints > basis_dim):
-    //   ignore cell moments (cell_weight = 0).
-    // - Cells exactly or under-determined: use transferred cell moments.
+    // - Cells strictly overdetermined by edge moments alone: ignore cell moments.
+    // - Cells exactly or under-determined: use transferred cell moments as soft constraints.
     const int p = opts.edge_moment_order;
     const int basis_dim = (p + 1) * (p + 2);  // dim([P_p]^2)
+    int n_cm = 0;
+    for (int td = 0; td <= cmo; ++td) n_cm += td + 1;
     for (std::size_t ci = 0; ci < inter_fwd.size(); ++ci) {
         const mimetic::LocalPolygon poly = mimetic::local_polygon(mb_bwd, inter_bwd[ci], bwd_geo);
         const int n_edges = static_cast<int>(poly.vertices.size());
@@ -1077,10 +1078,8 @@ std::vector<double> roundtrip_highorder(moab::Core& mb_shared,
         if (it != cell_moments.end()) {
             bwd.set_source_cell_vector_moments(inter_bwd[ci], it->second);
         } else {
-            int n_cm = 0;
-            for (int td = 0; td <= cmo; ++td) n_cm += td + 1;
             bwd.set_source_cell_vector_moments(inter_bwd[ci],
-                std::vector<Eigen::Vector2d>(n_cm, Eigen::Vector2d::Zero()));
+                std::vector<Eigen::Vector2d>(static_cast<std::size_t>(n_cm), Eigen::Vector2d::Zero()));
         }
         bwd.reconstruct_source_polygon(inter_bwd[ci], bwd_opts);
     }
