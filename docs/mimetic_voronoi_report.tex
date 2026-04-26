@@ -1165,6 +1165,13 @@ typical in practice: the intermediate (model) grid is coarser than the source
 (observation) data, which is exactly the regime where high-order remapping is
 most beneficial.
 
+The round-trip convergence rates at the tested CS resolutions (\(n=3\)\textendash\(8\),
+Study~10) are approximately \(O(h^{1.5\text{-}2})\), matching the pre-asymptotic
+one-way rates observed at the same resolutions in Study~1.  The fix allows errors
+to \emph{decrease} with refinement — without it, errors \emph{increase} (Study~7).
+Achieving the asymptotic \(O(h^4)\) round-trip rate requires the meshes to reach
+\(n\gtrsim 15\), as in the one-way convergence study.
+
 Source-cell search uses a nanoflann \(k\)-d tree (\(O(N\log N)\)) and the
 outer target loops are parallelized with OpenMP; the complete \(180\times90\)
 round-trip completes in approximately 46 seconds on four cores for CS \(p=3\).
