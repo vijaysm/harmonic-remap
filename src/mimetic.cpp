@@ -3008,8 +3008,10 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
     const std::vector<VectorBasisTerm>& raw_basis = cached_vector_polynomial_basis(vector_degree);
     const int raw_dim = static_cast<int>(raw_basis.size());
     const int cell_moment_order = resolved_cell_moment_order(static_cast<int>(edges.size()), options);
+    // Skip cell moments entirely when cell_weight==0: they add no information
+    // and require cell moments to be stored (which they may not be).
     const int num_cell_scalar_moments =
-        (cell_moment_order >= 0) ? vector_moment_basis_count(cell_moment_order) : 0;
+        (cell_moment_order >= 0 && options.cell_weight != 0.0) ? vector_moment_basis_count(cell_moment_order) : 0;
     const int C = static_cast<int>(edges.size()) * (options.edge_moment_order + 1) +
                   2 * num_cell_scalar_moments;
     const GnomonicFrame gram_frame{poly.n, poly.e_x, poly.e_y, options_.radius};
@@ -3066,7 +3068,7 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
     }
 
     std::vector<std::vector<Eigen::Vector2d>> cached_basis_cell_moments;
-    if (cell_moment_order >= 0) {
+    if (cell_moment_order >= 0 && options.cell_weight != 0.0) {
         cached_basis_cell_moments.resize(static_cast<std::size_t>(raw_dim));
 #ifdef MIMETIC_ENABLE_OPENMP
 #pragma omp parallel for schedule(static) if(raw_dim >= 24)
