@@ -2983,6 +2983,32 @@ std::vector<Eigen::Vector2d> PlanarMomentInterpolator::source_cell_vector_moment
     return it->second;
 }
 
+// KNOWN LIMITATION — Piola-frame ill-conditioning of [P_p]² on quads
+// -----------------------------------------------------------------------
+// The reconstruction basis is [P_p]², dimension (p+1)(p+2).  On a 4-sided
+// cell with p-th order edge moments (4(p+1) DOFs total):
+//
+//   p=0: 4 DOFs, dim=2  → overdetermined (4>2) — robust
+//   p=1: 8 DOFs, dim=6  → overdetermined (8>6) — robust
+//   p=2: 12 DOFs, dim=12 → exactly determined   — sensitive
+//   p=3: 16 DOFs, dim=20 → underdetermined (16<20) — contains 4 interior
+//                           div-free modes with zero normal trace on all edges
+//
+// The edge constraint matrix A has condition number κ(A)~10⁴–10⁷ near
+// cube-face corners (gnomonic Piola distortion).  Forward edge-moment
+// transfer errors of O(h^{p+1}) are amplified to O(κ·h^{p+1}) in the
+// reconstruction coefficients.  For p=2 on CS cells at n=53, this gives
+// O(10⁴·0.06³)≈O(2) reconstruction error — consistent with observations.
+//
+// The classical RT_p space on quads has dim=4(p+1), exactly matching the
+// edge DOF count, and its edge trace map is well-conditioned by construction.
+// Our [P_p]² basis is NOT the RT basis for p≥2 on quads and inherits the
+// Piola-distortion ill-conditioning.
+//
+// TODO: Replace [P_p]² with a cell-local Piola-consistent RT basis in which
+// the edge trace map is well-conditioned for all p and all cell topologies.
+// This is the fundamental fix; the current cell-to-cell moment transfer is
+// a necessary compensating mechanism that adds overdetermination.
 MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const moab::EntityHandle polygon,
                                                                           const MomentMethodOptions& options)
 {

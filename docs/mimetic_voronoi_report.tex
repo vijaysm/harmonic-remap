@@ -1194,6 +1194,40 @@ Source-cell search uses a nanoflann \(k\)-d tree (\(O(N\log N)\)) and the
 outer target loops are parallelized with OpenMP; the complete \(180\times90\)
 round-trip completes in approximately 46 seconds on four cores for CS \(p=3\).
 
+\paragraph{Root cause: Piola-frame ill-conditioning of the edge constraint matrix.}
+A deeper analysis of the round-trip problem reveals a fundamental issue with
+using the full polynomial space \([\mathbb{P}_p]^2\) as the reconstruction basis
+on gnomonic-chart quadrilaterals.  For a 4-sided cell with \(p\)-th order edge
+moments, the edge-moment constraint system has:
+\begin{equation}
+  \text{edge DOFs} = 4(p+1), \qquad \dim[\mathbb{P}_p]^2 = (p+1)(p+2).
+\end{equation}
+These are equal at \(p=2\) (exactly determined, 12\,=\,12), but the constraint
+matrix \(A\) suffers from condition numbers \(\kappa(A)\sim 10^4\)--\(10^7\) near
+cube-face corners due to the Piola mapping distortion.  Forward edge-moment
+transfer errors of order \(O(h^{p+1})\) are then amplified to
+\(O(\kappa(A)\,h^{p+1})\) in the backward reconstruction coefficients.  For
+\(p=2\), \(\kappa\sim 10^4\) and \(h\approx 0.06\) gives
+\(10^4\times(0.06)^3\approx 2\), consistent with the observed maximum error
+of \(\sim 5\) when using edge moments alone.
+
+For \(p=1\) (8\,>\,6, overdetermined) the least-squares averaging suppresses
+\(\kappa(A)\) and produces acceptable accuracy.  For Voronoi hexagons at
+\(p=3\) (24\,>\,20, strongly overdetermined) the effect is similarly controlled.
+The classical Raviart-Thomas space RT\(_p\) on quads avoids this problem by
+construction: its 4\((p+1)\)-dimensional basis is specifically chosen so that
+the edge trace map is well-conditioned.  Our \([\mathbb{P}_p]^2\) basis exceeds
+the RT dimension for \(p\geq 3\) (introducing 4 unconstrained interior
+divergence-free modes) and inherits the Piola distortion for \(p=2\).
+
+The cell-to-cell moment transfer used in the current round-trip implementation
+provides additional constraints (making the system overdetermined) and thereby
+implicitly regularises the ill-conditioned edge-only system; it is not a
+numerical hack but a necessary compensation for the mismatch between
+\([\mathbb{P}_p]^2\) and the true RT space.  The proper long-term fix is to
+construct a cell-local, Piola-consistent RT basis in which the edge-trace map
+is well-conditioned by construction for all \(p\) and all cell topologies.
+
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=\textwidth]{figures/vis_roundtrip_latlon_cs_roundtrip.png}
