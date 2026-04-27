@@ -1189,6 +1189,41 @@ round-trip completes in approximately 45 seconds on four cores for CS \(p=3\).
   \label{fig:mercator-roundtrip}
 \end{figure}
 
+\paragraph{Round-trip convergence under uniform refinement.}
+A convergence study was performed with uniform refinement: \(n_{\mathrm{CS}} \in \{16, 32, 64, 128\}\)
+and proportional RLL source (\(\mathrm{nlon}=4n_{\mathrm{CS}}\), \(\mathrm{nlat}=2n_{\mathrm{CS}}\)).
+The metric is the L\(\infty\) cell-divergence error after round-trip.
+
+Two reconstruction variants on the backward CS leg were compared:
+\begin{enumerate}
+  \item \textbf{Standard} \([\mathbb{P}_p]^2\) reconstruction.
+  \item \textbf{Piola-consistent RT} reconstruction (\(\kappa(A)=1\)).
+\end{enumerate}
+
+\textit{Standard}: at \(p=1\) the error converges at \(O(h)\). At \(p=2\), the error
+\emph{fails to converge}, stagnating and beginning to grow. At \(p=3\) the error
+\emph{grows rapidly} (\(\approx 2\times\) error per doubling of \(n\)) and the code fails
+entirely at \(n=128\), reflecting catastrophic Piola ill-conditioning.
+
+\textit{Piola RT}: at \emph{all} orders \(p=1,2,3\) the error converges monotonically
+at \(O(h)\) in L\(\infty\), with no growth or stagnation. The \(O(h)\) rate is a
+geometric limit: RLL latitude circles are not great circles, so they appear as
+curves in any gnomonic chart. Conservative clipping treats them as chord approximations,
+introducing \(O(h^2)\) geometric errors that limit the L\(\infty\) cell-divergence
+rate to \(O(h)\) regardless of polynomial degree. The correct high-order metric—L2
+relative error in target edge moments \(m=0,\ldots,p$---shows \(O(h^{p+1})\) rates
+in the one-way transfer study (see Figure~\ref{fig:spherical-convergence}).
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.75\textwidth]{figures/spherical_roundtrip_convergence.png}
+  \caption{Round-trip L\(\infty\) cell-divergence error vs.\ CS resolution for
+  standard \([\mathbb{P}_p]^2\) (dashed) and Piola-consistent RT (solid) backward
+  reconstruction. Standard \(p=2,3\) diverge with refinement; Piola RT remains
+  stable and monotonically convergent for all \(p\).}
+  \label{fig:roundtrip-convergence}
+\end{figure}
+
 \subsection{High-Order Split-Moment Convergence}
 
 The high-order study applies Algorithm~\ref{alg:high-order-transfer} with a
