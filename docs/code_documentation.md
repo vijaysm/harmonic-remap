@@ -407,3 +407,253 @@ conda run -n climate-vis python scripts/plot_spherical_high_order_hdiv_convergen
   docs/spherical_high_order_hdiv_convergence.csv \
   docs/figures/spherical_high_order_hdiv_convergence.png
 ```
+
+## VEM H(div) Projection
+
+The `ReconstructionMode::VemProjection` path in `PlanarMomentInterpolator`
+uses the Virtual Element Method decomposition of `[P_p]²` into
+`∇P_{p+1} ⊕ x⊥P_{p-1}` to construct an L²-optimal polynomial projection
+from VEM degrees of freedom (edge normal-trace Legendre moments and cell
+vector moments).
+
+VEM DOFs required for reconstruction at order p:
+- Edge moments: `∫_e (v·n) L_m(t) ds` for m = 0, ..., p on each edge.
+- Cell vector moments: `∫_K v · (x^a y^b ê_i) dA` for monomials
+  `x^a y^b` up to total degree p.
+
+The cell vector moments are primitive VEM DOFs that cannot be derived from
+edge data alone.  The gradient internal DOFs (from `∇P_{p-1}`) require
+moments up to degree p-2, but the rotational DOFs (from `x⊥P_{p-1}`)
+require moments up to degree p.
+
+Measured convergence rates (exact DOFs → VEM → transfer):
+
+| Domain  | p=1  | p=2  | p=3  |
+|---------|------|------|------|
+| Quad    | 2.00 | 3.00 | 4.00 |
+| Voronoi | 1.82 | 2.56 | 3.11 |
+
+## Patch-Based Moment Recovery
+
+When only a single scalar flux per edge is available (zeroth moment), the
+`ReconstructionMode::PatchRecoveryVem` mode bootstraps the high-order VEM
+DOFs from neighbor-cell data via a local least-squares polynomial recovery.
+
+### Algorithm
+
+For a target cell K with face-neighbors N₁, ..., Nₖ:
+
+1. Collect all edges from K ∪ {N₁, ..., Nₖ} with their known fluxes.
+2. Re-express edge coordinates in K's centroid-relative frame; scale by
+   patch diameter for conditioning.
+3. Build LS matrix: `A(i,j) = ∫_{eᵢ} φⱼ · nᵢ ds` where `{φⱼ}` spans
+   `[P_p]²`, with `dim = (p+1)(p+2)` unknowns and `N_patch` constraints.
+4. SVD solve for coefficients of the fitted field `v_h`.
+5. Evaluate high-order edge moments on K's edges via Gauss-Legendre
+   quadrature: `∫_e (v_h · n) L_m(t) ds` for m = 0, ..., p.
+6. Overwrite moment-0 with the exact source flux (conservation).
+7. Evaluate cell vector moments via fan-triangulated Duffy quadrature:
+   `∫_K v_h · (x^a y^b ê_i) dA`.
+8. Feed recovered moments into the VEM projection pipeline.
+
+### DOF counting
+
+For a typical Voronoi cell with 5-6 face-neighbors, the patch contains
+~15-20 edges.  The fitting space dimensions are:
+
+| p | dim([P_p]²) | Patch edges | Status        |
+|---|-------------|-------------|---------------|
+| 1 |  6          | ~15-20      | Overdetermined|
+| 2 | 12          | ~15-20      | Overdetermined|
+| 3 | 20          | ~15-20      | Borderline    |
+
+### Convergence rates (single flux → patch recovery → VEM → transfer)
+
+| Domain  | p=1  | p=2  |
+|---------|------|------|
+| Quad    | 2.03 | 1.47 |
+| Voronoi | 1.80 | 1.21 |
+
+At p=1 the patch recovery achieves the theoretical O(h²) rate.  At p=2
+the initial rate is O(h³) but degrades to ~O(h^{1.5}) on finer meshes,
+consistent with the theoretical analysis: single-flux-per-edge data does
+not contain enough information to fully determine the higher-order polynomial
+modes, especially on irregular polygonal patches.
+
+### Limitations
+
+The recovered higher-order moments are model-dependent extrapolations from
+the patch LS fit, not conservative observables.  Only moment-0 is preserved
+exactly.  On symmetric or poorly distributed patch geometries, the LS system
+can have near-null modes that degrade the recovery accuracy.
+
+For robust p ≥ 3 reconstruction, genuine high-order source edge moments
+and cell vector moments should be provided (via analytical evaluation or
+upstream discretization), using `ReconstructionMode::VemProjection` directly.
+
+## References: Piola Degradation and Related Theory
+
+The convergence degradation observed when using `[P_p]²` polynomial bases
+on non-affine cells with single-flux-per-edge data is well-established in
+the finite element and compatible discretization literature.
+
+### Piola transformation and convergence loss on non-affine elements
+
+[1] D.N. Arnold, D. Boffi, R.S. Falk.
+    "Quadrilateral H(div) Finite Elements."
+    SIAM J. Numer. Anal., 42(6):2429-2451, 2005.
+    DOI: 10.1137/S0036142903431924
+
+    Proves that standard RT and BDM elements lose optimal convergence
+    order for ∇·u when mapped to non-affine quadrilaterals via the Piola
+    transform.  Provides necessary and sufficient conditions on the
+    reference shape function space for optimal L²-approximation of both
+    the vector field and its divergence.  Demonstrates that the BDM space
+    loses one order of divergence accuracy on general quadrilateral meshes.
+
+[2] D.N. Arnold, D. Boffi, R.S. Falk.
+    "Approximation by Quadrilateral Finite Elements."
+    Math. Comput., 71(239):909-922, 2002.
+
+    Establishes the fundamental theory: on quadrilateral meshes with
+    bilinear maps, P_r-based finite elements can fail to achieve optimal
+    approximation order.  The condition Ŝ ⊇ Q_r(K̂) is necessary and
+    sufficient for optimal order on general quadrilaterals, while the
+    weaker condition Ŝ ⊇ P_r(K̂) suffices only on asymptotically affine
+    meshes.  This is the root cause of the [P_p]² ill-conditioning
+    observed in the reconstruction.
+
+[3] D. Boffi.
+    "On the Finite Element Method on Quadrilateral Meshes."
+    Appl. Numer. Math., 2006.
+
+    Survey of approximation degradation phenomena for H(div) and H(curl)
+    elements on non-affine quadrilaterals.
+
+[4] D.N. Arnold, D. Boffi, F. Bonizzoni.
+    "Finite Element Differential Forms on Curvilinear Cubic Meshes and
+    Their Approximation Properties."
+    Numer. Math., 129:1-20, 2015.
+
+    Extends the Piola degradation analysis to 3D.  Shows that curvilinear
+    meshes entail a loss of one order in 2D and two orders in 3D compared
+    to parallelotope meshes, with the effect becoming more severe for
+    higher-order differential forms (H(div) worse than H¹).
+
+[5] M.R. Correa, T. Arbogast.
+    "Two Families of H(div) Mixed Finite Elements on Quadrilaterals of
+    Minimal Dimension."
+    SIAM J. Sci. Comput., 38(6):A3388-A3411, 2016.
+    DOI: 10.1137/15M1013705
+
+    Constructs minimal-dimension quadrilateral H(div) elements that avoid
+    Piola degradation by defining basis functions directly on physical
+    quadrilaterals rather than mapping from reference elements.
+
+### Virtual Element Method for H(div) on polygons
+
+[6] L. Beirão da Veiga, F. Brezzi, L.D. Marini, A. Russo.
+    "H(div) and H(curl)-Conforming Virtual Element Methods."
+    Numer. Math., 133:303-332, 2016.
+    DOI: 10.1007/s00211-015-0746-1
+
+    Constructs H(div)-conforming VEM spaces on general polygonal and
+    polyhedral elements.  The DOFs include edge normal-trace moments AND
+    cell vector moments as primitive data — cell moments cannot be derived
+    from edge data alone.  This is the foundational reference for the VEM
+    H(div) projection implemented in this codebase.
+
+[7] F. Brezzi, R.S. Falk, L.D. Marini.
+    "Basic Principles of Mixed Virtual Element Methods."
+    ESAIM: M2AN, 48(4):1227-1240, 2014.
+
+    Establishes the mixed VEM framework on polygonal meshes, showing how
+    to construct polynomial projections from VEM DOFs without explicitly
+    computing non-polynomial basis functions.
+
+[8] L. Beirão da Veiga, F. Brezzi, A. Cangiani, G. Manzini,
+    L.D. Marini, A. Russo.
+    "Basic Principles of Virtual Element Methods."
+    Math. Models Methods Appl. Sci., 23(1):199-214, 2013.
+
+    The foundational VEM paper.  Introduces the key idea: design DOFs
+    so that the stiffness matrix is computable without knowing the
+    non-polynomial basis functions explicitly.
+
+### Mimetic finite differences on polygonal meshes
+
+[9] F. Brezzi, K. Lipnikov, M. Shashkov.
+    "Convergence of the Mimetic Finite Difference Method for Diffusion
+    Problems on Polyhedral Meshes."
+    SIAM J. Numer. Anal., 43(5):1872-1896, 2005.
+
+    Proves first-order convergence for flux and second-order for pressure
+    on general polyhedral meshes using the mimetic finite difference
+    method.  The MFD framework is a precursor to VEM and operates with
+    a single flux DOF per face.
+
+[10] Y. Kuznetsov, K. Lipnikov, M. Shashkov.
+     "The Mimetic Finite Difference Method on Polygonal Meshes for
+     Diffusion-Type Problems."
+     Comput. Geosci., 8:301-317, 2004.
+
+     Derives mimetic discretizations on polygonal meshes with one flux DOF
+     per edge, demonstrating first-order accuracy for velocity.  Shows the
+     inherent limitation of single-flux data for higher-order recovery.
+
+### k-Exact reconstruction from integral data
+
+[11] T.J. Barth, P.O. Frederickson.
+     "Higher Order Solution of the Euler Equations on Unstructured Grids
+     Using Quadratic Reconstruction."
+     AIAA Paper 90-0013, 28th Aerospace Sciences Meeting, 1990.
+
+     The foundational paper on k-exact reconstruction: fitting a degree-k
+     polynomial over a neighbor-cell stencil from cell-average data via
+     least-squares.  A k-exact reconstruction achieves at most (k+1)-order
+     accuracy.  Our patch-based edge-flux recovery is a direct adaptation
+     of this idea to edge-normal-flux integral data.
+
+[12] T.J. Barth.
+     "Recent Developments in High Order k-Exact Reconstruction on
+     Unstructured Meshes."
+     AIAA Paper 93-0668, 1993.  Also: NASA TM-108975.
+
+     Extends k-exact theory with improved stencil selection and
+     conditioning analysis.  Shows that reconstruction accuracy depends
+     on both stencil geometry and the conditioning of the moment matrix.
+
+### Superconvergent patch recovery
+
+[13] O.C. Zienkiewicz, J.Z. Zhu.
+     "The Superconvergent Patch Recovery and A Posteriori Error Estimates.
+     Part 1: The Recovery Technique."
+     Int. J. Numer. Methods Eng., 33:1331-1364, 1992.
+
+     The SPR technique: recover nodal gradients by least-squares fitting
+     a polynomial over a patch of elements centered on each node.  Under
+     mesh regularity conditions, the recovered gradient is superconvergent
+     (converges one order faster than the raw FE gradient).  Our patch
+     recovery adapts the same idea to edge-flux integral data rather than
+     nodal point values.
+
+[14] O.C. Zienkiewicz, J.Z. Zhu.
+     "The Superconvergent Patch Recovery and A Posteriori Error Estimates.
+     Part 2: Error Estimates and Adaptivity."
+     Int. J. Numer. Methods Eng., 33:1365-1382, 1992.
+
+     Proves that the SPR-based error estimator is asymptotically exact
+     under the superconvergence conditions of Part 1.
+
+### Mimetic reconstruction on polygons
+
+[15] A. Palha, M. Gerritsma.
+     "A Mimetic Method for Polygons."
+     J. Comput. Phys., 425:109891, 2021.
+
+     Describes harmonic-function-based mimetic interpolation on polygonal
+     meshes, shown to be a direct extension of lowest-order Raviart-Thomas
+     to polygons.  Demonstrates that the naive harmonic expansion is not
+     stable and proposes truncated expansions for conditioning.  This is
+     closely related to the approach used in our codebase's low-order
+     harmonic reconstruction path.

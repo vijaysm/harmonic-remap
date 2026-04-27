@@ -384,6 +384,7 @@ struct ConformingEdgeTransferResult {
 enum class ReconstructionMode {
     SplitBasis,
     VemProjection,
+    PatchRecoveryVem,  ///< Single flux/edge → patch LS recovery → VEM projection
 };
 
 struct MomentMethodOptions {
@@ -649,6 +650,11 @@ class PlanarMomentInterpolator {
         const std::vector<moab::EntityHandle>& source_polygons,
         const std::vector<moab::EntityHandle>& target_polygons,
         const EdgeMomentTransferResult& raw_transfer) const;
+
+    void recover_moments_from_patch(
+        moab::EntityHandle polygon,
+        int target_order,
+        const std::vector<moab::EntityHandle>& neighbor_polygons);
 
   private:
     moab::Core& mb_;

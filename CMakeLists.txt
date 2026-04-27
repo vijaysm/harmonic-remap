@@ -155,4 +155,10 @@ add_executable(vem_projection_test tests/vem_projection_test.cpp)
 target_link_libraries(vem_projection_test PRIVATE mimetic)
 add_test(NAME vem_projection_test COMMAND vem_projection_test)
 
+add_executable(patch_recovery_test tests/patch_recovery_test.cpp)
+target_link_libraries(patch_recovery_test PRIVATE mimetic)
+add_test(NAME patch_recovery_test COMMAND patch_recovery_test)
+
+
+
 
