@@ -1670,6 +1670,31 @@ void write_edge_map_csv(const std::string& path, const std::vector<DirectedEdgeD
 
 // ============================================================================
 // VEM H(div) projection infrastructure
+//
+// Virtual Element Method for H(div) spaces on polygonal meshes.  The key idea
+// is that the local polynomial projection Π_p : V_h → [P_p]² can be computed
+// *exactly* from the VEM degrees of freedom (edge normal-trace moments +
+// cell vector moments) without ever constructing explicit basis functions for
+// the infinite-dimensional local VEM space V_h.
+//
+// Theory and notation follow:
+//   [BdV14] Beirão da Veiga, Brezzi, Marini, Russo, "H(div) and H(curl)-
+//           conforming virtual element methods," Numer. Math. 133 (2016),
+//           pp. 303–332.  §3: local space definition; §4: DOFs and
+//           projection operator; Prop. 4.1: computability of Π_p.
+//   [BdV13] Beirão da Veiga, Brezzi, Cangiani, Manzini, Marini, Russo,
+//           "Basic principles of virtual element methods," Math. Models
+//           Methods Appl. Sci. 23 (2013), pp. 199–214.  §2–3: projection
+//           framework.
+//
+// The [P_p]² space is decomposed as  ∇P_{p+1} ⊕ x⊥P_{p-1}  (x⊥ = (-y,x)),
+// which separates curl-free (gradient) modes from divergence-free (rotational)
+// modes.  This decomposition is exploited by every function below:
+//   - build_vem_decomposed_basis:    enumerate the two subspaces
+//   - vem_mass_matrix:               inner products ∫_K φ_i · φ_j dA
+//   - vem_reconstruct_divergence:    L² projection of div(v_h) onto P_{p-1}
+//   - vem_projection_rhs:            ∫_K v_h · φ_i dA from DOFs
+//   - vem_decomposed_to_cartesian:   convert back to [P_p]² monomial basis
 // ============================================================================
 
 double polygon_monomial_integral(const std::vector<Eigen::Vector2d>& vertices,
@@ -1729,10 +1754,22 @@ struct VemDecomposedBasis {
     std::vector<std::pair<int, int>> m_exponents;
 };
 
+// Enumerate the VEM decomposed basis for [P_p]² = ∇P_{p+1} ⊕ x⊥P_{p-1}.
+//
+// Gradient subspace ∇P_{p+1}:  dim = (p+1)(p+2)/2 - 1 = dim(P_{p+1}) - 1.
+//   Each φ ∈ P_{p+1} (total degree 1..p+1) yields ∇φ = (∂φ/∂x, ∂φ/∂y).
+//   We store the exponents of φ, not ∇φ; the gradient is computed later.
+//
+// Rotational subspace x⊥P_{p-1}:  dim = p(p+1)/2 = dim(P_{p-1}).
+//   Each m(x,y) ∈ P_{p-1} yields x⊥m = (-y·m, x·m).
+//   We store the exponents of m; the rotation is applied when needed.
+//
+// Together: dim([P_p]²) = (p+1)(p+2), matching [BdV14] Prop. 3.1.
 VemDecomposedBasis build_vem_decomposed_basis(const int p)
 {
     VemDecomposedBasis basis;
 
+    // Gradient modes: φ ∈ P_{p+1} with total degree 1..p+1 (exclude constant)
     for (int total = 1; total <= p + 1; ++total) {
         for (int a = total; a >= 0; --a) {
             basis.phi_exponents.emplace_back(a, total - a);
@@ -1740,6 +1777,7 @@ VemDecomposedBasis build_vem_decomposed_basis(const int p)
     }
     basis.gradient_count = static_cast<int>(basis.phi_exponents.size());
 
+    // Rotational modes: m ∈ P_{p-1} with total degree 0..p-1
     if (p >= 1) {
         for (int total = 0; total <= p - 1; ++total) {
             for (int a = total; a >= 0; --a) {
@@ -1830,14 +1868,29 @@ void edge_monomial_to_legendre_coeffs(const Eigen::Vector2d& ea,
     }
 }
 
+// L² projection of div(v_h) onto P_{p-1}, computed from DOFs alone.
+//
+// The divergence theorem gives the identity ([BdV14] §4, eq. (4.5)):
+//
+//   ∫_K div(v_h) · q dA = ∫_{∂K} (v_h·n) q ds − ∫_K v_h · ∇q dA
+//
+// for any test polynomial q ∈ P_{p-1}.  The boundary term is computable
+// from edge normal-trace moments (DOF type 1), and the volume term from
+// cell vector moments (DOF type 2).  This makes div(Π_p v_h) computable
+// *without* knowing v_h pointwise — the central VEM insight.
+//
+// The Gram matrix G_{ij} = ∫_K q_i q_j dA is assembled from the monomial
+// integral table, and the RHS g_i = (boundary − interior)_i uses the
+// integration-by-parts identity above.  The system G d = g is symmetric
+// positive definite and solved via LDLT.
 Eigen::VectorXd vem_reconstruct_divergence(const VemDecomposedBasis& basis,
-                                            const LocalPolygon& poly,
-                                            const std::vector<LocalEdge>& edges,
-                                            const int p,
-                                            const std::vector<std::vector<double>>& edge_moments,
-                                            const std::vector<Eigen::Vector2d>& cell_vector_moments,
-                                            const Eigen::MatrixXd& I_table,
-                                            const int max_I_degree)
+                                             const LocalPolygon& poly,
+                                             const std::vector<LocalEdge>& edges,
+                                             const int p,
+                                             const std::vector<std::vector<double>>& edge_moments,
+                                             const std::vector<Eigen::Vector2d>& cell_vector_moments,
+                                             const Eigen::MatrixXd& I_table,
+                                             const int max_I_degree)
 {
     const int div_dim = scalar_monomial_basis_count(p - 1);
     if (div_dim <= 0) {
@@ -1909,15 +1962,34 @@ Eigen::VectorXd vem_reconstruct_divergence(const VemDecomposedBasis& basis,
     return G.ldlt().solve(g);
 }
 
+// Assemble the RHS of the VEM elliptic projection  M c = rhs,
+// where  M_{ij} = ∫_K φ_i · φ_j dA  and  rhs_i = ∫_K v_h · φ_i dA.
+//
+// The volume integral ∫_K v_h · φ_i dA is not directly available (v_h is not
+// known pointwise), but is computable from DOFs via the same integration-by-
+// parts trick as the divergence reconstruction ([BdV14] Prop. 4.1):
+//
+// For gradient modes φ_i = ∇ψ_i:
+//   ∫_K v_h · ∇ψ_i dA = ∫_{∂K} (v_h·n) ψ_i ds − ∫_K div(v_h) ψ_i dA
+//
+//   The boundary term uses edge moments; the volume term uses the already-
+//   computed divergence coefficients d and the monomial integral table.
+//
+// For rotational modes φ_j = x⊥m_j = (-y·m_j, x·m_j):
+//   ∫_K v_h · (x⊥m_j) dA = cell vector moment DOFs (type 2)
+//
+//   These are exactly the DOFs that make rotational modes observable.
+//   Without cell moments, the rotational subspace is uncontrolled — this is
+//   why gradient-only VEM loses asymptotic order for div-free fields.
 Eigen::VectorXd vem_projection_rhs(const VemDecomposedBasis& basis,
-                                    const LocalPolygon& poly,
-                                    const std::vector<LocalEdge>& edges,
-                                    const int p,
-                                    const std::vector<std::vector<double>>& edge_moments,
-                                    const std::vector<Eigen::Vector2d>& cell_vector_moments,
-                                    const Eigen::VectorXd& div_coeffs,
-                                    const Eigen::MatrixXd& I_table,
-                                    const int max_I_degree)
+                                     const LocalPolygon& poly,
+                                     const std::vector<LocalEdge>& edges,
+                                     const int p,
+                                     const std::vector<std::vector<double>>& edge_moments,
+                                     const std::vector<Eigen::Vector2d>& cell_vector_moments,
+                                     const Eigen::VectorXd& div_coeffs,
+                                     const Eigen::MatrixXd& I_table,
+                                     const int max_I_degree)
 {
     const int n = basis.gradient_count + basis.rotational_count;
     Eigen::VectorXd rhs(n);
@@ -2038,6 +2110,43 @@ Eigen::VectorXd vem_decomposed_to_cartesian(const VemDecomposedBasis& basis,
 
 // ============================================================================
 // Patch-based moment recovery from single edge fluxes
+//
+// When only one scalar flux value per edge is available (the common case in
+// production remap codes), the VEM projection requires additional DOFs —
+// higher-order edge moments and cell vector moments — that do not exist in
+// the source data.  This section recovers them via least-squares polynomial
+// fitting over a face-neighbor patch, following the k-exact reconstruction
+// philosophy:
+//
+//   [BF90] Barth, Frederickson, "Higher order solution of the Euler
+//          equations on unstructured grids using quadratic reconstruction,"
+//          AIAA Paper 90-0013, 1990.  §2: k-exact recovery from cell
+//          averages; overdetermined LS on neighbor stencil.
+//
+//   [ZZ92] Zienkiewicz, Zhu, "The superconvergent patch recovery and a
+//          posteriori error estimates. Part 1: The recovery technique,"
+//          Int. J. Numer. Meth. Engng. 33 (1992), pp. 1331–1364.
+//          Superconvergent patch recovery (SPR): LS polynomial fit over a
+//          patch of elements yields one extra order of accuracy under mesh
+//          regularity conditions.
+//
+// KNOWN LIMITATION — accuracy at p ≥ 2:
+//   A single flux per edge is an O(h) measurement that captures dim([P_0]²)=2
+//   polynomial modes exactly.  Recovering dim([P_p]²)=(p+1)(p+2) coefficients
+//   from ~N_patch single-flux constraints is fundamentally ill-posed for the
+//   higher modes.  By the k-exact theory [BF90], the recovered polynomial is
+//   accurate to O(h^{q+1}) where q is the fitting degree, but this accuracy
+//   holds only for the *leading* modes; the trace of the recovered field onto
+//   edges degrades at fine h because edge-interior polynomial modes (Legendre
+//   degree ≥ 2) are poorly constrained by edge-integral data.
+//
+//   Observed convergence (single flux → patch recovery → VEM → transfer):
+//     Quad mesh:    p=1: O(h^{2.0})   p=2: O(h^{1.5})
+//     Voronoi mesh: p=1: O(h^{1.8})   p=2: O(h^{1.2})
+//
+//   This is consistent with both [BF90] and the Piola degradation analysis
+//   of Arnold-Boffi-Falk (2005): the single-flux data cannot sustain full
+//   O(h^{p+1}) convergence for p ≥ 2.
 // ============================================================================
 
 struct PatchEdge {
@@ -2048,6 +2157,24 @@ struct PatchEdge {
     double flux;
 };
 
+// Recover high-order VEM DOFs from single-flux edge data on one cell.
+//
+// Pipeline:
+//   1. Collect all edge fluxes from target cell + face-neighbor cells
+//   2. Re-express neighbor cell geometry in the target cell's local frame
+//   3. Fit v_h ∈ [P_p]² via overdetermined LS (SVD) on the patch:
+//        minimize  ∑_e || ∫_e v_h·n ds − flux_e ||²
+//      Coordinate scaling by patch diameter for conditioning ([BF90] §3).
+//   4. Evaluate v_h to compute:
+//      (a) Edge moments:  μ_m^e = ∫_e (v_h·n) L_m(t) ds,  m = 0..p
+//          via Gauss-Legendre quadrature on each target edge.
+//      (b) Cell moments:  c_{ab}^i = ∫_K (v_h · ê_i) x^a y^b dA
+//          via fan-triangulated Duffy quadrature over the target cell.
+//   5. Overwrite μ_0^e with the exact source flux (conservation).
+//
+// The LS system has N_patch rows (one per patch edge) and (p+1)(p+2) columns.
+// For p=1 with ~15 neighbors: 15 rows × 6 cols → well-overdetermined.
+// For p=2: 15 × 12 → mildly overdetermined; accuracy degrades (see above).
 void patch_recover_moments_impl(
     moab::Core& mb,
     const GeometryOptions& geo_options,
@@ -3693,6 +3820,26 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
     const bool use_vem = (options.reconstruction_mode == ReconstructionMode::VemProjection ||
                           options.reconstruction_mode == ReconstructionMode::PatchRecoveryVem);
 
+    // VEM reconstruction path.
+    //
+    // Unlike the LS/KKT path below (which fits [P_p]² coefficients directly
+    // from edge constraints), this path uses the VEM elliptic projection
+    // Π_p : V_h → [P_p]² computed from the decomposed basis ∇P_{p+1} ⊕ x⊥P_{p-1}.
+    //
+    // Why this bypasses the Piola ill-conditioning described above:
+    //   The LS/KKT path must invert the edge trace operator A: [P_p]² → R^{N_e(p+1)},
+    //   whose condition number κ(A) ~ 10⁴–10⁷ on distorted cells at p ≥ 2
+    //   (Arnold-Boffi-Falk, "Quadrilateral H(div) finite elements," SIAM J.
+    //   Numer. Anal., 2005).  The VEM path avoids this because:
+    //   (a) The mass matrix M = ∫ φ_i · φ_j dA in the decomposed basis is
+    //       well-conditioned (κ(M) ~ O(1) on centroid-centered coordinates).
+    //   (b) The RHS is computed via integration-by-parts identities that use
+    //       edge moments and cell moments as *data*, not as constraints on an
+    //       ill-conditioned system.
+    //   (c) The decomposition ∇P_{p+1} ⊕ x⊥P_{p-1} naturally separates modes
+    //       by their observability — gradient modes from boundary data, rotational
+    //       modes from cell moments — so no single solve mixes well- and poorly-
+    //       conditioned directions.
     if (use_vem) {
         const int p = options.edge_moment_order;
 

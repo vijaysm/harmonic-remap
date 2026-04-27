@@ -381,10 +381,29 @@ struct ConformingEdgeTransferResult {
     std::vector<double> unique_edge_fluxes;
 };
 
+/**
+ * Selects the local polynomial reconstruction strategy.
+ *
+ * SplitBasis:  LS/KKT fit of [P_p]² from edge moments ± cell moments.
+ *   Well-conditioned for p ≤ 1; ill-conditioned for p ≥ 2 on non-affine cells
+ *   due to Piola-frame trace operator degradation (Arnold-Boffi-Falk, 2005).
+ *
+ * VemProjection:  VEM elliptic projection Π_p onto ∇P_{p+1} ⊕ x⊥P_{p-1}.
+ *   Requires pre-populated edge moments (order p) AND cell vector moments.
+ *   Well-conditioned for all p and all polygon topologies.
+ *   [BdV14] Beirão da Veiga et al., Numer. Math. 133 (2016), pp. 303–332.
+ *
+ * PatchRecoveryVem:  Single flux → patch LS recovery → VEM projection.
+ *   For the common case of one scalar flux per edge.  Bootstraps high-order
+ *   moments via neighbor-cell least-squares fitting, then feeds the VEM path.
+ *   [BF90] Barth-Frederickson, AIAA 90-0013 (k-exact reconstruction).
+ *   Accuracy limited to ~O(h²) at p=1, ~O(h^{1.5}) at p=2 (see §patch
+ *   recovery in mimetic.cpp for convergence data and analysis).
+ */
 enum class ReconstructionMode {
     SplitBasis,
     VemProjection,
-    PatchRecoveryVem,  ///< Single flux/edge → patch LS recovery → VEM projection
+    PatchRecoveryVem,
 };
 
 struct MomentMethodOptions {
@@ -651,6 +670,20 @@ class PlanarMomentInterpolator {
         const std::vector<moab::EntityHandle>& target_polygons,
         const EdgeMomentTransferResult& raw_transfer) const;
 
+    /// Bootstrap high-order VEM DOFs from single-flux-per-edge data.
+    ///
+    /// Fits v_h ∈ [P_p]² via overdetermined least-squares on the face-neighbor
+    /// patch (target cell + neighbor_polygons), then evaluates edge Legendre
+    /// moments and cell vector moments from the fitted polynomial.  Results
+    /// are stored internally as directed_source_moments_ and
+    /// source_cell_vector_moments_, ready for reconstruct_source_polygon()
+    /// with ReconstructionMode::PatchRecoveryVem.
+    ///
+    /// Conservation: the zeroth edge moment (net flux) is preserved exactly
+    /// from the original source data; only higher-order moments are recovered.
+    ///
+    /// See patch_recover_moments_impl() in mimetic.cpp for the full algorithm,
+    /// references ([BF90], [ZZ92]), and convergence analysis.
     void recover_moments_from_patch(
         moab::EntityHandle polygon,
         int target_order,
