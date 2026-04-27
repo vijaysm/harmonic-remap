@@ -1668,6 +1668,769 @@ void write_edge_map_csv(const std::string& path, const std::vector<DirectedEdgeD
     }
 }
 
+// ============================================================================
+// VEM H(div) projection infrastructure
+//
+// Virtual Element Method for H(div) spaces on polygonal meshes.  The key idea
+// is that the local polynomial projection Π_p : V_h → [P_p]² can be computed
+// *exactly* from the VEM degrees of freedom (edge normal-trace moments +
+// cell vector moments) without ever constructing explicit basis functions for
+// the infinite-dimensional local VEM space V_h.
+//
+// Theory and notation follow:
+//   [BdV14] Beirão da Veiga, Brezzi, Marini, Russo, "H(div) and H(curl)-
+//           conforming virtual element methods," Numer. Math. 133 (2016),
+//           pp. 303–332.  §3: local space definition; §4: DOFs and
+//           projection operator; Prop. 4.1: computability of Π_p.
+//   [BdV13] Beirão da Veiga, Brezzi, Cangiani, Manzini, Marini, Russo,
+//           "Basic principles of virtual element methods," Math. Models
+//           Methods Appl. Sci. 23 (2013), pp. 199–214.  §2–3: projection
+//           framework.
+//
+// The [P_p]² space is decomposed as  ∇P_{p+1} ⊕ x⊥P_{p-1}  (x⊥ = (-y,x)),
+// which separates curl-free (gradient) modes from divergence-free (rotational)
+// modes.  This decomposition is exploited by every function below:
+//   - build_vem_decomposed_basis:    enumerate the two subspaces
+//   - vem_mass_matrix:               inner products ∫_K φ_i · φ_j dA
+//   - vem_reconstruct_divergence:    L² projection of div(v_h) onto P_{p-1}
+//   - vem_projection_rhs:            ∫_K v_h · φ_i dA from DOFs
+//   - vem_decomposed_to_cartesian:   convert back to [P_p]² monomial basis
+// ============================================================================
+
+double polygon_monomial_integral(const std::vector<Eigen::Vector2d>& vertices,
+                                 const int a,
+                                 const int b)
+{
+    const int N = static_cast<int>(vertices.size());
+    if (N < 3 || a < 0 || b < 0) {
+        return 0.0;
+    }
+
+    const int nq = std::max(5, (a + b) / 2 + 3);
+    const std::vector<GaussLegendrePoint> rule = gauss_legendre_rule(nq);
+
+    double integral = 0.0;
+    const Eigen::Vector2d origin = Eigen::Vector2d::Zero();
+    for (int i = 0; i < N; ++i) {
+        const Eigen::Vector2d& v0 = vertices[i];
+        const Eigen::Vector2d& v1 = vertices[(i + 1) % N];
+        integral += integrate_triangle_duffy(origin, v0, v1, rule,
+            [&](const Eigen::Vector2d& p) {
+                return std::pow(p.x(), a) * std::pow(p.y(), b);
+            });
+    }
+    return integral;
+}
+
+Eigen::MatrixXd polygon_monomial_integral_table(const std::vector<Eigen::Vector2d>& vertices,
+                                                 const int max_degree)
+{
+    const int dim = scalar_monomial_basis_count(max_degree);
+    Eigen::MatrixXd table(dim, 1);
+    int index = 0;
+    for (int total_degree = 0; total_degree <= max_degree; ++total_degree) {
+        for (int a = total_degree; a >= 0; --a, ++index) {
+            const int b = total_degree - a;
+            table(index, 0) = polygon_monomial_integral(vertices, a, b);
+        }
+    }
+    return table;
+}
+
+double lookup_monomial_integral(const Eigen::MatrixXd& table, const int degree, const int a, const int b)
+{
+    const int index = scalar_monomial_index(degree, a, b);
+    if (index < 0 || index >= static_cast<int>(table.rows())) {
+        return 0.0;
+    }
+    return table(index, 0);
+}
+
+struct VemDecomposedBasis {
+    int gradient_count = 0;
+    int rotational_count = 0;
+
+    std::vector<std::pair<int, int>> phi_exponents;
+    std::vector<std::pair<int, int>> m_exponents;
+};
+
+// Enumerate the VEM decomposed basis for [P_p]² = ∇P_{p+1} ⊕ x⊥P_{p-1}.
+//
+// Gradient subspace ∇P_{p+1}:  dim = (p+1)(p+2)/2 - 1 = dim(P_{p+1}) - 1.
+//   Each φ ∈ P_{p+1} (total degree 1..p+1) yields ∇φ = (∂φ/∂x, ∂φ/∂y).
+//   We store the exponents of φ, not ∇φ; the gradient is computed later.
+//
+// Rotational subspace x⊥P_{p-1}:  dim = p(p+1)/2 = dim(P_{p-1}).
+//   Each m(x,y) ∈ P_{p-1} yields x⊥m = (-y·m, x·m).
+//   We store the exponents of m; the rotation is applied when needed.
+//
+// Together: dim([P_p]²) = (p+1)(p+2), matching [BdV14] Prop. 3.1.
+VemDecomposedBasis build_vem_decomposed_basis(const int p)
+{
+    VemDecomposedBasis basis;
+
+    // Gradient modes: φ ∈ P_{p+1} with total degree 1..p+1 (exclude constant)
+    for (int total = 1; total <= p + 1; ++total) {
+        for (int a = total; a >= 0; --a) {
+            basis.phi_exponents.emplace_back(a, total - a);
+        }
+    }
+    basis.gradient_count = static_cast<int>(basis.phi_exponents.size());
+
+    // Rotational modes: m ∈ P_{p-1} with total degree 0..p-1
+    if (p >= 1) {
+        for (int total = 0; total <= p - 1; ++total) {
+            for (int a = total; a >= 0; --a) {
+                basis.m_exponents.emplace_back(a, total - a);
+            }
+        }
+    }
+    basis.rotational_count = static_cast<int>(basis.m_exponents.size());
+
+    return basis;
+}
+
+Eigen::MatrixXd vem_mass_matrix(const VemDecomposedBasis& basis,
+                                const Eigen::MatrixXd& I_table,
+                                const int max_I_degree)
+{
+    const int n = basis.gradient_count + basis.rotational_count;
+    Eigen::MatrixXd M = Eigen::MatrixXd::Zero(n, n);
+
+    auto I = [&](int a, int b) -> double {
+        return lookup_monomial_integral(I_table, max_I_degree, a, b);
+    };
+
+    for (int i = 0; i < basis.gradient_count; ++i) {
+        const int ai = basis.phi_exponents[i].first;
+        const int bi = basis.phi_exponents[i].second;
+        for (int j = 0; j < basis.gradient_count; ++j) {
+            const int aj = basis.phi_exponents[j].first;
+            const int bj = basis.phi_exponents[j].second;
+            M(i, j) = static_cast<double>(ai * aj) * I(ai + aj - 2, bi + bj)
+                     + static_cast<double>(bi * bj) * I(ai + aj, bi + bj - 2);
+        }
+    }
+
+    const int g = basis.gradient_count;
+    for (int i = 0; i < basis.gradient_count; ++i) {
+        const int ai = basis.phi_exponents[i].first;
+        const int bi = basis.phi_exponents[i].second;
+        for (int j = 0; j < basis.rotational_count; ++j) {
+            const int cj = basis.m_exponents[j].first;
+            const int dj = basis.m_exponents[j].second;
+            const double val = static_cast<double>(ai) * I(ai + cj - 1, bi + dj + 1)
+                             - static_cast<double>(bi) * I(ai + cj + 1, bi + dj - 1);
+            M(i, g + j) = val;
+            M(g + j, i) = val;
+        }
+    }
+
+    for (int i = 0; i < basis.rotational_count; ++i) {
+        const int ci = basis.m_exponents[i].first;
+        const int di = basis.m_exponents[i].second;
+        for (int j = 0; j < basis.rotational_count; ++j) {
+            const int cj = basis.m_exponents[j].first;
+            const int dj = basis.m_exponents[j].second;
+            M(g + i, g + j) = I(ci + cj, di + dj + 2) + I(ci + cj + 2, di + dj);
+        }
+    }
+
+    return M;
+}
+
+void edge_monomial_to_legendre_coeffs(const Eigen::Vector2d& ea,
+                                      const Eigen::Vector2d& eb,
+                                      const int a,
+                                      const int b,
+                                      const int max_legendre_degree,
+                                      Eigen::VectorXd& coeffs)
+{
+    const Eigen::Vector2d mid = 0.5 * (ea + eb);
+    const Eigen::Vector2d half_delta = 0.5 * (eb - ea);
+
+    const int nq = std::max(2 * (a + b + max_legendre_degree) + 2, 10);
+    const std::vector<GaussLegendrePoint> rule = gauss_legendre_rule(nq);
+
+    coeffs.resize(max_legendre_degree + 1);
+    coeffs.setZero();
+
+    for (const GaussLegendrePoint& q : rule) {
+        const Eigen::Vector2d pt = mid + q.x * half_delta;
+        const double monomial = std::pow(pt.x(), a) * std::pow(pt.y(), b);
+        for (int m = 0; m <= max_legendre_degree; ++m) {
+            coeffs(m) += q.w * monomial * legendre_polynomial(m, q.x);
+        }
+    }
+
+    for (int m = 0; m <= max_legendre_degree; ++m) {
+        coeffs(m) *= (2.0 * m + 1.0) / 2.0;
+    }
+}
+
+// L² projection of div(v_h) onto P_{p-1}, computed from DOFs alone.
+//
+// The divergence theorem gives the identity ([BdV14] §4, eq. (4.5)):
+//
+//   ∫_K div(v_h) · q dA = ∫_{∂K} (v_h·n) q ds − ∫_K v_h · ∇q dA
+//
+// for any test polynomial q ∈ P_{p-1}.  The boundary term is computable
+// from edge normal-trace moments (DOF type 1), and the volume term from
+// cell vector moments (DOF type 2).  This makes div(Π_p v_h) computable
+// *without* knowing v_h pointwise — the central VEM insight.
+//
+// The Gram matrix G_{ij} = ∫_K q_i q_j dA is assembled from the monomial
+// integral table, and the RHS g_i = (boundary − interior)_i uses the
+// integration-by-parts identity above.  The system G d = g is symmetric
+// positive definite and solved via LDLT.
+Eigen::VectorXd vem_reconstruct_divergence(const VemDecomposedBasis& basis,
+                                             const LocalPolygon& poly,
+                                             const std::vector<LocalEdge>& edges,
+                                             const int p,
+                                             const std::vector<std::vector<double>>& edge_moments,
+                                             const std::vector<Eigen::Vector2d>& cell_vector_moments,
+                                             const Eigen::MatrixXd& I_table,
+                                             const int max_I_degree)
+{
+    const int div_dim = scalar_monomial_basis_count(p - 1);
+    if (div_dim <= 0) {
+        Eigen::VectorXd d(1);
+        double div_integral = 0.0;
+        for (std::size_t ei = 0; ei < edges.size(); ++ei) {
+            div_integral += edge_moments[ei][0];
+        }
+        d(0) = div_integral / poly.area;
+        return d;
+    }
+
+    auto I = [&](int a, int b) -> double {
+        return lookup_monomial_integral(I_table, max_I_degree, a, b);
+    };
+
+    Eigen::MatrixXd G(div_dim, div_dim);
+    {
+        int ki = 0;
+        for (int ti = 0; ti <= p - 1; ++ti) {
+            for (int ai = ti; ai >= 0; --ai, ++ki) {
+                const int bi = ti - ai;
+                int kj = 0;
+                for (int tj = 0; tj <= p - 1; ++tj) {
+                    for (int aj = tj; aj >= 0; --aj, ++kj) {
+                        const int bj = tj - aj;
+                        G(ki, kj) = I(ai + aj, bi + bj);
+                    }
+                }
+            }
+        }
+    }
+
+    Eigen::VectorXd g(div_dim);
+    {
+        int k = 0;
+        for (int t = 0; t <= p - 1; ++t) {
+            for (int a = t; a >= 0; --a, ++k) {
+                const int b = t - a;
+
+                double boundary = 0.0;
+                for (std::size_t ei = 0; ei < edges.size(); ++ei) {
+                    Eigen::VectorXd E_coeffs;
+                    edge_monomial_to_legendre_coeffs(edges[ei].a, edges[ei].b, a, b, p, E_coeffs);
+                    for (int m = 0; m <= p && m < static_cast<int>(edge_moments[ei].size()); ++m) {
+                        boundary += E_coeffs(m) * edge_moments[ei][m];
+                    }
+                }
+
+                double interior = 0.0;
+                if (a > 0) {
+                    const int cell_idx = scalar_monomial_index(p, a - 1, b);
+                    if (cell_idx >= 0 && cell_idx < static_cast<int>(cell_vector_moments.size())) {
+                        interior += static_cast<double>(a) * cell_vector_moments[cell_idx].x();
+                    }
+                }
+                if (b > 0) {
+                    const int cell_idx = scalar_monomial_index(p, a, b - 1);
+                    if (cell_idx >= 0 && cell_idx < static_cast<int>(cell_vector_moments.size())) {
+                        interior += static_cast<double>(b) * cell_vector_moments[cell_idx].y();
+                    }
+                }
+
+                g(k) = boundary - interior;
+            }
+        }
+    }
+
+    return G.ldlt().solve(g);
+}
+
+// Assemble the RHS of the VEM elliptic projection  M c = rhs,
+// where  M_{ij} = ∫_K φ_i · φ_j dA  and  rhs_i = ∫_K v_h · φ_i dA.
+//
+// The volume integral ∫_K v_h · φ_i dA is not directly available (v_h is not
+// known pointwise), but is computable from DOFs via the same integration-by-
+// parts trick as the divergence reconstruction ([BdV14] Prop. 4.1):
+//
+// For gradient modes φ_i = ∇ψ_i:
+//   ∫_K v_h · ∇ψ_i dA = ∫_{∂K} (v_h·n) ψ_i ds − ∫_K div(v_h) ψ_i dA
+//
+//   The boundary term uses edge moments; the volume term uses the already-
+//   computed divergence coefficients d and the monomial integral table.
+//
+// For rotational modes φ_j = x⊥m_j = (-y·m_j, x·m_j):
+//   ∫_K v_h · (x⊥m_j) dA = cell vector moment DOFs (type 2)
+//
+//   These are exactly the DOFs that make rotational modes observable.
+//   Without cell moments, the rotational subspace is uncontrolled — this is
+//   why gradient-only VEM loses asymptotic order for div-free fields.
+Eigen::VectorXd vem_projection_rhs(const VemDecomposedBasis& basis,
+                                     const LocalPolygon& poly,
+                                     const std::vector<LocalEdge>& edges,
+                                     const int p,
+                                     const std::vector<std::vector<double>>& edge_moments,
+                                     const std::vector<Eigen::Vector2d>& cell_vector_moments,
+                                     const Eigen::VectorXd& div_coeffs,
+                                     const Eigen::MatrixXd& I_table,
+                                     const int max_I_degree)
+{
+    const int n = basis.gradient_count + basis.rotational_count;
+    Eigen::VectorXd rhs(n);
+
+    auto I = [&](int a, int b) -> double {
+        return lookup_monomial_integral(I_table, max_I_degree, a, b);
+    };
+
+    for (int i = 0; i < basis.gradient_count; ++i) {
+        const int ai = basis.phi_exponents[i].first;
+        const int bi = basis.phi_exponents[i].second;
+
+        double boundary = 0.0;
+        for (std::size_t ei = 0; ei < edges.size(); ++ei) {
+            Eigen::VectorXd E_coeffs;
+            const int phi_degree = ai + bi;
+            edge_monomial_to_legendre_coeffs(edges[ei].a, edges[ei].b, ai, bi,
+                                            std::min(p, phi_degree), E_coeffs);
+            for (int m = 0; m < E_coeffs.size() && m < static_cast<int>(edge_moments[ei].size()); ++m) {
+                boundary += E_coeffs(m) * edge_moments[ei][m];
+            }
+        }
+
+        double div_term = 0.0;
+        const int div_dim = scalar_monomial_basis_count(p - 1);
+        {
+            int dk = 0;
+            for (int dt = 0; dt <= p - 1; ++dt) {
+                for (int da = dt; da >= 0; --da, ++dk) {
+                    const int db = dt - da;
+                    if (dk < div_coeffs.size()) {
+                        div_term += div_coeffs(dk) * I(da + ai, db + bi);
+                    }
+                }
+            }
+        }
+
+        rhs(i) = boundary - div_term;
+    }
+
+    const int g = basis.gradient_count;
+    for (int j = 0; j < basis.rotational_count; ++j) {
+        const int cj = basis.m_exponents[j].first;
+        const int dj = basis.m_exponents[j].second;
+
+        double val = 0.0;
+        {
+            const int ya = cj;
+            const int yb = dj + 1;
+            const int cell_idx = scalar_monomial_index(p, ya, yb);
+            if (cell_idx >= 0 && cell_idx < static_cast<int>(cell_vector_moments.size())) {
+                val += cell_vector_moments[cell_idx].x();
+            }
+        }
+        {
+            const int xa = cj + 1;
+            const int xb = dj;
+            const int cell_idx = scalar_monomial_index(p, xa, xb);
+            if (cell_idx >= 0 && cell_idx < static_cast<int>(cell_vector_moments.size())) {
+                val -= cell_vector_moments[cell_idx].y();
+            }
+        }
+
+        rhs(g + j) = val;
+    }
+
+    return rhs;
+}
+
+Eigen::VectorXd vem_decomposed_to_cartesian(const VemDecomposedBasis& basis,
+                                             const Eigen::VectorXd& decomposed_coeffs,
+                                             const int p)
+{
+    const std::vector<VectorBasisTerm>& cart_basis = cached_vector_polynomial_basis(p);
+    Eigen::VectorXd cart = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(cart_basis.size()));
+
+    for (int i = 0; i < basis.gradient_count; ++i) {
+        const int ai = basis.phi_exponents[i].first;
+        const int bi = basis.phi_exponents[i].second;
+        const double c = decomposed_coeffs(i);
+
+        if (ai > 0) {
+            const int idx = vector_basis_index(cart_basis, 0, ai - 1, bi);
+            if (idx >= 0) {
+                cart(idx) += c * static_cast<double>(ai);
+            }
+        }
+        if (bi > 0) {
+            const int idx = vector_basis_index(cart_basis, 1, ai, bi - 1);
+            if (idx >= 0) {
+                cart(idx) += c * static_cast<double>(bi);
+            }
+        }
+    }
+
+    const int g = basis.gradient_count;
+    for (int j = 0; j < basis.rotational_count; ++j) {
+        const int cj = basis.m_exponents[j].first;
+        const int dj = basis.m_exponents[j].second;
+        const double c = decomposed_coeffs(g + j);
+
+        {
+            const int idx = vector_basis_index(cart_basis, 0, cj, dj + 1);
+            if (idx >= 0) {
+                cart(idx) += c;
+            }
+        }
+        {
+            const int idx = vector_basis_index(cart_basis, 1, cj + 1, dj);
+            if (idx >= 0) {
+                cart(idx) -= c;
+            }
+        }
+    }
+
+    return cart;
+}
+
+// ============================================================================
+// Patch-based moment recovery from single edge fluxes
+//
+// When only one scalar flux value per edge is available (the common case in
+// production remap codes), the VEM projection requires additional DOFs —
+// higher-order edge moments and cell vector moments — that do not exist in
+// the source data.  This section recovers them via least-squares polynomial
+// fitting over a face-neighbor patch, following the k-exact reconstruction
+// philosophy:
+//
+//   [BF90] Barth, Frederickson, "Higher order solution of the Euler
+//          equations on unstructured grids using quadratic reconstruction,"
+//          AIAA Paper 90-0013, 1990.  §2: k-exact recovery from cell
+//          averages; overdetermined LS on neighbor stencil.
+//
+//   [ZZ92] Zienkiewicz, Zhu, "The superconvergent patch recovery and a
+//          posteriori error estimates. Part 1: The recovery technique,"
+//          Int. J. Numer. Meth. Engng. 33 (1992), pp. 1331–1364.
+//          Superconvergent patch recovery (SPR): LS polynomial fit over a
+//          patch of elements yields one extra order of accuracy under mesh
+//          regularity conditions.
+//
+// KNOWN LIMITATION — accuracy at p ≥ 2:
+//   A single flux per edge is an O(h) measurement that captures dim([P_0]²)=2
+//   polynomial modes exactly.  Recovering dim([P_p]²)=(p+1)(p+2) coefficients
+//   from ~N_patch single-flux constraints is fundamentally ill-posed for the
+//   higher modes.  By the k-exact theory [BF90], the recovered polynomial is
+//   accurate to O(h^{q+1}) where q is the fitting degree, but this accuracy
+//   holds only for the *leading* modes; the trace of the recovered field onto
+//   edges degrades at fine h because edge-interior polynomial modes (Legendre
+//   degree ≥ 2) are poorly constrained by edge-integral data.
+//
+//   Observed convergence (single flux → patch recovery → VEM → transfer):
+//     Quad mesh:    p=1: O(h^{2.0})   p=2: O(h^{1.5})
+//     Voronoi mesh: p=1: O(h^{1.8})   p=2: O(h^{1.2})
+//
+//   This is consistent with both [BF90] and the Piola degradation analysis
+//   of Arnold-Boffi-Falk (2005): the single-flux data cannot sustain full
+//   O(h^{p+1}) convergence for p ≥ 2.
+// ============================================================================
+
+struct PatchEdge {
+    Eigen::Vector2d a;
+    Eigen::Vector2d b;
+    Eigen::Vector2d outward_normal;
+    double length;
+    double flux;
+};
+
+// Recover high-order VEM DOFs from single-flux edge data on one cell.
+//
+// Pipeline:
+//   1. Collect all edge fluxes from target cell + face-neighbor cells
+//   2. Re-express neighbor cell geometry in the target cell's local frame
+//   3. Fit v_h ∈ [P_p]² via overdetermined LS (SVD) on the patch:
+//        minimize  ∑_e || ∫_e v_h·n ds − flux_e ||²
+//      Coordinate scaling by patch diameter for conditioning ([BF90] §3).
+//   4. Evaluate v_h to compute:
+//      (a) Edge moments:  μ_m^e = ∫_e (v_h·n) L_m(t) ds,  m = 0..p
+//          via Gauss-Legendre quadrature on each target edge.
+//      (b) Cell moments:  c_{ab}^i = ∫_K (v_h · ê_i) x^a y^b dA
+//          via fan-triangulated Duffy quadrature over the target cell.
+//   5. Overwrite μ_0^e with the exact source flux (conservation).
+//
+// The LS system has N_patch rows (one per patch edge) and (p+1)(p+2) columns.
+// For p=1 with ~15 neighbors: 15 rows × 6 cols → well-overdetermined.
+// For p=2: 15 × 12 → mildly overdetermined; accuracy degrades (see above).
+void patch_recover_moments_impl(
+    moab::Core& mb,
+    const GeometryOptions& geo_options,
+    moab::EntityHandle polygon,
+    int target_order,
+    const std::vector<moab::EntityHandle>& neighbor_polygons,
+    const std::map<std::pair<moab::EntityHandle, std::size_t>, std::vector<double>>& directed_source_moments,
+    std::map<std::pair<moab::EntityHandle, std::size_t>, std::vector<double>>& out_moments,
+    std::map<moab::EntityHandle, std::vector<Eigen::Vector2d>>& out_cell_moments)
+{
+    const LocalPolygon target_poly = local_polygon(mb, polygon, geo_options);
+    const std::vector<LocalEdge> target_edges = local_edges(mb, target_poly);
+    const int p = target_order;
+
+    // Collect patch cells: target cell + neighbors
+    std::vector<moab::EntityHandle> patch_cells;
+    patch_cells.push_back(polygon);
+    for (const moab::EntityHandle nbr : neighbor_polygons) {
+        patch_cells.push_back(nbr);
+    }
+
+    std::vector<PatchEdge> patch_edges;
+
+    // Centroid offset: cell_poly coords are relative to cell_poly.centroid.
+    // We re-express them relative to target_poly.centroid via 3D projection.
+    for (const moab::EntityHandle cell : patch_cells) {
+        const LocalPolygon cell_poly = local_polygon(mb, cell, geo_options);
+        const std::vector<LocalEdge> cell_edges = local_edges(mb, cell_poly);
+
+        const Eigen::Vector2d delta(
+            (cell_poly.centroid_3d - target_poly.centroid_3d).dot(target_poly.e_x),
+            (cell_poly.centroid_3d - target_poly.centroid_3d).dot(target_poly.e_y));
+
+        for (std::size_t ei = 0; ei < cell_edges.size(); ++ei) {
+            auto key = std::make_pair(cell, ei);
+            auto it = directed_source_moments.find(key);
+            if (it == directed_source_moments.end() || it->second.empty()) {
+                continue;
+            }
+
+            const Eigen::Vector2d edge_a_tf = cell_edges[ei].a + delta;
+            const Eigen::Vector2d edge_b_tf = cell_edges[ei].b + delta;
+            const Eigen::Vector2d edge_dir = edge_b_tf - edge_a_tf;
+            const double edge_len = edge_dir.norm();
+            if (edge_len < kTolerance) continue;
+
+            PatchEdge pe;
+            pe.a = edge_a_tf;
+            pe.b = edge_b_tf;
+            pe.outward_normal = Eigen::Vector2d(edge_dir.y(), -edge_dir.x()) / edge_len;
+            pe.length = edge_len;
+            pe.flux = it->second[0];
+            patch_edges.push_back(pe);
+        }
+    }
+
+    if (patch_edges.empty()) {
+        return;
+    }
+
+    // Compute patch diameter for coordinate scaling
+    double max_dist = 0.0;
+    for (const PatchEdge& e : patch_edges) {
+        max_dist = std::max(max_dist, e.a.norm());
+        max_dist = std::max(max_dist, e.b.norm());
+    }
+    const double scale = (max_dist > kTolerance) ? max_dist : 1.0;
+    const double inv_scale = 1.0 / scale;
+
+    // Fitting polynomial degree: use p for the fitting space
+    // dim([P_p]²) = (p+1)(p+2) unknowns
+    const int q = p;
+    const std::vector<VectorBasisTerm>& basis = cached_vector_polynomial_basis(q);
+    const int n_basis = static_cast<int>(basis.size());
+    const int n_edges = static_cast<int>(patch_edges.size());
+
+    if (n_edges < n_basis) {
+        return;
+    }
+
+    // Build LS matrix: A(i,j) = ∫_{e_i} φ_j · n_i ds (in scaled coords)
+    const std::vector<GaussLegendrePoint> quad = gauss_legendre_rule(std::max(8, 2 * q + 2));
+    Eigen::MatrixXd A(n_edges, n_basis);
+    Eigen::VectorXd b_vec(n_edges);
+
+    for (int i = 0; i < n_edges; ++i) {
+        const PatchEdge& pe = patch_edges[i];
+        const Eigen::Vector2d a_s = pe.a * inv_scale;
+        const Eigen::Vector2d b_s = pe.b * inv_scale;
+        const Eigen::Vector2d mid = 0.5 * (a_s + b_s);
+        const Eigen::Vector2d half_delta = 0.5 * (b_s - a_s);
+        const double len_s = pe.length * inv_scale;
+
+        for (int j = 0; j < n_basis; ++j) {
+            double val = 0.0;
+            for (const GaussLegendrePoint& gp : quad) {
+                const Eigen::Vector2d pt = mid + gp.x * half_delta;
+                const double monomial = std::pow(pt.x(), basis[j].a) * std::pow(pt.y(), basis[j].b);
+                const double n_comp = (basis[j].component == 0) ? pe.outward_normal.x() : pe.outward_normal.y();
+                val += gp.w * monomial * n_comp;
+            }
+            A(i, j) = val * 0.5 * len_s;
+        }
+
+        // RHS: flux, scaled by 1/scale to match the scaled geometry
+        // ∫_e v·n ds has units of [v]*[length]. In scaled coords, length→length/scale,
+        // but we don't scale v. So ∫_{e_s} v·n ds_s = (1/scale) ∫_e v·n ds.
+        b_vec(i) = pe.flux * inv_scale;
+    }
+
+    // SVD solve
+    const Eigen::JacobiSVD<Eigen::MatrixXd> svd(A, Eigen::ComputeThinU | Eigen::ComputeThinV);
+    const Eigen::VectorXd coeffs_scaled = svd.solve(b_vec);
+
+    // Convert coefficients back to unscaled coordinates
+    // In scaled coords: v_h(x_s) = sum c_j x_s^{a_j} y_s^{b_j} e_{comp_j}
+    // In unscaled: x_s = x/scale, so x_s^a = x^a / scale^a
+    // Thus c_unscaled = c_scaled / scale^{a+b}
+    Eigen::VectorXd coeffs(n_basis);
+    for (int j = 0; j < n_basis; ++j) {
+        const int deg = basis[j].a + basis[j].b;
+        coeffs(j) = coeffs_scaled(j) / std::pow(scale, deg);
+    }
+
+    // Evaluate v_h at a point (unscaled coordinates, centroid-relative)
+    auto eval_vh = [&](const Eigen::Vector2d& pt) -> Eigen::Vector2d {
+        Eigen::Vector2d v = Eigen::Vector2d::Zero();
+        for (int j = 0; j < n_basis; ++j) {
+            const double monomial = std::pow(pt.x(), basis[j].a) * std::pow(pt.y(), basis[j].b);
+            if (basis[j].component == 0) {
+                v.x() += coeffs(j) * monomial;
+            } else {
+                v.y() += coeffs(j) * monomial;
+            }
+        }
+        return v;
+    };
+
+    // Compute high-order edge moments on target cell edges via Gauss-Legendre
+    const std::vector<GaussLegendrePoint> moment_quad = gauss_legendre_rule(std::max(10, 2 * p + 4));
+
+    for (std::size_t ei = 0; ei < target_edges.size(); ++ei) {
+        const LocalEdge& edge = target_edges[ei];
+        const Eigen::Vector2d mid = 0.5 * (edge.a + edge.b);
+        const Eigen::Vector2d half_delta = 0.5 * (edge.b - edge.a);
+
+        std::vector<double> moments(static_cast<std::size_t>(p + 1), 0.0);
+        for (const GaussLegendrePoint& gp : moment_quad) {
+            const Eigen::Vector2d pt = mid + gp.x * half_delta;
+            const Eigen::Vector2d v = eval_vh(pt);
+            const double vn = v.dot(edge.outward_normal);
+            const double half_len = 0.5 * edge.length;
+
+            for (int m = 0; m <= p; ++m) {
+                moments[m] += gp.w * vn * legendre_polynomial(m, gp.x) * half_len;
+            }
+        }
+
+        // Overwrite moment-0 with exact source flux (conservation)
+        auto key = std::make_pair(polygon, ei);
+        auto it = directed_source_moments.find(key);
+        if (it != directed_source_moments.end() && !it->second.empty()) {
+            moments[0] = it->second[0];
+        }
+
+        out_moments[key] = moments;
+    }
+
+    // Compute cell vector moments: ∫_K v_h · (x^a y^b ê_i) dA
+    // for all monomials x^a y^b up to degree p
+    const int n_cell_moments = scalar_monomial_basis_count(p);
+    std::vector<Eigen::Vector2d> cell_moments(static_cast<std::size_t>(n_cell_moments),
+                                               Eigen::Vector2d::Zero());
+
+    const std::vector<GaussLegendrePoint> cell_quad = gauss_legendre_rule(std::max(10, p + 4));
+    const Eigen::Vector2d origin = Eigen::Vector2d::Zero();
+
+    int cm_idx = 0;
+    for (int total_deg = 0; total_deg <= p; ++total_deg) {
+        for (int a = total_deg; a >= 0; --a, ++cm_idx) {
+            const int b_exp = total_deg - a;
+            Eigen::Vector2d moment_val = Eigen::Vector2d::Zero();
+
+            for (std::size_t ti = 0; ti < target_edges.size(); ++ti) {
+                const Eigen::Vector2d& v0 = target_edges[ti].a;
+                const Eigen::Vector2d& v1 = target_edges[ti].b;
+
+                const double tri_integral_x = integrate_triangle_duffy(
+                    origin, v0, v1, cell_quad,
+                    [&](const Eigen::Vector2d& pt) {
+                        const Eigen::Vector2d v = eval_vh(pt);
+                        const double monomial = std::pow(pt.x(), a) * std::pow(pt.y(), b_exp);
+                        return v.x() * monomial;
+                    });
+
+                const double tri_integral_y = integrate_triangle_duffy(
+                    origin, v0, v1, cell_quad,
+                    [&](const Eigen::Vector2d& pt) {
+                        const Eigen::Vector2d v = eval_vh(pt);
+                        const double monomial = std::pow(pt.x(), a) * std::pow(pt.y(), b_exp);
+                        return v.y() * monomial;
+                    });
+
+                moment_val.x() += tri_integral_x;
+                moment_val.y() += tri_integral_y;
+            }
+
+            cell_moments[cm_idx] = moment_val;
+        }
+    }
+
+    out_cell_moments[polygon] = cell_moments;
+}
+
+TraceOperatorDiagnostic diagnose_trace_operator_impl(const LocalPolygon& poly,
+                                                     const std::vector<LocalEdge>& edges,
+                                                     const int p,
+                                                     const double scale,
+                                                     const std::vector<GaussLegendrePoint>& quadrature,
+                                                     const GeometryOptions& options)
+{
+    const std::vector<VectorBasisTerm>& raw_basis = cached_vector_polynomial_basis(p);
+    const int raw_dim = static_cast<int>(raw_basis.size());
+    const int num_edges = static_cast<int>(edges.size());
+    const int constraint_rows = num_edges * (p + 1);
+
+    Eigen::MatrixXd A(constraint_rows, raw_dim);
+    int row = 0;
+    for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+        for (int col = 0; col < raw_dim; ++col) {
+            const std::vector<double> bm =
+                basis_edge_moments(raw_basis[col], poly, edge_index, edges[edge_index], p,
+                                   quadrature, scale, options);
+            for (int degree = 0; degree <= p; ++degree) {
+                A(row + degree, col) = bm[degree];
+            }
+        }
+        row += (p + 1);
+    }
+
+    const Eigen::JacobiSVD<Eigen::MatrixXd> svd(A, Eigen::ComputeThinU | Eigen::ComputeThinV);
+    const Eigen::VectorXd& sv = svd.singularValues();
+
+    TraceOperatorDiagnostic diag;
+    diag.num_edges = num_edges;
+    diag.basis_dim = raw_dim;
+    diag.constraint_rows = constraint_rows;
+    diag.max_singular_value = sv(0);
+    diag.min_singular_value = sv(sv.size() - 1);
+    diag.condition_number = (diag.min_singular_value > 1.0e-30)
+                                ? diag.max_singular_value / diag.min_singular_value
+                                : std::numeric_limits<double>::infinity();
+    diag.singular_values.assign(sv.data(), sv.data() + sv.size());
+    return diag;
+}
+
 }  // namespace
 
 // Shoelace geometry utilities; these correspond to the polygon preprocessing
@@ -3147,10 +3910,21 @@ PiolaRTReconstruction build_piola_rt_reconstruction(
     return rec;
 }
 
+TraceOperatorDiagnostic diagnose_trace_operator(moab::Core& mb,
+                                                const moab::EntityHandle polygon,
+                                                const int order,
+                                                const GeometryOptions& options)
+{
+    const LocalPolygon poly = local_polygon(mb, polygon, options);
+    const std::vector<LocalEdge> edges = local_edges(mb, poly);
+    const double scale = local_length_scale(poly);
+    const std::vector<GaussLegendrePoint> quadrature = gauss_legendre_rule(10);
+    return diagnose_trace_operator_impl(poly, edges, order, scale, quadrature, options);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // PlanarMomentInterpolator
 // ═══════════════════════════════════════════════════════════════════════════
-
 PlanarMomentInterpolator::PlanarMomentInterpolator(moab::Core& moab_instance)
     : mb_(moab_instance)
 {
@@ -3211,6 +3985,27 @@ std::vector<Eigen::Vector2d> PlanarMomentInterpolator::source_cell_vector_moment
     return it->second;
 }
 
+void PlanarMomentInterpolator::recover_moments_from_patch(
+    const moab::EntityHandle polygon,
+    const int target_order,
+    const std::vector<moab::EntityHandle>& neighbor_polygons)
+{
+    std::map<std::pair<moab::EntityHandle, std::size_t>, std::vector<double>> recovered_moments;
+    std::map<moab::EntityHandle, std::vector<Eigen::Vector2d>> recovered_cell_moments;
+
+    patch_recover_moments_impl(mb_, options_, polygon, target_order,
+                               neighbor_polygons, directed_source_moments_,
+                               recovered_moments, recovered_cell_moments);
+
+    for (auto& kv : recovered_moments) {
+        directed_source_moments_[kv.first] = std::move(kv.second);
+    }
+
+    for (auto& kv : recovered_cell_moments) {
+        source_cell_vector_moments_[kv.first] = std::move(kv.second);
+    }
+}
+
 // KNOWN LIMITATION — Piola-frame ill-conditioning of [P_p]² on quads
 // -----------------------------------------------------------------------
 // The reconstruction basis is [P_p]², dimension (p+1)(p+2).  On a 4-sided
@@ -3248,6 +4043,81 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
     const std::vector<LocalEdge> edges = local_edges(mb_, poly);
     const std::vector<GaussLegendrePoint> quadrature = gauss_legendre_rule(options.quadrature_points);
     const double scale_length = local_length_scale(poly);
+
+    const bool use_vem = (options.reconstruction_mode == ReconstructionMode::VemProjection ||
+                          options.reconstruction_mode == ReconstructionMode::PatchRecoveryVem);
+
+    // VEM reconstruction path.
+    //
+    // Unlike the LS/KKT path below (which fits [P_p]² coefficients directly
+    // from edge constraints), this path uses the VEM elliptic projection
+    // Π_p : V_h → [P_p]² computed from the decomposed basis ∇P_{p+1} ⊕ x⊥P_{p-1}.
+    //
+    // Why this bypasses the Piola ill-conditioning described above:
+    //   The LS/KKT path must invert the edge trace operator A: [P_p]² → R^{N_e(p+1)},
+    //   whose condition number κ(A) ~ 10⁴–10⁷ on distorted cells at p ≥ 2
+    //   (Arnold-Boffi-Falk, "Quadrilateral H(div) finite elements," SIAM J.
+    //   Numer. Anal., 2005).  The VEM path avoids this because:
+    //   (a) The mass matrix M = ∫ φ_i · φ_j dA in the decomposed basis is
+    //       well-conditioned (κ(M) ~ O(1) on centroid-centered coordinates).
+    //   (b) The RHS is computed via integration-by-parts identities that use
+    //       edge moments and cell moments as *data*, not as constraints on an
+    //       ill-conditioned system.
+    //   (c) The decomposition ∇P_{p+1} ⊕ x⊥P_{p-1} naturally separates modes
+    //       by their observability — gradient modes from boundary data, rotational
+    //       modes from cell moments — so no single solve mixes well- and poorly-
+    //       conditioned directions.
+    if (use_vem) {
+        const int p = options.edge_moment_order;
+
+        std::vector<std::vector<double>> all_edge_moments(edges.size());
+        for (std::size_t ei = 0; ei < edges.size(); ++ei) {
+            all_edge_moments[ei] = source_edge_moments(polygon, ei);
+            if (static_cast<int>(all_edge_moments[ei].size()) != p + 1) {
+                throw std::runtime_error("Source edge moments do not match requested moment order");
+            }
+        }
+
+        std::vector<Eigen::Vector2d> cell_moments;
+        const int cell_moment_order = p;
+        const int num_cell_moments = vector_moment_basis_count(cell_moment_order);
+        cell_moments = source_cell_vector_moments(polygon);
+
+        const int max_I_degree = 2 * p + 4;
+        const Eigen::MatrixXd I_table = polygon_monomial_integral_table(poly.points, max_I_degree);
+
+        const VemDecomposedBasis vem_basis = build_vem_decomposed_basis(p);
+
+        const Eigen::VectorXd div_coeffs =
+            vem_reconstruct_divergence(vem_basis, poly, edges, p,
+                                       all_edge_moments, cell_moments,
+                                       I_table, max_I_degree);
+
+        const Eigen::MatrixXd M = vem_mass_matrix(vem_basis, I_table, max_I_degree);
+
+        const Eigen::VectorXd rhs =
+            vem_projection_rhs(vem_basis, poly, edges, p,
+                               all_edge_moments, cell_moments, div_coeffs,
+                               I_table, max_I_degree);
+
+        const Eigen::VectorXd decomposed_coeffs = M.ldlt().solve(rhs);
+
+        const Eigen::VectorXd cart_coeffs = vem_decomposed_to_cartesian(vem_basis, decomposed_coeffs, p);
+
+        MomentReconstruction reconstruction;
+        reconstruction.options = options;
+        reconstruction.options.cell_moment_order = cell_moment_order;
+        reconstruction.vector_polynomial_degree = p;
+        reconstruction.harmonic_degree = p + 1;
+        reconstruction.divergence_mode_count = vem_basis.gradient_count;
+        reconstruction.harmonic_mode_count = 0;
+        reconstruction.bubble_mode_count = vem_basis.rotational_count;
+        reconstruction.length_scale = 1.0;
+        reconstruction.coefficients.assign(cart_coeffs.data(), cart_coeffs.data() + cart_coeffs.size());
+
+        reconstructions_[polygon] = reconstruction;
+        return reconstruction;
+    }
 
     const bool use_surface_metric = options_.metric_weighted && options_.mode == GeometryMode::SphericalGnomonic;
 

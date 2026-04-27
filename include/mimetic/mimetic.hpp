@@ -381,6 +381,31 @@ struct ConformingEdgeTransferResult {
     std::vector<double> unique_edge_fluxes;
 };
 
+/**
+ * Selects the local polynomial reconstruction strategy.
+ *
+ * SplitBasis:  LS/KKT fit of [P_p]² from edge moments ± cell moments.
+ *   Well-conditioned for p ≤ 1; ill-conditioned for p ≥ 2 on non-affine cells
+ *   due to Piola-frame trace operator degradation (Arnold-Boffi-Falk, 2005).
+ *
+ * VemProjection:  VEM elliptic projection Π_p onto ∇P_{p+1} ⊕ x⊥P_{p-1}.
+ *   Requires pre-populated edge moments (order p) AND cell vector moments.
+ *   Well-conditioned for all p and all polygon topologies.
+ *   [BdV14] Beirão da Veiga et al., Numer. Math. 133 (2016), pp. 303–332.
+ *
+ * PatchRecoveryVem:  Single flux → patch LS recovery → VEM projection.
+ *   For the common case of one scalar flux per edge.  Bootstraps high-order
+ *   moments via neighbor-cell least-squares fitting, then feeds the VEM path.
+ *   [BF90] Barth-Frederickson, AIAA 90-0013 (k-exact reconstruction).
+ *   Accuracy limited to ~O(h²) at p=1, ~O(h^{1.5}) at p=2 (see §patch
+ *   recovery in mimetic.cpp for convergence data and analysis).
+ */
+enum class ReconstructionMode {
+    SplitBasis,
+    VemProjection,
+    PatchRecoveryVem,
+};
+
 struct MomentMethodOptions {
     int edge_moment_order = 0;
     int harmonic_degree = -1;
@@ -390,7 +415,31 @@ struct MomentMethodOptions {
     bool exact_constraints = true;
     double edge_weight = 1.0;
     double cell_weight = 1.0;
+    ReconstructionMode reconstruction_mode = ReconstructionMode::SplitBasis;
 };
+
+/**
+ * Diagnostic for the local trace operator condition on one polygon.
+ *
+ * The trace operator maps vector polynomial coefficients to edge-normal
+ * Legendre moments.  Its singular values quantify how well boundary
+ * observations control interior modes.  Poor conditioning on irregular
+ * polygons is a root cause of sub-optimal convergence for p >= 2.
+ */
+struct TraceOperatorDiagnostic {
+    int num_edges = 0;
+    int basis_dim = 0;
+    int constraint_rows = 0;
+    double condition_number = 0.0;
+    double min_singular_value = 0.0;
+    double max_singular_value = 0.0;
+    std::vector<double> singular_values;
+};
+
+TraceOperatorDiagnostic diagnose_trace_operator(moab::Core& mb,
+                                                moab::EntityHandle polygon,
+                                                int order,
+                                                const GeometryOptions& options = GeometryOptions());
 
 struct MomentReconstruction {
     MomentMethodOptions options;
@@ -697,6 +746,25 @@ class PlanarMomentInterpolator {
         const std::vector<moab::EntityHandle>& source_polygons,
         const std::vector<moab::EntityHandle>& target_polygons,
         const EdgeMomentTransferResult& raw_transfer) const;
+
+    /// Bootstrap high-order VEM DOFs from single-flux-per-edge data.
+    ///
+    /// Fits v_h ∈ [P_p]² via overdetermined least-squares on the face-neighbor
+    /// patch (target cell + neighbor_polygons), then evaluates edge Legendre
+    /// moments and cell vector moments from the fitted polynomial.  Results
+    /// are stored internally as directed_source_moments_ and
+    /// source_cell_vector_moments_, ready for reconstruct_source_polygon()
+    /// with ReconstructionMode::PatchRecoveryVem.
+    ///
+    /// Conservation: the zeroth edge moment (net flux) is preserved exactly
+    /// from the original source data; only higher-order moments are recovered.
+    ///
+    /// See patch_recover_moments_impl() in mimetic.cpp for the full algorithm,
+    /// references ([BF90], [ZZ92]), and convergence analysis.
+    void recover_moments_from_patch(
+        moab::EntityHandle polygon,
+        int target_order,
+        const std::vector<moab::EntityHandle>& neighbor_polygons);
 
   private:
     moab::Core& mb_;

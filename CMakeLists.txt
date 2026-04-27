@@ -163,3 +163,11 @@ target_include_directories(spherical_roundtrip_convergence_test PRIVATE ${CMAKE_
 add_executable(roundtrip_diagnosis tests/roundtrip_diagnosis.cpp)
 target_link_libraries(roundtrip_diagnosis PRIVATE mimetic ${MOAB_LIBRARY})
 target_include_directories(roundtrip_diagnosis PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/tests ${MOAB_INCLUDE_DIRS})
+
+add_executable(vem_projection_test tests/vem_projection_test.cpp)
+target_link_libraries(vem_projection_test PRIVATE mimetic)
+add_test(NAME vem_projection_test COMMAND vem_projection_test)
+
+add_executable(patch_recovery_test tests/patch_recovery_test.cpp)
+target_link_libraries(patch_recovery_test PRIVATE mimetic)
+add_test(NAME patch_recovery_test COMMAND patch_recovery_test)
