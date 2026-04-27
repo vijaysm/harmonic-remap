@@ -381,6 +381,11 @@ struct ConformingEdgeTransferResult {
     std::vector<double> unique_edge_fluxes;
 };
 
+enum class ReconstructionMode {
+    SplitBasis,
+    VemProjection,
+};
+
 struct MomentMethodOptions {
     int edge_moment_order = 0;
     int harmonic_degree = -1;
@@ -390,7 +395,31 @@ struct MomentMethodOptions {
     bool exact_constraints = true;
     double edge_weight = 1.0;
     double cell_weight = 1.0;
+    ReconstructionMode reconstruction_mode = ReconstructionMode::SplitBasis;
 };
+
+/**
+ * Diagnostic for the local trace operator condition on one polygon.
+ *
+ * The trace operator maps vector polynomial coefficients to edge-normal
+ * Legendre moments.  Its singular values quantify how well boundary
+ * observations control interior modes.  Poor conditioning on irregular
+ * polygons is a root cause of sub-optimal convergence for p >= 2.
+ */
+struct TraceOperatorDiagnostic {
+    int num_edges = 0;
+    int basis_dim = 0;
+    int constraint_rows = 0;
+    double condition_number = 0.0;
+    double min_singular_value = 0.0;
+    double max_singular_value = 0.0;
+    std::vector<double> singular_values;
+};
+
+TraceOperatorDiagnostic diagnose_trace_operator(moab::Core& mb,
+                                                moab::EntityHandle polygon,
+                                                int order,
+                                                const GeometryOptions& options = GeometryOptions());
 
 struct MomentReconstruction {
     MomentMethodOptions options;

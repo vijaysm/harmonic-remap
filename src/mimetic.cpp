@@ -1668,6 +1668,416 @@ void write_edge_map_csv(const std::string& path, const std::vector<DirectedEdgeD
     }
 }
 
+// ============================================================================
+// VEM H(div) projection infrastructure
+// ============================================================================
+
+double polygon_monomial_integral(const std::vector<Eigen::Vector2d>& vertices,
+                                 const int a,
+                                 const int b)
+{
+    const int N = static_cast<int>(vertices.size());
+    if (N < 3 || a < 0 || b < 0) {
+        return 0.0;
+    }
+
+    const int nq = std::max(5, (a + b) / 2 + 3);
+    const std::vector<GaussLegendrePoint> rule = gauss_legendre_rule(nq);
+
+    double integral = 0.0;
+    const Eigen::Vector2d origin = Eigen::Vector2d::Zero();
+    for (int i = 0; i < N; ++i) {
+        const Eigen::Vector2d& v0 = vertices[i];
+        const Eigen::Vector2d& v1 = vertices[(i + 1) % N];
+        integral += integrate_triangle_duffy(origin, v0, v1, rule,
+            [&](const Eigen::Vector2d& p) {
+                return std::pow(p.x(), a) * std::pow(p.y(), b);
+            });
+    }
+    return integral;
+}
+
+Eigen::MatrixXd polygon_monomial_integral_table(const std::vector<Eigen::Vector2d>& vertices,
+                                                 const int max_degree)
+{
+    const int dim = scalar_monomial_basis_count(max_degree);
+    Eigen::MatrixXd table(dim, 1);
+    int index = 0;
+    for (int total_degree = 0; total_degree <= max_degree; ++total_degree) {
+        for (int a = total_degree; a >= 0; --a, ++index) {
+            const int b = total_degree - a;
+            table(index, 0) = polygon_monomial_integral(vertices, a, b);
+        }
+    }
+    return table;
+}
+
+double lookup_monomial_integral(const Eigen::MatrixXd& table, const int degree, const int a, const int b)
+{
+    const int index = scalar_monomial_index(degree, a, b);
+    if (index < 0 || index >= static_cast<int>(table.rows())) {
+        return 0.0;
+    }
+    return table(index, 0);
+}
+
+struct VemDecomposedBasis {
+    int gradient_count = 0;
+    int rotational_count = 0;
+
+    std::vector<std::pair<int, int>> phi_exponents;
+    std::vector<std::pair<int, int>> m_exponents;
+};
+
+VemDecomposedBasis build_vem_decomposed_basis(const int p)
+{
+    VemDecomposedBasis basis;
+
+    for (int total = 1; total <= p + 1; ++total) {
+        for (int a = total; a >= 0; --a) {
+            basis.phi_exponents.emplace_back(a, total - a);
+        }
+    }
+    basis.gradient_count = static_cast<int>(basis.phi_exponents.size());
+
+    if (p >= 1) {
+        for (int total = 0; total <= p - 1; ++total) {
+            for (int a = total; a >= 0; --a) {
+                basis.m_exponents.emplace_back(a, total - a);
+            }
+        }
+    }
+    basis.rotational_count = static_cast<int>(basis.m_exponents.size());
+
+    return basis;
+}
+
+Eigen::MatrixXd vem_mass_matrix(const VemDecomposedBasis& basis,
+                                const Eigen::MatrixXd& I_table,
+                                const int max_I_degree)
+{
+    const int n = basis.gradient_count + basis.rotational_count;
+    Eigen::MatrixXd M = Eigen::MatrixXd::Zero(n, n);
+
+    auto I = [&](int a, int b) -> double {
+        return lookup_monomial_integral(I_table, max_I_degree, a, b);
+    };
+
+    for (int i = 0; i < basis.gradient_count; ++i) {
+        const int ai = basis.phi_exponents[i].first;
+        const int bi = basis.phi_exponents[i].second;
+        for (int j = 0; j < basis.gradient_count; ++j) {
+            const int aj = basis.phi_exponents[j].first;
+            const int bj = basis.phi_exponents[j].second;
+            M(i, j) = static_cast<double>(ai * aj) * I(ai + aj - 2, bi + bj)
+                     + static_cast<double>(bi * bj) * I(ai + aj, bi + bj - 2);
+        }
+    }
+
+    const int g = basis.gradient_count;
+    for (int i = 0; i < basis.gradient_count; ++i) {
+        const int ai = basis.phi_exponents[i].first;
+        const int bi = basis.phi_exponents[i].second;
+        for (int j = 0; j < basis.rotational_count; ++j) {
+            const int cj = basis.m_exponents[j].first;
+            const int dj = basis.m_exponents[j].second;
+            const double val = static_cast<double>(ai) * I(ai + cj - 1, bi + dj + 1)
+                             - static_cast<double>(bi) * I(ai + cj + 1, bi + dj - 1);
+            M(i, g + j) = val;
+            M(g + j, i) = val;
+        }
+    }
+
+    for (int i = 0; i < basis.rotational_count; ++i) {
+        const int ci = basis.m_exponents[i].first;
+        const int di = basis.m_exponents[i].second;
+        for (int j = 0; j < basis.rotational_count; ++j) {
+            const int cj = basis.m_exponents[j].first;
+            const int dj = basis.m_exponents[j].second;
+            M(g + i, g + j) = I(ci + cj, di + dj + 2) + I(ci + cj + 2, di + dj);
+        }
+    }
+
+    return M;
+}
+
+void edge_monomial_to_legendre_coeffs(const Eigen::Vector2d& ea,
+                                      const Eigen::Vector2d& eb,
+                                      const int a,
+                                      const int b,
+                                      const int max_legendre_degree,
+                                      Eigen::VectorXd& coeffs)
+{
+    const Eigen::Vector2d mid = 0.5 * (ea + eb);
+    const Eigen::Vector2d half_delta = 0.5 * (eb - ea);
+
+    const int nq = std::max(2 * (a + b + max_legendre_degree) + 2, 10);
+    const std::vector<GaussLegendrePoint> rule = gauss_legendre_rule(nq);
+
+    coeffs.resize(max_legendre_degree + 1);
+    coeffs.setZero();
+
+    for (const GaussLegendrePoint& q : rule) {
+        const Eigen::Vector2d pt = mid + q.x * half_delta;
+        const double monomial = std::pow(pt.x(), a) * std::pow(pt.y(), b);
+        for (int m = 0; m <= max_legendre_degree; ++m) {
+            coeffs(m) += q.w * monomial * legendre_polynomial(m, q.x);
+        }
+    }
+
+    for (int m = 0; m <= max_legendre_degree; ++m) {
+        coeffs(m) *= (2.0 * m + 1.0) / 2.0;
+    }
+}
+
+Eigen::VectorXd vem_reconstruct_divergence(const VemDecomposedBasis& basis,
+                                            const LocalPolygon& poly,
+                                            const std::vector<LocalEdge>& edges,
+                                            const int p,
+                                            const std::vector<std::vector<double>>& edge_moments,
+                                            const std::vector<Eigen::Vector2d>& cell_vector_moments,
+                                            const Eigen::MatrixXd& I_table,
+                                            const int max_I_degree)
+{
+    const int div_dim = scalar_monomial_basis_count(p - 1);
+    if (div_dim <= 0) {
+        Eigen::VectorXd d(1);
+        double div_integral = 0.0;
+        for (std::size_t ei = 0; ei < edges.size(); ++ei) {
+            div_integral += edge_moments[ei][0];
+        }
+        d(0) = div_integral / poly.area;
+        return d;
+    }
+
+    auto I = [&](int a, int b) -> double {
+        return lookup_monomial_integral(I_table, max_I_degree, a, b);
+    };
+
+    Eigen::MatrixXd G(div_dim, div_dim);
+    {
+        int ki = 0;
+        for (int ti = 0; ti <= p - 1; ++ti) {
+            for (int ai = ti; ai >= 0; --ai, ++ki) {
+                const int bi = ti - ai;
+                int kj = 0;
+                for (int tj = 0; tj <= p - 1; ++tj) {
+                    for (int aj = tj; aj >= 0; --aj, ++kj) {
+                        const int bj = tj - aj;
+                        G(ki, kj) = I(ai + aj, bi + bj);
+                    }
+                }
+            }
+        }
+    }
+
+    Eigen::VectorXd g(div_dim);
+    {
+        int k = 0;
+        for (int t = 0; t <= p - 1; ++t) {
+            for (int a = t; a >= 0; --a, ++k) {
+                const int b = t - a;
+
+                double boundary = 0.0;
+                for (std::size_t ei = 0; ei < edges.size(); ++ei) {
+                    Eigen::VectorXd E_coeffs;
+                    edge_monomial_to_legendre_coeffs(edges[ei].a, edges[ei].b, a, b, p, E_coeffs);
+                    for (int m = 0; m <= p && m < static_cast<int>(edge_moments[ei].size()); ++m) {
+                        boundary += E_coeffs(m) * edge_moments[ei][m];
+                    }
+                }
+
+                double interior = 0.0;
+                if (a > 0) {
+                    const int cell_idx = scalar_monomial_index(p, a - 1, b);
+                    if (cell_idx >= 0 && cell_idx < static_cast<int>(cell_vector_moments.size())) {
+                        interior += static_cast<double>(a) * cell_vector_moments[cell_idx].x();
+                    }
+                }
+                if (b > 0) {
+                    const int cell_idx = scalar_monomial_index(p, a, b - 1);
+                    if (cell_idx >= 0 && cell_idx < static_cast<int>(cell_vector_moments.size())) {
+                        interior += static_cast<double>(b) * cell_vector_moments[cell_idx].y();
+                    }
+                }
+
+                g(k) = boundary - interior;
+            }
+        }
+    }
+
+    return G.ldlt().solve(g);
+}
+
+Eigen::VectorXd vem_projection_rhs(const VemDecomposedBasis& basis,
+                                    const LocalPolygon& poly,
+                                    const std::vector<LocalEdge>& edges,
+                                    const int p,
+                                    const std::vector<std::vector<double>>& edge_moments,
+                                    const std::vector<Eigen::Vector2d>& cell_vector_moments,
+                                    const Eigen::VectorXd& div_coeffs,
+                                    const Eigen::MatrixXd& I_table,
+                                    const int max_I_degree)
+{
+    const int n = basis.gradient_count + basis.rotational_count;
+    Eigen::VectorXd rhs(n);
+
+    auto I = [&](int a, int b) -> double {
+        return lookup_monomial_integral(I_table, max_I_degree, a, b);
+    };
+
+    for (int i = 0; i < basis.gradient_count; ++i) {
+        const int ai = basis.phi_exponents[i].first;
+        const int bi = basis.phi_exponents[i].second;
+
+        double boundary = 0.0;
+        for (std::size_t ei = 0; ei < edges.size(); ++ei) {
+            Eigen::VectorXd E_coeffs;
+            const int phi_degree = ai + bi;
+            edge_monomial_to_legendre_coeffs(edges[ei].a, edges[ei].b, ai, bi,
+                                            std::min(p, phi_degree), E_coeffs);
+            for (int m = 0; m < E_coeffs.size() && m < static_cast<int>(edge_moments[ei].size()); ++m) {
+                boundary += E_coeffs(m) * edge_moments[ei][m];
+            }
+        }
+
+        double div_term = 0.0;
+        const int div_dim = scalar_monomial_basis_count(p - 1);
+        {
+            int dk = 0;
+            for (int dt = 0; dt <= p - 1; ++dt) {
+                for (int da = dt; da >= 0; --da, ++dk) {
+                    const int db = dt - da;
+                    if (dk < div_coeffs.size()) {
+                        div_term += div_coeffs(dk) * I(da + ai, db + bi);
+                    }
+                }
+            }
+        }
+
+        rhs(i) = boundary - div_term;
+    }
+
+    const int g = basis.gradient_count;
+    for (int j = 0; j < basis.rotational_count; ++j) {
+        const int cj = basis.m_exponents[j].first;
+        const int dj = basis.m_exponents[j].second;
+
+        double val = 0.0;
+        {
+            const int ya = cj;
+            const int yb = dj + 1;
+            const int cell_idx = scalar_monomial_index(p, ya, yb);
+            if (cell_idx >= 0 && cell_idx < static_cast<int>(cell_vector_moments.size())) {
+                val += cell_vector_moments[cell_idx].x();
+            }
+        }
+        {
+            const int xa = cj + 1;
+            const int xb = dj;
+            const int cell_idx = scalar_monomial_index(p, xa, xb);
+            if (cell_idx >= 0 && cell_idx < static_cast<int>(cell_vector_moments.size())) {
+                val -= cell_vector_moments[cell_idx].y();
+            }
+        }
+
+        rhs(g + j) = val;
+    }
+
+    return rhs;
+}
+
+Eigen::VectorXd vem_decomposed_to_cartesian(const VemDecomposedBasis& basis,
+                                             const Eigen::VectorXd& decomposed_coeffs,
+                                             const int p)
+{
+    const std::vector<VectorBasisTerm>& cart_basis = cached_vector_polynomial_basis(p);
+    Eigen::VectorXd cart = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(cart_basis.size()));
+
+    for (int i = 0; i < basis.gradient_count; ++i) {
+        const int ai = basis.phi_exponents[i].first;
+        const int bi = basis.phi_exponents[i].second;
+        const double c = decomposed_coeffs(i);
+
+        if (ai > 0) {
+            const int idx = vector_basis_index(cart_basis, 0, ai - 1, bi);
+            if (idx >= 0) {
+                cart(idx) += c * static_cast<double>(ai);
+            }
+        }
+        if (bi > 0) {
+            const int idx = vector_basis_index(cart_basis, 1, ai, bi - 1);
+            if (idx >= 0) {
+                cart(idx) += c * static_cast<double>(bi);
+            }
+        }
+    }
+
+    const int g = basis.gradient_count;
+    for (int j = 0; j < basis.rotational_count; ++j) {
+        const int cj = basis.m_exponents[j].first;
+        const int dj = basis.m_exponents[j].second;
+        const double c = decomposed_coeffs(g + j);
+
+        {
+            const int idx = vector_basis_index(cart_basis, 0, cj, dj + 1);
+            if (idx >= 0) {
+                cart(idx) += c;
+            }
+        }
+        {
+            const int idx = vector_basis_index(cart_basis, 1, cj + 1, dj);
+            if (idx >= 0) {
+                cart(idx) -= c;
+            }
+        }
+    }
+
+    return cart;
+}
+
+TraceOperatorDiagnostic diagnose_trace_operator_impl(const LocalPolygon& poly,
+                                                     const std::vector<LocalEdge>& edges,
+                                                     const int p,
+                                                     const double scale,
+                                                     const std::vector<GaussLegendrePoint>& quadrature,
+                                                     const GeometryOptions& options)
+{
+    const std::vector<VectorBasisTerm>& raw_basis = cached_vector_polynomial_basis(p);
+    const int raw_dim = static_cast<int>(raw_basis.size());
+    const int num_edges = static_cast<int>(edges.size());
+    const int constraint_rows = num_edges * (p + 1);
+
+    Eigen::MatrixXd A(constraint_rows, raw_dim);
+    int row = 0;
+    for (std::size_t edge_index = 0; edge_index < edges.size(); ++edge_index) {
+        for (int col = 0; col < raw_dim; ++col) {
+            const std::vector<double> bm =
+                basis_edge_moments(raw_basis[col], poly, edge_index, edges[edge_index], p,
+                                   quadrature, scale, options);
+            for (int degree = 0; degree <= p; ++degree) {
+                A(row + degree, col) = bm[degree];
+            }
+        }
+        row += (p + 1);
+    }
+
+    const Eigen::JacobiSVD<Eigen::MatrixXd> svd(A, Eigen::ComputeThinU | Eigen::ComputeThinV);
+    const Eigen::VectorXd& sv = svd.singularValues();
+
+    TraceOperatorDiagnostic diag;
+    diag.num_edges = num_edges;
+    diag.basis_dim = raw_dim;
+    diag.constraint_rows = constraint_rows;
+    diag.max_singular_value = sv(0);
+    diag.min_singular_value = sv(sv.size() - 1);
+    diag.condition_number = (diag.min_singular_value > 1.0e-30)
+                                ? diag.max_singular_value / diag.min_singular_value
+                                : std::numeric_limits<double>::infinity();
+    diag.singular_values.assign(sv.data(), sv.data() + sv.size());
+    return diag;
+}
+
 }  // namespace
 
 // Shoelace geometry utilities; these correspond to the polygon preprocessing
@@ -2923,6 +3333,18 @@ ConformingEdgeTransferResult MimeticInterpolator::project_target_fluxes_to_hdiv_
     return result;
 }
 
+TraceOperatorDiagnostic diagnose_trace_operator(moab::Core& mb,
+                                                const moab::EntityHandle polygon,
+                                                const int order,
+                                                const GeometryOptions& options)
+{
+    const LocalPolygon poly = local_polygon(mb, polygon, options);
+    const std::vector<LocalEdge> edges = local_edges(mb, poly);
+    const double scale = local_length_scale(poly);
+    const std::vector<GaussLegendrePoint> quadrature = gauss_legendre_rule(10);
+    return diagnose_trace_operator_impl(poly, edges, order, scale, quadrature, options);
+}
+
 PlanarMomentInterpolator::PlanarMomentInterpolator(moab::Core& moab_instance)
     : mb_(moab_instance)
 {
@@ -3020,6 +3442,61 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
     const std::vector<LocalEdge> edges = local_edges(mb_, poly);
     const std::vector<GaussLegendrePoint> quadrature = gauss_legendre_rule(options.quadrature_points);
     const double scale_length = local_length_scale(poly);
+
+    if (options.reconstruction_mode == ReconstructionMode::VemProjection) {
+        const int p = options.edge_moment_order;
+
+        std::vector<std::vector<double>> all_edge_moments(edges.size());
+        for (std::size_t ei = 0; ei < edges.size(); ++ei) {
+            all_edge_moments[ei] = source_edge_moments(polygon, ei);
+            if (static_cast<int>(all_edge_moments[ei].size()) != p + 1) {
+                throw std::runtime_error("Source edge moments do not match requested moment order");
+            }
+        }
+
+        std::vector<Eigen::Vector2d> cell_moments;
+        // VEM requires cell vector moments up to degree p:
+        //  - gradient internal DOFs (∇P_{p-1}) need moments up to degree p-2
+        //  - rotational DOFs (x⊥ P_{p-1}) need moments up to degree p
+        const int cell_moment_order = p;
+        const int num_cell_moments = vector_moment_basis_count(cell_moment_order);
+        cell_moments = source_cell_vector_moments(polygon);
+
+        const int max_I_degree = 2 * p + 4;
+        const Eigen::MatrixXd I_table = polygon_monomial_integral_table(poly.points, max_I_degree);
+
+        const VemDecomposedBasis vem_basis = build_vem_decomposed_basis(p);
+
+        const Eigen::VectorXd div_coeffs =
+            vem_reconstruct_divergence(vem_basis, poly, edges, p,
+                                       all_edge_moments, cell_moments,
+                                       I_table, max_I_degree);
+
+        const Eigen::MatrixXd M = vem_mass_matrix(vem_basis, I_table, max_I_degree);
+
+        const Eigen::VectorXd rhs =
+            vem_projection_rhs(vem_basis, poly, edges, p,
+                               all_edge_moments, cell_moments, div_coeffs,
+                               I_table, max_I_degree);
+
+        const Eigen::VectorXd decomposed_coeffs = M.ldlt().solve(rhs);
+
+        const Eigen::VectorXd cart_coeffs = vem_decomposed_to_cartesian(vem_basis, decomposed_coeffs, p);
+
+        MomentReconstruction reconstruction;
+        reconstruction.options = options;
+        reconstruction.options.cell_moment_order = cell_moment_order;
+        reconstruction.vector_polynomial_degree = p;
+        reconstruction.harmonic_degree = p + 1;
+        reconstruction.divergence_mode_count = vem_basis.gradient_count;
+        reconstruction.harmonic_mode_count = 0;
+        reconstruction.bubble_mode_count = vem_basis.rotational_count;
+        reconstruction.length_scale = 1.0;
+        reconstruction.coefficients.assign(cart_coeffs.data(), cart_coeffs.data() + cart_coeffs.size());
+
+        reconstructions_[polygon] = reconstruction;
+        return reconstruction;
+    }
 
     const bool use_surface_metric = options_.metric_weighted && options_.mode == GeometryMode::SphericalGnomonic;
 
