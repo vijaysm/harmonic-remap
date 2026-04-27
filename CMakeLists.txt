@@ -155,3 +155,11 @@ add_executable(piola_rt_test tests/piola_rt_test.cpp)
 target_link_libraries(piola_rt_test PRIVATE mimetic ${MOAB_LIBRARY})
 target_include_directories(piola_rt_test PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/tests ${MOAB_INCLUDE_DIRS})
 add_test(NAME piola_rt_test COMMAND piola_rt_test)
+
+add_executable(spherical_roundtrip_convergence_test tests/spherical_roundtrip_convergence_test.cpp)
+target_link_libraries(spherical_roundtrip_convergence_test PRIVATE mimetic ${MOAB_LIBRARY})
+target_include_directories(spherical_roundtrip_convergence_test PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/tests ${MOAB_INCLUDE_DIRS})
+
+add_executable(roundtrip_diagnosis tests/roundtrip_diagnosis.cpp)
+target_link_libraries(roundtrip_diagnosis PRIVATE mimetic ${MOAB_LIBRARY})
+target_include_directories(roundtrip_diagnosis PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/tests ${MOAB_INCLUDE_DIRS})
