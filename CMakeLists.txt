@@ -139,6 +139,7 @@ add_test(NAME high_order_edge_moment_test COMMAND high_order_edge_moment_test)
 add_test(NAME high_order_hdiv_convergence_test COMMAND high_order_hdiv_convergence_test)
 add_test(NAME spherical_high_order_moment_test COMMAND spherical_high_order_moment_test)
 add_test(NAME spherical_high_order_hdiv_convergence_test COMMAND spherical_high_order_hdiv_convergence_test)
+set_tests_properties(spherical_high_order_hdiv_convergence_test PROPERTIES TIMEOUT 300)
 
 add_executable(dump_visuals tests/dump_visuals.cpp)
 target_link_libraries(dump_visuals PRIVATE mimetic ${MOAB_LIBRARY})

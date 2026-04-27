@@ -1089,10 +1089,11 @@ Figure~\ref{fig:order-compare-voronoi} shows the same field on a
 \end{figure}
 
 Figure~\ref{fig:mercator-roundtrip} shows round-trip transfers through two
-intermediate mesh topologies.  A manufactured \(\nabla_S Y_2^0\) field on a
-\(180\times90\) lat/lon source is transferred to the intermediate mesh and
-back.  Top row: cubed-sphere (\(n=53\), 16\,854~cells).  Bottom row:
-icosahedral dual Voronoi (\(n=40\), 16\,002~cells).
+intermediate mesh topologies.\label{sec:roundtrip}  A manufactured
+\(\nabla_S Y_2^0\) field on a \(180\times90\) lat/lon source is transferred
+to the intermediate mesh and back.  Top row: cubed-sphere (\(n=53\),
+16\,854~cells).  Bottom row: icosahedral dual Voronoi (\(n=40\),
+16\,002~cells).
 
 \paragraph{Root cause: Piola-frame ill-conditioning.}
 The fundamental obstacle is that the full polynomial space \([\mathbb{P}_p]^2\),
