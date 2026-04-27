@@ -1682,22 +1682,26 @@ int main(int argc, char** argv)
                 seconds = time_seconds(start, stop);
             };
 
-            std::vector<double> ll_cs_p1, ll_vor_p1, ll_cs_p2, ll_vor_p2, ll_cs_p3, ll_vor_p3;
-            double cs_p1_time = 0.0, vor_p1_time = 0.0, cs_p2_time = 0.0;
-            double vor_p2_time = 0.0, cs_p3_time = 0.0, vor_p3_time = 0.0;
+            // p=0: Level-2 mimetic (flux-only, MimeticInterpolator).
+            // p=1: 2 Legendre moments per edge (edge_moment_order=1).
+            // p=2: 3 Legendre moments per edge (edge_moment_order=2).
+            std::vector<double> ll_cs_p0, ll_vor_p0, ll_cs_p1, ll_vor_p1, ll_cs_p2, ll_vor_p2;
+            double cs_p0_time = 0.0, vor_p0_time = 0.0;
+            double cs_p1_time = 0.0, vor_p1_time = 0.0;
+            double cs_p2_time = 0.0, vor_p2_time = 0.0;
 
+            run_case("cs_p0", "  CS p=0 round-trip (Level-2 mimetic)...",
+                     [&] { return roundtrip_p1(mb, ll, cs, spherical); }, ll_cs_p0, cs_p0_time);
+            run_case("vor_p0", "  Voronoi p=0 round-trip (Level-2 mimetic)...",
+                     [&] { return roundtrip_p1(mb, ll, vor, spherical); }, ll_vor_p0, vor_p0_time);
             run_case("cs_p1", "  CS p=1 round-trip...",
-                     [&] { return roundtrip_p1(mb, ll, cs, spherical); }, ll_cs_p1, cs_p1_time);
+                     [&] { return roundtrip_highorder(mb, ll, cs, spherical, 1); }, ll_cs_p1, cs_p1_time);
             run_case("vor_p1", "  Voronoi p=1 round-trip...",
-                     [&] { return roundtrip_p1(mb, ll, vor, spherical); }, ll_vor_p1, vor_p1_time);
+                     [&] { return roundtrip_highorder(mb, ll, vor, spherical, 1); }, ll_vor_p1, vor_p1_time);
             run_case("cs_p2", "  CS p=2 round-trip...",
                      [&] { return roundtrip_highorder(mb, ll, cs, spherical, 2); }, ll_cs_p2, cs_p2_time);
             run_case("vor_p2", "  Voronoi p=2 round-trip...",
                      [&] { return roundtrip_highorder(mb, ll, vor, spherical, 2); }, ll_vor_p2, vor_p2_time);
-            run_case("cs_p3", "  CS p=3 round-trip (with cell moments)...",
-                     [&] { return roundtrip_highorder(mb, ll, cs, spherical, 3); }, ll_cs_p3, cs_p3_time);
-            run_case("vor_p3", "  Voronoi p=3 round-trip...",
-                     [&] { return roundtrip_highorder(mb, ll, vor, spherical, 3); }, ll_vor_p3, vor_p3_time);
 
             if (mercator_case == "all" || mercator_case == "source") {
                 dump_mercator_mesh("vis_mercator_roundtrip_source_exact.txt", mb, ll, ll_exact);
@@ -1718,21 +1722,21 @@ int main(int argc, char** argv)
                 std::cout << "  " << tag << " max error: " << max_e << "\n";
             };
 
+            dump_errors("cs_p0", ll_cs_p0);
             dump_errors("cs_p1", ll_cs_p1);
             dump_errors("cs_p2", ll_cs_p2);
+            dump_errors("vor_p0", ll_vor_p0);
             dump_errors("vor_p1", ll_vor_p1);
             dump_errors("vor_p2", ll_vor_p2);
-            dump_errors("cs_p3", ll_cs_p3);
-            dump_errors("vor_p3", ll_vor_p3);
 
             if (mercator_case != "source") {
                 std::cout << "  timings (s):";
+                if (!ll_cs_p0.empty()) std::cout << " cs_p0=" << cs_p0_time;
+                if (!ll_vor_p0.empty()) std::cout << " vor_p0=" << vor_p0_time;
                 if (!ll_cs_p1.empty()) std::cout << " cs_p1=" << cs_p1_time;
                 if (!ll_vor_p1.empty()) std::cout << " vor_p1=" << vor_p1_time;
                 if (!ll_cs_p2.empty()) std::cout << " cs_p2=" << cs_p2_time;
                 if (!ll_vor_p2.empty()) std::cout << " vor_p2=" << vor_p2_time;
-                if (!ll_cs_p3.empty()) std::cout << " cs_p3=" << cs_p3_time;
-                if (!ll_vor_p3.empty()) std::cout << " vor_p3=" << vor_p3_time;
                 std::cout << "\n";
             }
         }

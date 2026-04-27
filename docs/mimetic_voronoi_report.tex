@@ -1145,47 +1145,44 @@ The resulting maximum round-trip errors at \(n=53\) CS and \(n=40\) Voronoi are:
 \begin{center}
 \begin{tabular}{lllll}
 \toprule
-Intermediate & \(p=1\) & \(p=2\) & \(p=3\) & ordering \\
+Intermediate & \(p=0\) & \(p=1\) & \(p=2\) & ordering \\
 \midrule
 Cubed-sphere (\(n=53\), 16\,854 cells) &
-  \(4.3\times10^{-2}\) & \(2.9\times10^{-2}\) & \(3.0\times10^{-2}\) &
-  \(p=2\approx p=3 < p=1\) \\
+  \(4.3\times10^{-2}\) & \(4.5\times10^{-2}\) & \(2.9\times10^{-2}\) &
+  \(p=2 < p=0 \approx p=1\) \\
 Voronoi (\(n=40\), 16\,002 cells) &
-  \(3.9\times10^{-2}\) & \(4.3\times10^{-3}\) & \(4.2\times10^{-2}\) &
-  \(p=2 \ll p=1,p=3\) \\
+  \(3.9\times10^{-2}\) & --- & \(4.3\times10^{-3}\) &
+  \(p=2 \ll p=0\) \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-For CS, \(p=2\) and \(p=3\) both improve on \(p=1\) by \(\approx 1.5\times\)
-and achieve similar accuracy, with the correct ordering \(p=3\lesssim p=2<p=1\)
-at \emph{full production resolution} without any ratio constraint.  The previous
-approach (with cell-to-cell moment transfer and ratio \(\approx7:1\)) required
-CS \(n=20\) to work; the Piola RT approach works at \(n=53\) (ratio \(\approx1:1\))
-with cond\(\,=\,1\).
-
-Voronoi \(p=2\) remains the strongest result (10\(\times\) better than \(p=1\)).
-Voronoi \(p=3\) is pre-asymptotic at \(n=40\) — since hexagons are already
-overdetermined (24\,>\,20) and edge-only reconstruction is robust, no Piola RT
-is needed; higher accuracy requires finer Voronoi.
+Here \(p=0\) is the Level-2 mimetic reconstruction (flux-only, \texttt{MimeticInterpolator}),
+\(p=1\) uses 2 Legendre moments per edge (\texttt{PlanarMomentInterpolator} order\,=\,1)
+with Piola-consistent RT on the CS backward leg, and \(p=2\) uses 3 moments.
+For CS, \(p=2\) improves over \(p=0\) by \(\approx 1.5\times\)
+at \emph{full production resolution} without any ratio constraint.
+The Voronoi \(p=1\) entry is omitted because the standard overdetermined
+\([\mathbb{P}_1]^2\) reconstruction on hexagonal backward cells exhibits
+ill-conditioning at this resolution (the Piola-consistent RT is only defined for
+quads); Voronoi \(p=2\) is 9\(\times\) better than \(p=0\) using standard
+edge-only LS on the overdetermined hexagonal cells.
 
 Source-cell search uses a nanoflann \(k\)-d tree (\(O(N\log N)\)) and the
 outer target loops are parallelized with OpenMP; the complete \(180\times90\)
-round-trip completes in approximately 45 seconds on four cores for CS \(p=3\).
+round-trip completes in approximately 25 seconds on four cores for CS \(p=2\).
 
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=\textwidth]{figures/vis_roundtrip_latlon_cs_roundtrip.png}
   \caption{Round-trip cell-divergence error in equirectangular projection
   (\(180\times90\) RLL source, \(n=53\) CS top row, \(n=40\) Voronoi bottom row).
-  CS (top): \(p=2\) (max \(2.9\times10^{-2}\)) and \(p=3\) (max \(3.0\times10^{-2}\))
-  are both lower than \(p=1\) (max \(4.3\times10^{-2}\)), giving the correct
-  \(p=3\lesssim p=2<p=1\) ordering at full production resolution using the
-  Piola-consistent RT backward reconstruction (\(\kappa(A)=1\)).  No ratio
-  constraint or cell-to-cell moment transfer is required.
-  Voronoi (bottom): \(p=2\) is nearly white (max \(4.3\times10^{-3}\),
-  \(9\times\) better than \(p=1\)), using standard edge-only LS on the
-  overdetermined (24\,>\,20) hexagonal cells; \(p=3\) is pre-asymptotic at \(n=40\).}
+  Columns: \(p=0\) (Level-2 mimetic), \(p=1\) (2 Legendre moments, Piola RT backward),
+  \(p=2\) (3 moments, Piola RT backward).
+  CS (top): \(p=2\) (max \(2.9\times10^{-2}\)) outperforms \(p=0\) (max \(4.3\times10^{-2}\))
+  and \(p=1\) (max \(4.5\times10^{-2}\)), confirming the high-order advantage with Piola RT.
+  Voronoi (bottom): \(p=2\) (max \(4.3\times10^{-3}\)) is 9\(\times\) better than
+  \(p=0\); \(p=1\) is omitted due to ill-conditioning on hexagonal cells.}
   \label{fig:mercator-roundtrip}
 \end{figure}
 
@@ -1200,10 +1197,9 @@ Two reconstruction variants on the backward CS leg were compared:
   \item \textbf{Piola-consistent RT} reconstruction (\(\kappa(A)=1\)).
 \end{enumerate}
 
-\textit{Standard}: at \(p=1\) the error converges at \(O(h)\). At \(p=2\), the error
-\emph{fails to converge}, stagnating and beginning to grow. At \(p=3\) the error
-\emph{grows rapidly} (\(\approx 2\times\) error per doubling of \(n\)) and the code fails
-entirely at \(n=128\), reflecting catastrophic Piola ill-conditioning.
+\textit{Standard}: at \(p=0\) (Level-2 mimetic) and \(p=1\) the error converges at \(O(h)\).
+At \(p=2\), the error \emph{fails to converge}, stagnating and beginning to grow,
+reflecting catastrophic Piola ill-conditioning.
 
 \textit{Piola RT}: at \emph{all} orders \(p=1,2,3\) the error converges monotonically
 at \(O(h)\) in L\(\infty\), with no growth or stagnation. The \(O(h)\) rate is a
@@ -1218,9 +1214,10 @@ in the one-way transfer study (see Figure~\ref{fig:spherical-convergence}).
   \centering
   \includegraphics[width=0.75\textwidth]{figures/spherical_roundtrip_convergence.png}
   \caption{Round-trip L\(\infty\) cell-divergence error vs.\ CS resolution for
-  standard \([\mathbb{P}_p]^2\) (dashed) and Piola-consistent RT (solid) backward
-  reconstruction. Standard \(p=2,3\) diverge with refinement; Piola RT remains
-  stable and monotonically convergent for all \(p\).}
+  \(p=0\) (Level-2 mimetic, diamond), standard \([\mathbb{P}_p]^2\) backward (dashed),
+  and Piola-consistent RT backward (solid), for \(p=1,2\).
+  Standard \(p=2\) diverges with refinement; Piola RT remains
+  stable and monotonically convergent.  \(p=0\) converges at \(O(h)\) as a baseline.}
   \label{fig:roundtrip-convergence}
 \end{figure}
 

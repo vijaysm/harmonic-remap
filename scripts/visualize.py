@@ -303,7 +303,7 @@ def render_mercator_roundtrip(prefix: str, input_dir: Path, output_dir: Path):
     src_file = input_dir / f"{prefix}_source_exact.txt"
     files = {}
     for mesh in ["cs", "vor"]:
-        for order in ["p1", "p2", "p3"]:
+        for order in ["p0", "p1", "p2"]:
             tag = f"{mesh}_{order}"
             f = input_dir / f"{prefix}_{tag}.txt"
             ef = input_dir / f"{prefix}_{tag}_error.txt"
@@ -333,13 +333,20 @@ def render_mercator_roundtrip(prefix: str, input_dir: Path, output_dir: Path):
     all_field_vals = [src_vals] + [v for _, v, _ in data.values()]
     vmin = min(v.min() for v in all_field_vals)
     vmax = max(v.max() for v in all_field_vals)
-    err_max = max(np.abs(e).max() for _, _, e in data.values())
+    # Use 95th percentile to clip colorscale so outliers (e.g. vor_p1 failure)
+    # don't compress all well-behaved panels into near-zero on the colorbar.
+    all_err_abs = np.concatenate([np.abs(e) for _, _, e in data.values()])
+    err_max = float(np.percentile(all_err_abs, 95)) * 3
     err_max = max(err_max, 1e-16)
 
     # Build rows: [(mesh_label, [(order_label, key), ...])]
+    # Map tag like "p0" -> display label "p=0"
+    def order_label(tag):
+        return f"p={tag[1:]}"
+
     row_specs = []
     for mesh_label, mesh_key in [("CS", "cs"), ("Voronoi", "vor")]:
-        orders = [(ol, f"{mesh_key}_{ol}") for ol in ["p1", "p2", "p3"]
+        orders = [(order_label(ol), f"{mesh_key}_{ol}") for ol in ["p0", "p1", "p2"]
                   if f"{mesh_key}_{ol}" in data]
         if orders:
             row_specs.append((mesh_label, orders))
@@ -374,7 +381,7 @@ def render_mercator_roundtrip(prefix: str, input_dir: Path, output_dir: Path):
             _, _, err = data[key]
             error_mappable = fill_panel(axes[row, col + 1], data[key][0], err, "RdBu_r",
                 (-err_max, err_max),
-                f"{mesh_label} ${olabel}$ Error (max: {np.abs(err).max():.2e})")
+                f"{mesh_label} ${olabel.replace('=', r'=')}$ Error (max: {np.abs(err).max():.2e})")
         for col in range(len(orders) + 1, ncols):
             axes[row, col].axis("off")
 

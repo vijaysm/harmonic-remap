@@ -272,6 +272,67 @@ roundtrip(moab::Core& mb_shared,
     return result;
 }
 
+// ── p=0 round-trip: Level-2 mimetic (MimeticInterpolator, flux-only) ─────────
+static std::vector<double>
+roundtrip_p0(moab::Core& mb_shared,
+             const std::vector<moab::EntityHandle>& src_cells,
+             const std::vector<moab::EntityHandle>& inter_cells,
+             const GeometryOptions& spherical)
+{
+    moab::Core mb_fwd;
+    const auto src_fwd   = duplicate_mesh(mb_shared, src_cells,   mb_fwd);
+    const auto inter_fwd = duplicate_mesh(mb_shared, inter_cells, mb_fwd);
+
+    MimeticInterpolator fwd(mb_fwd);
+    fwd.set_geometry_options(spherical);
+    for (const moab::EntityHandle cell : src_fwd) {
+        const LocalPolygon poly = local_polygon(mb_fwd, cell, spherical);
+        const std::vector<LocalEdge> edges = local_edges(mb_fwd, poly);
+        const GnomonicFrame frame{poly.n, poly.e_x, poly.e_y, 1.0};
+        for (std::size_t i = 0; i < edges.size(); ++i) {
+            const double flux = integrate_edge_gauss16(edges[i].a, edges[i].b,
+                [&](const Eigen::Vector2d& p) {
+                    const Eigen::Vector2d xi = p + poly.centroid;
+                    const Eigen::Vector3d pt = inverse_gnomonic(xi, frame).normalized();
+                    return pullback_contravariant_piola(
+                        spherical_harmonic_gradient(pt), xi, frame
+                    ).dot(edges[i].outward_normal);
+                });
+            fwd.set_source_edge_flux(cell, i, flux);
+        }
+        fwd.reconstruct_source_polygon(cell);
+    }
+    const EdgeTransferResult fwd_xfer =
+        fwd.transfer_source_to_target_edges(src_fwd, inter_fwd);
+
+    moab::Core mb_bwd;
+    const auto inter_bwd = duplicate_mesh(mb_shared, inter_cells, mb_bwd);
+    const auto src_bwd   = duplicate_mesh(mb_shared, src_cells,   mb_bwd);
+
+    MimeticInterpolator bwd(mb_bwd);
+    bwd.set_geometry_options(spherical);
+    std::size_t dof = 0;
+    for (const moab::EntityHandle cell : inter_bwd) {
+        const LocalPolygon poly = local_polygon(mb_bwd, cell, spherical);
+        for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++dof)
+            bwd.set_source_edge_flux(cell, i, fwd_xfer.target_fluxes[dof]);
+        bwd.reconstruct_source_polygon(cell);
+    }
+    const EdgeTransferResult bwd_xfer =
+        bwd.transfer_source_to_target_edges(inter_bwd, src_bwd);
+
+    std::vector<double> result;
+    dof = 0;
+    for (const moab::EntityHandle cell : src_bwd) {
+        const LocalPolygon poly = local_polygon(mb_bwd, cell, spherical);
+        double flux = 0;
+        for (std::size_t e = 0; e < poly.vertices.size(); ++e, ++dof)
+            flux += bwd_xfer.target_fluxes[dof];
+        result.push_back(flux / poly.area);
+    }
+    return result;
+}
+
 static double maxerr(const std::vector<double>& a, const std::vector<double>& b) {
     double e = 0;
     for (std::size_t i = 0; i < a.size(); ++i) e = std::max(e, std::abs(a[i]-b[i]));
@@ -304,12 +365,15 @@ int main(int argc, char** argv)
     std::cout << "  at fine n for p≥2; Piola RT remains stable at O(h^2).\n\n";
 
     std::ofstream csv(csv_path);
+    // p=0: MimeticInterpolator (flux-only, same for std and RT)
+    // p=1: PlanarMomentInterpolator order=1 (2 Legendre moments per edge)
+    // p=2: PlanarMomentInterpolator order=2 (3 Legendre moments per edge)
     csv << "n_cs,n_rll,n_cs_cells,"
-           "std_p1,std_p2,std_p3,"
-           "rt_p1,rt_p2,rt_p3\n";
+           "std_p0,std_p1,std_p2,"
+           "rt_p0,rt_p1,rt_p2\n";
     csv << std::scientific << std::setprecision(6);
 
-    // Per-p previous errors for rate computation (index 0=p1, 1=p2, 2=p3)
+    // Per-p previous errors for rate computation (index 0=p0, 1=p1, 2=p2)
     std::vector<double> prev_std(3, 0.0), prev_rt(3, 0.0);
 
     for (const int n_cs : cs_levels) {
@@ -325,60 +389,78 @@ int main(int argc, char** argv)
 
         std::vector<double> err_std(3), err_rt(3);
 
+        // pi=0 → p=0 (MimeticInterpolator, same for std and RT)
+        // pi=1 → p=1 (PlanarMomentInterpolator order=1)
+        // pi=2 → p=2 (PlanarMomentInterpolator order=2)
         for (int pi = 0; pi < 3; ++pi) {
-            const int p = pi + 1;
+            const int p_label = pi;  // displayed p value
+
             const auto t0 = std::chrono::steady_clock::now();
-            // Standard [P_p]^2 backward reconstruction on CS, standard forward
-            double t1_val = 0;
-            try {
-                const auto rt_std = roundtrip(mb, ll, cs, spherical, p, false, false);
-                const auto t1 = std::chrono::steady_clock::now();
-                t1_val = std::chrono::duration<double>(t1 - t0).count();
-                err_std[pi] = maxerr(rt_std, exact);
-            } catch (const std::exception& e) {
-                const auto t1 = std::chrono::steady_clock::now();
-                t1_val = std::chrono::duration<double>(t1 - t0).count();
-                err_std[pi] = -1.0;  // sentinel for failure
-                std::cout << "    [std p=" << p << " FAILED: " << e.what() << "]\n";
-            }
-            const auto t1 = std::chrono::steady_clock::now();
-            // Piola RT on backward CS leg only; standard forward (uses cell moments)
-            double t2_val = 0;
-            try {
-                const auto rt_piola = roundtrip(mb, ll, cs, spherical, p, false, true);
-                const auto t2 = std::chrono::steady_clock::now();
-                t2_val = std::chrono::duration<double>(t2 - t1).count();
-                err_rt[pi] = maxerr(rt_piola, exact);
-            } catch (const std::exception& e) {
-                const auto t2 = std::chrono::steady_clock::now();
-                t2_val = std::chrono::duration<double>(t2 - t1).count();
-                err_rt[pi] = -1.0;
-                std::cout << "    [RT p=" << p << " FAILED: " << e.what() << "]\n";
-            }
-            const auto t2 = std::chrono::steady_clock::now();
-            (void)t2;
-            const double dt_std   = std::chrono::duration<double>(t1 - t0).count();
-            const double dt_piola = std::chrono::duration<double>(t2 - t1).count();
+            double t1_val = 0, t2_val = 0;
 
-            const double rate_std   = (prev_std[pi]  > 0 && err_std[pi]  > 0) ? std::log2(prev_std[pi]  / err_std[pi])  : 0.0;
-            const double rate_piola = (prev_rt[pi]   > 0 && err_rt[pi]   > 0) ? std::log2(prev_rt[pi]   / err_rt[pi])   : 0.0;
+            if (pi == 0) {
+                // p=0: MimeticInterpolator — same for both std and RT variants
+                try {
+                    const auto rt0 = roundtrip_p0(mb, ll, cs, spherical);
+                    const auto t1 = std::chrono::steady_clock::now();
+                    t1_val = std::chrono::duration<double>(t1 - t0).count();
+                    err_std[pi] = maxerr(rt0, exact);
+                } catch (const std::exception& e) {
+                    const auto t1 = std::chrono::steady_clock::now();
+                    t1_val = std::chrono::duration<double>(t1 - t0).count();
+                    err_std[pi] = -1.0;
+                    std::cout << "    [p=0 FAILED: " << e.what() << "]\n";
+                }
+                err_rt[pi] = err_std[pi];  // identical: no Piola RT for p=0
+                t2_val = 0.0;
+            } else {
+                const int p = pi;  // order=1 or order=2
+                try {
+                    const auto rt_std = roundtrip(mb, ll, cs, spherical, p, false, false);
+                    const auto t1 = std::chrono::steady_clock::now();
+                    t1_val = std::chrono::duration<double>(t1 - t0).count();
+                    err_std[pi] = maxerr(rt_std, exact);
+                } catch (const std::exception& e) {
+                    const auto t1 = std::chrono::steady_clock::now();
+                    t1_val = std::chrono::duration<double>(t1 - t0).count();
+                    err_std[pi] = -1.0;
+                    std::cout << "    [std p=" << p << " FAILED: " << e.what() << "]\n";
+                }
+                const auto t1 = std::chrono::steady_clock::now();
+                try {
+                    const auto rt_piola = roundtrip(mb, ll, cs, spherical, p, false, true);
+                    const auto t2 = std::chrono::steady_clock::now();
+                    t2_val = std::chrono::duration<double>(t2 - t1).count();
+                    err_rt[pi] = maxerr(rt_piola, exact);
+                } catch (const std::exception& e) {
+                    const auto t2 = std::chrono::steady_clock::now();
+                    t2_val = std::chrono::duration<double>(t2 - t1).count();
+                    err_rt[pi] = -1.0;
+                    std::cout << "    [RT p=" << p << " FAILED: " << e.what() << "]\n";
+                }
+            }
 
-            std::cout << "  p=" << p << "  std=";
+            const double rate_std   = (prev_std[pi] > 0 && err_std[pi] > 0) ? std::log2(prev_std[pi] / err_std[pi]) : 0.0;
+            const double rate_piola = (prev_rt[pi]  > 0 && err_rt[pi]  > 0) ? std::log2(prev_rt[pi]  / err_rt[pi])  : 0.0;
+
+            std::cout << "  p=" << p_label << "  std=";
             if (err_std[pi] < 0) std::cout << "FAIL";
             else std::cout << err_std[pi];
             if (prev_std[pi] > 0 && err_std[pi] > 0)
                 std::cout << "(r=" << std::fixed << std::setprecision(1) << rate_std << ")";
-            std::cout << "  RT=" << std::scientific << std::setprecision(4);
-            if (err_rt[pi] < 0) std::cout << "FAIL";
-            else std::cout << err_rt[pi];
-            if (prev_rt[pi] > 0 && err_rt[pi] > 0)
-                std::cout << "(r=" << std::fixed << std::setprecision(1) << rate_piola << ")";
+            if (pi > 0) {
+                std::cout << "  RT=" << std::scientific << std::setprecision(4);
+                if (err_rt[pi] < 0) std::cout << "FAIL";
+                else std::cout << err_rt[pi];
+                if (prev_rt[pi] > 0 && err_rt[pi] > 0)
+                    std::cout << "(r=" << std::fixed << std::setprecision(1) << rate_piola << ")";
+            }
             std::cout << "  [" << std::fixed << std::setprecision(1)
                       << t1_val << "s/" << t2_val << "s]\n"
                       << std::scientific << std::setprecision(4);
 
-            prev_std[pi] = err_std[pi];
-            prev_rt[pi]  = err_rt[pi];
+            prev_std[pi] = (err_std[pi] > 0) ? err_std[pi] : 0.0;
+            prev_rt[pi]  = (err_rt[pi]  > 0) ? err_rt[pi]  : 0.0;
         }
         std::cout << "\n";
 
@@ -389,7 +471,7 @@ int main(int argc, char** argv)
     }
 
     std::cout << "Data written to: " << csv_path << "\n";
-    std::cout << "Key result: standard [P_p]^2 diverges at p=3 for fine n;\n";
+    std::cout << "Key result: standard [P_p]^2 diverges at p=1,2 for fine n;\n";
     std::cout << "             Piola RT remains stable and monotonically decreasing.\n";
     return 0;
 }

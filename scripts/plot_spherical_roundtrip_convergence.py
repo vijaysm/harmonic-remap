@@ -46,12 +46,20 @@ def main():
 
     fig, ax = plt.subplots(figsize=(7, 5))
 
-    colors = {"p1": "#1f77b4", "p2": "#ff7f0e", "p3": "#2ca02c"}
+    colors = {"p0": "#9467bd", "p1": "#1f77b4", "p2": "#ff7f0e"}
     ls_std  = "--"
     ls_rt   = "-"
 
-    # Standard (dashed)
-    for p in [1, 2, 3]:
+    # p=0: MimeticInterpolator (same std and RT — only plot once)
+    y0 = d["std_p0"]
+    mask0 = np.isfinite(y0) & (y0 > 0)
+    if mask0.sum() >= 1:
+        ax.semilogy(h[mask0], y0[mask0],
+                    color=colors["p0"], ls="-", marker="D", ms=6,
+                    label="p=0 (Level-2 mimetic)")
+
+    # Standard (dashed) for p=1,2
+    for p in [1, 2]:
         key = f"std_p{p}"
         y = d[key]
         mask = np.isfinite(y) & (y > 0)
@@ -60,8 +68,8 @@ def main():
                         color=colors[f"p{p}"], ls=ls_std, marker="s", ms=6,
                         label=f"Standard p={p}")
 
-    # Piola RT (solid)
-    for p in [1, 2, 3]:
+    # Piola RT (solid) for p=1,2
+    for p in [1, 2]:
         key = f"rt_p{p}"
         y = d[key]
         mask = np.isfinite(y) & (y > 0)
@@ -83,15 +91,14 @@ def main():
     ax.set_xscale("log")
     ax.grid(True, which="both", alpha=0.3)
 
-    # Annotation
-    ax.annotate("Standard p=2,3\ndivergence", xy=(h[2], d["std_p3"][2]),
-                xytext=(h[2]*1.5, d["std_p3"][2]*3),
-                arrowprops=dict(arrowstyle="->", color="gray"),
-                fontsize=8, color="gray")
-    ax.annotate("Piola RT: stable\nfor all p", xy=(h[2], d["rt_p2"][2]),
-                xytext=(h[2]*0.5, d["rt_p2"][2]*0.2),
-                arrowprops=dict(arrowstyle="->", color="black"),
-                fontsize=8, color="black")
+    # Annotation: highlight divergence
+    std_p2 = d["std_p2"]
+    valid = np.isfinite(std_p2) & (std_p2 > 0)
+    if valid.sum() >= 2:
+        ax.annotate("Standard p=1,2\ndivergence", xy=(h[valid][-1], std_p2[valid][-1]),
+                    xytext=(h[valid][-1]*1.8, std_p2[valid][-1]*2),
+                    arrowprops=dict(arrowstyle="->", color="gray"),
+                    fontsize=8, color="gray")
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
