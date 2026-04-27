@@ -1041,50 +1041,39 @@ std::vector<double> roundtrip_highorder(moab::Core& mb_shared,
     mimetic::PlanarMomentInterpolator bwd(mb_bwd);
     bwd.set_geometry_options(bwd_geo);
 
-    // Set edge moments from forward transfer
-    std::size_t dof = 0;
-    for (const moab::EntityHandle cell : inter_bwd) {
-        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb_bwd, cell, spherical);
-        for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++dof)
-            bwd.set_source_edge_moments(cell, i, fwd_xfer.target_moments[dof]);
-    }
-
-    // Transfer cell vector moments from source to intermediate using
-    // the forward reconstruction (provides interior constraints for
-    // cells with insufficient edge data, e.g. 4-sided CS quads at p=3).
-    const int cmo = std::max(1, opts.edge_moment_order - 1);
-    const auto cell_moments =
-        fwd.transfer_source_to_target_cell_moments(src_fwd, inter_fwd, cmo);
-
-    // Adaptive per-cell reconstruction:
-    // - Cells strictly overdetermined by edge moments alone: ignore cell moments.
-    // - Cells exactly or under-determined: use transferred cell moments as soft constraints.
+    // Backward reconstruction using Piola-consistent RT for quad cells.
+    // For 4-sided cells: uses the RT basis with cond(A)=1 (no Piola ill-conditioning).
+    // For other topologies (Voronoi, triangles): falls back to standard [P_p]^2 LS.
     const int p = opts.edge_moment_order;
-    const int basis_dim = (p + 1) * (p + 2);  // dim([P_p]^2)
+    const int basis_dim = (p + 1) * (p + 2);
+    const int cmo = std::max(1, p - 1);
     int n_cm = 0;
     for (int td = 0; td <= cmo; ++td) n_cm += td + 1;
-    for (std::size_t ci = 0; ci < inter_fwd.size(); ++ci) {
+
+    std::size_t dof = 0;
+    for (std::size_t ci = 0; ci < inter_bwd.size(); ++ci) {
         const mimetic::LocalPolygon poly = mimetic::local_polygon(mb_bwd, inter_bwd[ci], bwd_geo);
         const int n_edges = static_cast<int>(poly.vertices.size());
-        const int edge_constraints = n_edges * (p + 1);
 
-        mimetic::MomentMethodOptions bwd_opts = opts;
-        if (edge_constraints > basis_dim) {
-            // Strictly overdetermined: edge moments alone are robust; skip cell moments.
-            // Exactly-determined cells (edge_constraints == basis_dim) still benefit from
-            // transferred cell moments as regularizing soft constraints, so we keep
-            // cell_weight > 0 for those.
-            bwd_opts.cell_weight = 0.0;
-        }
+        // Collect edge moments for this cell.
+        for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++dof)
+            bwd.set_source_edge_moments(inter_bwd[ci], i, fwd_xfer.target_moments[dof]);
 
-        const auto it = cell_moments.find(inter_fwd[ci]);
-        if (it != cell_moments.end()) {
-            bwd.set_source_cell_vector_moments(inter_bwd[ci], it->second);
+        if (n_edges == 4) {
+            // Piola RT: cond(A)=1 → no amplification of forward transfer errors.
+            // Works for any p, exactly determined (4(p+1) DOFs for 4(p+1)-dim RT space).
+            bwd.reconstruct_source_polygon_piola_rt(inter_bwd[ci], p);
         } else {
+            // Non-quad (Voronoi, triangles): use edge-only [P_p]^2 reconstruction.
+            // cell_weight=0 always: avoids corrupting exactly-determined cells
+            // (e.g. pentagon Voronoi at p=3: 20=20) with zero-valued soft constraints.
+            // Overdetermined cells (6-sided Voronoi at p=3: 24>20) are robust edge-only.
+            mimetic::MomentMethodOptions bwd_opts = opts;
+            bwd_opts.cell_weight = 0.0;
             bwd.set_source_cell_vector_moments(inter_bwd[ci],
                 std::vector<Eigen::Vector2d>(static_cast<std::size_t>(n_cm), Eigen::Vector2d::Zero()));
+            bwd.reconstruct_source_polygon(inter_bwd[ci], bwd_opts);
         }
-        bwd.reconstruct_source_polygon(inter_bwd[ci], bwd_opts);
     }
 
     // Transfer back: intermediate → source
@@ -1663,15 +1652,11 @@ int main(int argc, char** argv)
 
             moab::Core mb;
             const auto ll = generate_latlon_grid(mb, 180, 90);
-            // CS n=30: 5400 cells (ratio ~3:1 with RLL 16200) → optimal for p=3 cell-to-cell transfer
-            // CS n=53: 16854 cells (ratio ~1:1 with RLL 16200) → too equal, cell transfer fails at p=3
-            // CS n=20: 2400 cells (ratio ~6.75:1 with RLL 16200) → good for p=3 cell-to-cell transfer.
-            // Constraint: need RLL/CS ratio >= 3 for cell-to-cell transfer to be accurate;
-            // at n=20 this gives ratio=6.75 and proper p=3 < p=2 < p=1 ordering.
-            const auto cs = mimetic::test_sphere::generate_cubed_sphere(mb, 20);
-            // Voronoi n=20: 4002 cells (ratio ~4:1 with RLL 16200) → p=3 < p=2 ordering.
-            // Voronoi n=40: 16002 cells (~1:1 with RLL 16200) → pre-asymptotic, p=3 ≈ p=1.
-            const auto vor = mimetic::test_sphere::generate_icosahedral_dual(mb, 20);
+            // Piola RT backward eliminates the ratio constraint: use production resolutions.
+            // CS n=53: cond(A_RT)=1 regardless of RLL/CS ratio.
+            // Voronoi n=40: overdetermined at p=3 (24>20), edge-only is robust.
+            const auto cs  = mimetic::test_sphere::generate_cubed_sphere(mb, 53);
+            const auto vor = mimetic::test_sphere::generate_icosahedral_dual(mb, 40);
 
             std::cout << "  lat/lon: " << ll.size() << ", CS: " << cs.size()
                       << ", Voronoi: " << vor.size() << " cells\n";
