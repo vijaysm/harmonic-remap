@@ -2923,6 +2923,234 @@ ConformingEdgeTransferResult MimeticInterpolator::project_target_fluxes_to_hdiv_
     return result;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Piola-Consistent Raviart-Thomas Reconstruction
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Reference element: [-1,1]^2 with vertices (in physical CCW order mapped to):
+//   v[0] = bottom-left  → (-1,-1)
+//   v[1] = bottom-right → (+1,-1)
+//   v[2] = top-right    → (+1,+1)
+//   v[3] = top-left     → (-1,+1)
+//
+// Edges on reference (edge_idx → reference coords):
+//   0: left   (ξ=-1), η ∈ [-1,+1], outward normal = (-1, 0)
+//   1: right  (ξ=+1), η ∈ [-1,+1], outward normal = (+1, 0)
+//   2: bottom (η=-1), ξ ∈ [-1,+1], outward normal = ( 0,-1)
+//   3: top    (η=+1), ξ ∈ [-1,+1], outward normal = ( 0,+1)
+
+static double legendre_val(int k, double t)
+{
+    if (k == 0) return 1.0;
+    if (k == 1) return t;
+    if (k == 2) return 0.5 * (3.0 * t * t - 1.0);
+    return 0.5 * (5.0 * t * t * t - 3.0 * t);
+}
+
+/// RT_p dual basis on reference square [-1,1]^2.
+/// Convention: edge_idx ∈ {0=left,1=right,2=bottom,3=top}, degree ∈ {0..p}.
+/// Each function has ∫_edge Φ·n L_degree(t) dt = 1 on its designated edge,
+/// and zero on all other edges.  The constraint matrix is identity.
+Eigen::Vector2d rt_reference_basis_value(int edge_idx, int degree, double xi, double eta)
+{
+    // Normalization: L_k has ∫_{-1}^{1} L_k² dt = 2/(2k+1), so we need
+    // scale = (2k+1)/2 to get unit moment.
+    const double scale = (2.0 * degree + 1.0) / 2.0;
+    const double Lk_param = legendre_val(degree, (edge_idx <= 1) ? eta : xi);
+
+    // Shape functions: ramp from 0 at opposite edge to 1 at designated edge.
+    // Left  (ξ=-1): ramp = (1-ξ)/2,  times (-1) to flip normal sign
+    // Right (ξ=+1): ramp = (1+ξ)/2
+    // Bottom(η=-1): ramp = (1-η)/2,  times (-1)
+    // Top   (η=+1): ramp = (1+η)/2
+    switch (edge_idx) {
+        case 0: return Eigen::Vector2d(-scale * Lk_param * (1.0 - xi)  / 2.0, 0.0);
+        case 1: return Eigen::Vector2d( scale * Lk_param * (1.0 + xi)  / 2.0, 0.0);
+        case 2: return Eigen::Vector2d(0.0, -scale * Lk_param * (1.0 - eta) / 2.0);
+        case 3: return Eigen::Vector2d(0.0,  scale * Lk_param * (1.0 + eta) / 2.0);
+        default: return Eigen::Vector2d::Zero();
+    }
+}
+
+// ── BilinearReferenceMap ────────────────────────────────────────────────────
+
+Eigen::Vector2d BilinearReferenceMap::forward(double xi, double eta) const
+{
+    // Standard bilinear shape functions N_j(ξ,η):
+    //   N0 = (1-ξ)(1-η)/4,  N1 = (1+ξ)(1-η)/4
+    //   N2 = (1+ξ)(1+η)/4,  N3 = (1-ξ)(1+η)/4
+    return 0.25 * ((1.0 - xi) * (1.0 - eta) * v[0]
+                 + (1.0 + xi) * (1.0 - eta) * v[1]
+                 + (1.0 + xi) * (1.0 + eta) * v[2]
+                 + (1.0 - xi) * (1.0 + eta) * v[3]);
+}
+
+Eigen::Matrix2d BilinearReferenceMap::jacobian(double xi, double eta) const
+{
+    // ∂F/∂ξ and ∂F/∂η
+    const Eigen::Vector2d dFdxi  = 0.25 * (-(1.0 - eta) * v[0]
+                                           + (1.0 - eta) * v[1]
+                                           + (1.0 + eta) * v[2]
+                                           - (1.0 + eta) * v[3]);
+    const Eigen::Vector2d dFdeta = 0.25 * (-(1.0 - xi)  * v[0]
+                                           - (1.0 + xi)  * v[1]
+                                           + (1.0 + xi)  * v[2]
+                                           + (1.0 - xi)  * v[3]);
+    Eigen::Matrix2d J;
+    J.col(0) = dFdxi;
+    J.col(1) = dFdeta;
+    return J;
+}
+
+Eigen::Vector2d BilinearReferenceMap::inverse(const Eigen::Vector2d& x) const
+{
+    // Newton iteration: solve F(ξ,η) = x starting from (0,0).
+    Eigen::Vector2d ref(0.0, 0.0);
+    for (int iter = 0; iter < 8; ++iter) {
+        const Eigen::Vector2d residual = forward(ref.x(), ref.y()) - x;
+        if (residual.norm() < 1.0e-14) break;
+        const Eigen::Matrix2d J = jacobian(ref.x(), ref.y());
+        ref -= J.inverse() * residual;
+        ref = ref.cwiseMax(-2.0).cwiseMin(2.0);  // clamp to avoid divergence
+    }
+    return ref;
+}
+
+// ── PiolaRTReconstruction ───────────────────────────────────────────────────
+
+Eigen::Vector2d PiolaRTReconstruction::velocity(const Eigen::Vector2d& x_local) const
+{
+    // x_local is centroid-relative; convert to absolute gnomonic chart to
+    // compute F^{-1}, then evaluate Piola-transformed RT basis.
+    // For the bilinear map, ref_map.v[] are also centroid-relative.
+    const Eigen::Vector2d ref = ref_map.inverse(x_local);
+    const Eigen::Matrix2d J   = ref_map.jacobian(ref.x(), ref.y());
+    const double det_J = J(0, 0) * J(1, 1) - J(0, 1) * J(1, 0);
+    if (std::abs(det_J) < 1.0e-14) return Eigen::Vector2d::Zero();
+
+    // u_phys = (1/det J) J u_ref,  u_ref = Σ_{i,k} m_{i,k} Φ^ref_{i,k}(ξ,η)
+    const int n_per_edge = p + 1;
+    Eigen::Vector2d u_ref = Eigen::Vector2d::Zero();
+    for (int ei = 0; ei < 4; ++ei) {
+        for (int k = 0; k < n_per_edge; ++k) {
+            const double m = edge_moments[static_cast<std::size_t>(ei * n_per_edge + k)];
+            u_ref += m * rt_reference_basis_value(ei, k, ref.x(), ref.y());
+        }
+    }
+    return (J * u_ref) / det_J;
+}
+
+// ── build_piola_rt_reconstruction ──────────────────────────────────────────
+//
+// The physical moment matrix A is (4(p+1)) × (4(p+1)):
+//   A[(test_ei, l), (src_ei, k)] = ∫_{e_test} Φ^{phys}_{src_ei,k} · n_test L_l(t) ds
+// where t is the linear Gauss parameter along the physical edge.
+//
+// We compute A and solve A c = m_phys for the RT coefficients c.
+// cond(A_RT) << cond(A_{[P_p]^2}) because the RT basis is designed to have
+// near-unit moments on its designated edge and near-zero elsewhere.
+//
+// Parametrization for Legendre moments: we use the linear Gauss parameter
+// t ∈ [-1,+1] along each edge (equivalent to arc-length for straight edges
+// in the gnomonic chart).  For high-resolution cells (small h), the difference
+// from spherical arc-length is O(h^2) — much smaller than the gain from
+// eliminating the O(h^{p+1} × κ) Piola ill-conditioning error.
+
+PiolaRTReconstruction build_piola_rt_reconstruction(
+    const LocalPolygon& poly,
+    const std::vector<LocalEdge>& edges,
+    const std::map<std::size_t, std::vector<double>>& edge_moment_map,
+    int order)
+{
+    if (edges.size() != 4) {
+        throw std::runtime_error(
+            "build_piola_rt_reconstruction: only quad (4-edge) cells supported");
+    }
+
+    PiolaRTReconstruction rec;
+    rec.p = order;
+    rec.centroid = poly.centroid;
+
+    // Vertex mapping: ref(-1,-1)=edges[0].a, ref(+1,-1)=edges[1].a,
+    // ref(+1,+1)=edges[2].a, ref(-1,+1)=edges[3].a (CCW ordering).
+    rec.ref_map.v[0] = edges[0].a;
+    rec.ref_map.v[1] = edges[1].a;
+    rec.ref_map.v[2] = edges[2].a;
+    rec.ref_map.v[3] = edges[3].a;
+
+    const int n = 4 * (order + 1);  // dimension of the RT space on this quad
+
+    // ── Step 1: Collect m_phys (transferred physical edge Legendre moments) ──
+    Eigen::VectorXd m_phys = Eigen::VectorXd::Zero(n);
+    for (int phys_ei = 0; phys_ei < 4; ++phys_ei) {
+        const auto it = edge_moment_map.find(static_cast<std::size_t>(phys_ei));
+        if (it == edge_moment_map.end()) continue;
+        const std::vector<double>& phys_moms = it->second;
+        for (int k = 0; k <= order && k < static_cast<int>(phys_moms.size()); ++k) {
+            m_phys(phys_ei * (order + 1) + k) = phys_moms[static_cast<std::size_t>(k)];
+        }
+    }
+
+    // ── Step 2: Compute the physical moment matrix A ──────────────────────
+    // A[(test_ei*(p+1)+l), (src_ei*(p+1)+k)] = physical Legendre moment l
+    // of the Piola-transformed RT basis function (src_ei, k) on edge test_ei.
+    //
+    // We use integrate_edge_gauss16 over each physical edge with the Gauss
+    // parameter as the Legendre parameter (linear parametrization).
+    Eigen::MatrixXd A = Eigen::MatrixXd::Zero(n, n);
+
+    const auto gauss_pts = gauss_legendre_rule(16);
+
+    for (int test_ei = 0; test_ei < 4; ++test_ei) {
+        const LocalEdge& te = edges[static_cast<std::size_t>(test_ei)];
+        const Eigen::Vector2d mid        = 0.5 * (te.a + te.b);
+        const Eigen::Vector2d half_delta = 0.5 * (te.b - te.a);
+        const double edge_half_len = half_delta.norm();
+
+        for (auto& g : gauss_pts) {
+            const double t = g.x;  // Gauss parameter ∈ [-1,+1] = Legendre parameter
+            const Eigen::Vector2d p_local = mid + t * half_delta;  // cell-local point
+
+            // Piola evaluation: need reference coords of this physical point.
+            const Eigen::Vector2d ref_pt = rec.ref_map.inverse(p_local);
+            const Eigen::Matrix2d J      = rec.ref_map.jacobian(ref_pt.x(), ref_pt.y());
+            const double det_J = J(0,0)*J(1,1) - J(0,1)*J(1,0);
+            if (std::abs(det_J) < 1.0e-14) continue;
+
+            // For each RT basis function (src_ei, k):
+            for (int src_ei = 0; src_ei < 4; ++src_ei) {
+                for (int k = 0; k <= order; ++k) {
+                    const Eigen::Vector2d phi_ref =
+                        rt_reference_basis_value(src_ei, k, ref_pt.x(), ref_pt.y());
+                    const Eigen::Vector2d phi_phys = (J * phi_ref) / det_J;
+                    const double flux = phi_phys.dot(te.outward_normal);
+
+                    // Accumulate L_l(t) × flux for each test moment degree l.
+                    for (int l = 0; l <= order; ++l) {
+                        const double Ll = legendre_val(l, t);
+                        A(test_ei * (order + 1) + l,
+                          src_ei  * (order + 1) + k) += g.w * flux * Ll * edge_half_len;
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Step 3: Solve A c = m_phys ─────────────────────────────────────────
+    // A is square (n × n) and should be well-conditioned for the RT basis.
+    // Use FullPivLU for robustness (exact for n=16 at p=3).
+    const Eigen::VectorXd c = A.fullPivLu().solve(m_phys);
+
+    // Store coefficients in the RT basis ordering (src_ei*(p+1)+k).
+    rec.edge_moments.assign(c.data(), c.data() + n);
+
+    return rec;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PlanarMomentInterpolator
+// ═══════════════════════════════════════════════════════════════════════════
+
 PlanarMomentInterpolator::PlanarMomentInterpolator(moab::Core& moab_instance)
     : mb_(moab_instance)
 {
@@ -3245,6 +3473,43 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
     return reconstruction;
 }
 
+PiolaRTReconstruction PlanarMomentInterpolator::reconstruct_source_polygon_piola_rt(
+    const moab::EntityHandle polygon, const int order)
+{
+    const LocalPolygon poly = local_polygon(mb_, polygon, options_);
+    const std::vector<LocalEdge> edges = local_edges(mb_, poly);
+
+    if (edges.size() != 4) {
+        throw std::runtime_error(
+            "reconstruct_source_polygon_piola_rt: only 4-sided (quad) cells supported. "
+            "Use reconstruct_source_polygon() for other topologies.");
+    }
+
+    // Collect stored edge moments keyed by local edge index.
+    std::map<std::size_t, std::vector<double>> edge_moment_map;
+    for (std::size_t ei = 0; ei < edges.size(); ++ei) {
+        const auto it = directed_source_moments_.find({polygon, ei});
+        if (it != directed_source_moments_.end()) {
+            edge_moment_map[ei] = it->second;
+        }
+    }
+
+    PiolaRTReconstruction rec = build_piola_rt_reconstruction(poly, edges, edge_moment_map, order);
+    piola_rt_reconstructions_[polygon] = rec;
+
+    // Store a placeholder MomentReconstruction so the transfer functions
+    // can build their SourceCache without throwing "Missing reconstruction".
+    // The actual velocity evaluation will use the Piola RT path (checked first
+    // in transfer_source_to_target_edge_moments via piola_rt_reconstructions_).
+    MomentReconstruction placeholder;
+    placeholder.options.edge_moment_order = order;
+    placeholder.options.cell_moment_order = -1;
+    placeholder.vector_polynomial_degree  = order;
+    reconstructions_[polygon] = placeholder;
+
+    return rec;
+}
+
 Eigen::Vector2d PlanarMomentInterpolator::velocity(const MomentReconstruction& reconstruction,
                                                    const Eigen::Vector2d& p) const
 {
@@ -3411,10 +3676,18 @@ EdgeMomentTransferResult PlanarMomentInterpolator::transfer_source_to_target_edg
                             t = 2.0 * (global_p - whole_a).dot(whole_delta) / whole_denom - 1.0;
                         }
                         const Eigen::Vector2d local_p = global_p - source.local.centroid;
-                        return EdgeMomentSample{
-                            velocity(source.reconstruction, local_p).dot(whole_normal / whole_length),
-                            t,
-                        };
+                        // Use Piola-consistent RT reconstruction if available
+                        // (stored by reconstruct_source_polygon_piola_rt()).
+                        // This eliminates the Piola-distortion ill-conditioning
+                        // of the [P_p]^2 edge constraint matrix.
+                        Eigen::Vector2d vel;
+                        const auto rt_it = piola_rt_reconstructions_.find(source.polygon);
+                        if (rt_it != piola_rt_reconstructions_.end()) {
+                            vel = rt_it->second.velocity(local_p);
+                        } else {
+                            vel = velocity(source.reconstruction, local_p);
+                        }
+                        return EdgeMomentSample{vel.dot(whole_normal / whole_length), t};
                     });
                 for (int degree = 0; degree <= target_moment_order; ++degree) {
                     result.target_moments[target_dof][static_cast<std::size_t>(degree)] +=

@@ -403,6 +403,73 @@ struct MomentReconstruction {
     std::vector<double> coefficients;
 };
 
+// ─── Piola-Consistent Raviart-Thomas Reconstruction ───────────────────────
+//
+// On a quadrilateral cell in the gnomonic chart, the bilinear reference map
+// F: [-1,1]² → K defines a Piola-consistent RT_p dual basis via the
+// contravariant Piola transform:
+//
+//   Φ_phys(x) = (1/det J(ξ)) J(ξ) Φ_ref(ξ),   ξ = F⁻¹(x)
+//
+// The RT_p reference basis on [-1,1]² is constructed so that each function
+// has unit Legendre moment k on exactly one edge and zero on all others.
+// This makes the edge constraint matrix A = I (identity) by construction,
+// eliminating the Piola-distortion ill-conditioning entirely.
+//
+// For quads at order p:  4(p+1) basis functions = 4(p+1) edge DOFs → always
+// exactly determined.  No cell moments needed.  No underdetermination at p=3.
+
+/// Bilinear map from reference square [-1,1]^2 to a physical quad cell
+/// (in centroid-relative 2D gnomonic chart coordinates).
+struct BilinearReferenceMap {
+    std::array<Eigen::Vector2d, 4> v;  ///< physical vertices (centroid-relative, CCW)
+
+    /// F(ξ,η) — map reference point to physical cell-local coordinates.
+    Eigen::Vector2d forward(double xi, double eta) const;
+
+    /// Jacobian ∂F/∂(ξ,η) at (ξ,η).
+    Eigen::Matrix2d jacobian(double xi, double eta) const;
+
+    /// F^{-1}(x) — inverse map via 2D Newton iteration.
+    /// Returns reference (ξ,η) ∈ [-1,1]^2 for physical point x.
+    Eigen::Vector2d inverse(const Eigen::Vector2d& x) const;
+};
+
+/// RT_p dual basis function on the reference square [-1,1]^2.
+/// Each basis function has unit Legendre moment `degree` on edge `edge_idx`
+/// (0=left,1=right,2=bottom,3=top) and zero on all other edges.
+/// edge_idx ∈ {0,1,2,3}, degree ∈ {0,...,p}.
+Eigen::Vector2d rt_reference_basis_value(int edge_idx, int degree, double xi, double eta);
+
+/// Piola-transformed RT basis function at physical point x_local.
+/// Implements Φ_phys(x) = (1/det J) J Φ_ref(F^{-1}(x)).
+Eigen::Vector2d rt_physical_basis_value(const BilinearReferenceMap& map,
+                                         int edge_idx, int degree,
+                                         const Eigen::Vector2d& x_local);
+
+/// Piola-Consistent RT reconstruction for a quad cell.
+/// Stores edge Legendre moments directly as reconstruction coefficients
+/// (no matrix solve — the RT dual basis has A = I by construction).
+struct PiolaRTReconstruction {
+    int p = 0;                            ///< polynomial order
+    std::vector<double> edge_moments;     ///< m[edge_idx*(p+1)+degree], 4(p+1) values
+    BilinearReferenceMap ref_map;         ///< reference-to-physical map
+    Eigen::Vector2d centroid;             ///< cell centroid in gnomonic chart (absolute)
+
+    /// Evaluate the reconstructed velocity at cell-local point x_local.
+    /// x_local is centroid-relative (i.e. absolute_point - centroid).
+    Eigen::Vector2d velocity(const Eigen::Vector2d& x_local) const;
+};
+
+/// Build a PiolaRTReconstruction for a quad cell given its edge Legendre
+/// moments.  The edge ordering must match local_edges() output (CCW).
+/// Throws if the cell does not have exactly 4 edges.
+PiolaRTReconstruction build_piola_rt_reconstruction(
+    const LocalPolygon& poly,
+    const std::vector<LocalEdge>& edges,
+    const std::map<std::size_t, std::vector<double>>& edge_moment_map,
+    int order);
+
 struct EdgeMomentTransferResult {
     std::vector<DirectedEdgeDof> target_edges;
     std::vector<std::vector<double>> target_moments;
@@ -597,6 +664,16 @@ class PlanarMomentInterpolator {
 
     MomentReconstruction reconstruct_source_polygon(moab::EntityHandle polygon,
                                                     const MomentMethodOptions& options);
+
+    /// Piola-Consistent RT reconstruction for quad source cells.
+    /// For 4-sided cells: builds the RT_p dual basis via the bilinear
+    /// reference map, making A = I (no ill-conditioning from Piola distortion).
+    /// For cells with ≠ 4 edges: falls back to reconstruct_source_polygon().
+    /// The result is stored internally and used by transfer functions when
+    /// use_piola_rt is set in options.
+    PiolaRTReconstruction reconstruct_source_polygon_piola_rt(
+        moab::EntityHandle polygon, int order);
+
     Eigen::Vector2d velocity(const MomentReconstruction& reconstruction,
                              const Eigen::Vector2d& p) const;
     std::vector<double> edge_moments(const MomentReconstruction& reconstruction,
@@ -627,6 +704,7 @@ class PlanarMomentInterpolator {
     std::map<std::pair<moab::EntityHandle, std::size_t>, std::vector<double>> directed_source_moments_;
     std::map<moab::EntityHandle, std::vector<Eigen::Vector2d>> source_cell_vector_moments_;
     std::map<moab::EntityHandle, MomentReconstruction> reconstructions_;
+    std::map<moab::EntityHandle, PiolaRTReconstruction> piola_rt_reconstructions_;
 };
 
 }  // namespace mimetic
