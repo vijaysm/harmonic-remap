@@ -150,3 +150,9 @@ target_include_directories(roundtrip_analysis PRIVATE ${CMAKE_SOURCE_DIR}/includ
 add_executable(p3_roundtrip_study tests/p3_roundtrip_study.cpp)
 target_link_libraries(p3_roundtrip_study PRIVATE mimetic ${MOAB_LIBRARY})
 target_include_directories(p3_roundtrip_study PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/tests ${MOAB_INCLUDE_DIRS})
+
+add_executable(vem_projection_test tests/vem_projection_test.cpp)
+target_link_libraries(vem_projection_test PRIVATE mimetic)
+add_test(NAME vem_projection_test COMMAND vem_projection_test)
+
+
