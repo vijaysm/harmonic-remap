@@ -1888,6 +1888,100 @@ Eigen::MatrixXd vem_mass_matrix(const VemDecomposedBasis& basis,
     return M;
 }
 
+// Hodge-weighted VEM mass matrix
+//   M_{ij} = integral_K phi_i^T h(p) phi_j dA
+// where h(p) is the symmetric 2x2 chart Hodge metric
+//   h(xi) = (J^T J) / |J|     (gnomonic_hodge_metric in code).
+//
+// Inputs are three precomputed weighted monomial-integral tables:
+//   I_xx_table(a, b) = integral_K x^a y^b h_{xx}(p + centroid) dA
+//   I_xy_table(a, b) = integral_K x^a y^b h_{xy}(p + centroid) dA
+//   I_yy_table(a, b) = integral_K x^a y^b h_{yy}(p + centroid) dA
+// (built once via polygon_monomial_integral_table_weighted with the
+// appropriate weight callable; see the spherical reconstruction wiring
+// in PlanarMomentInterpolator::reconstruct_source_polygon).
+//
+// When h is the identity (planar case), I_xx == I_yy is the standard
+// monomial table and I_xy == 0; the formula reduces exactly to
+// vem_mass_matrix above.
+Eigen::MatrixXd vem_mass_matrix_weighted(const VemDecomposedBasis& basis,
+                                         const Eigen::MatrixXd& I_xx_table,
+                                         const Eigen::MatrixXd& I_xy_table,
+                                         const Eigen::MatrixXd& I_yy_table,
+                                         const int max_I_degree)
+{
+    const int n = basis.gradient_count + basis.rotational_count;
+    Eigen::MatrixXd M = Eigen::MatrixXd::Zero(n, n);
+
+    auto Ixx = [&](int a, int b) -> double {
+        return lookup_monomial_integral(I_xx_table, max_I_degree, a, b);
+    };
+    auto Ixy = [&](int a, int b) -> double {
+        return lookup_monomial_integral(I_xy_table, max_I_degree, a, b);
+    };
+    auto Iyy = [&](int a, int b) -> double {
+        return lookup_monomial_integral(I_yy_table, max_I_degree, a, b);
+    };
+
+    // Gradient-gradient block:
+    //   (grad psi_i)^T h (grad psi_j) integrated against the polygon
+    //   = ai aj h_xx x^{ai+aj-2} y^{bi+bj}
+    //     + (ai bj + bi aj) h_xy x^{ai+aj-1} y^{bi+bj-1}
+    //     + bi bj h_yy x^{ai+aj} y^{bi+bj-2}
+    for (int i = 0; i < basis.gradient_count; ++i) {
+        const int ai = basis.phi_exponents[i].first;
+        const int bi = basis.phi_exponents[i].second;
+        for (int j = 0; j < basis.gradient_count; ++j) {
+            const int aj = basis.phi_exponents[j].first;
+            const int bj = basis.phi_exponents[j].second;
+            M(i, j) = static_cast<double>(ai * aj) * Ixx(ai + aj - 2, bi + bj)
+                    + static_cast<double>(ai * bj + bi * aj) * Ixy(ai + aj - 1, bi + bj - 1)
+                    + static_cast<double>(bi * bj) * Iyy(ai + aj, bi + bj - 2);
+        }
+    }
+
+    // Gradient-rotational block.  Rotational basis convention used in
+    // this file is phi_j = (y m_j, -x m_j) (matches build_vem_decomposed_
+    // basis and vem_decomposed_to_cartesian).  Therefore
+    //   (grad psi_i)^T h phi_j
+    //     = ai h_xx x^{ai+cj-1} y^{bi+dj+1}
+    //       + (bi - ai) h_xy x^{ai+cj} y^{bi+dj}
+    //       - bi h_yy x^{ai+cj+1} y^{bi+dj-1}
+    const int g = basis.gradient_count;
+    for (int i = 0; i < basis.gradient_count; ++i) {
+        const int ai = basis.phi_exponents[i].first;
+        const int bi = basis.phi_exponents[i].second;
+        for (int j = 0; j < basis.rotational_count; ++j) {
+            const int cj = basis.m_exponents[j].first;
+            const int dj = basis.m_exponents[j].second;
+            const double val =
+                  static_cast<double>(ai) * Ixx(ai + cj - 1, bi + dj + 1)
+                + static_cast<double>(bi - ai) * Ixy(ai + cj, bi + dj)
+                - static_cast<double>(bi) * Iyy(ai + cj + 1, bi + dj - 1);
+            M(i, g + j) = val;
+            M(g + j, i) = val;
+        }
+    }
+
+    // Rotational-rotational block:
+    //   phi_i^T h phi_j
+    //     = m_i m_j (y^2 h_xx - 2 xy h_xy + x^2 h_yy)
+    for (int i = 0; i < basis.rotational_count; ++i) {
+        const int ci = basis.m_exponents[i].first;
+        const int di = basis.m_exponents[i].second;
+        for (int j = 0; j < basis.rotational_count; ++j) {
+            const int cj = basis.m_exponents[j].first;
+            const int dj = basis.m_exponents[j].second;
+            M(g + i, g + j) =
+                  Ixx(ci + cj, di + dj + 2)
+                - 2.0 * Ixy(ci + cj + 1, di + dj + 1)
+                + Iyy(ci + cj + 2, di + dj);
+        }
+    }
+
+    return M;
+}
+
 void edge_monomial_to_legendre_coeffs(const Eigen::Vector2d& ea,
                                       const Eigen::Vector2d& eb,
                                       const int a,
