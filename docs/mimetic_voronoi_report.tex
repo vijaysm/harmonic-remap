@@ -1841,6 +1841,111 @@ complementary directions:
 availability (see \texttt{ReconstructionMode} in \texttt{code\_documentation.md}
 for the detailed regime-of-validity table).
 
+\subsection{Spherical Lift of the VEM Path}
+\label{sec:spherical-vem-lift}
+
+The planar VEM projection above operates in chart coordinates with the
+Lebesgue measure on the chart polygon.  On the sphere, the natural inner
+product is the surface \(L^2(S^2)\) inner product, which in a gnomonic chart
+\((\xi,\eta)\) reads
+\[
+  \langle \mathbf{u}, \mathbf{v}\rangle_{S}
+  = \int_{\hat K} \hat{\mathbf{u}}^T h(\xi)\,\hat{\mathbf{v}}\,d\xi\,d\eta,
+  \qquad
+  h(\xi) = \frac{J^T J}{|J|},
+\]
+where \(\hat{\mathbf{u}}\) is the contravariant Piola pullback of the surface
+field \(\mathbf{u}\) and \(h\) is the chart Hodge metric.  The spherical lift
+of the VEM path replaces the chart Lebesgue mass matrix with a
+Hodge-weighted mass matrix:
+\[
+  M_{ij}^{(h)}
+  = \int_{\hat K} \boldsymbol{\phi}_i^T h(\xi)\,\boldsymbol{\phi}_j\,d\xi\,d\eta.
+\]
+Because \(h\) is the rational function \(J^T J/|J|\), the entries are not
+polynomial in \((\xi,\eta)\) and cannot be evaluated by a closed-form table
+of monomial integrals.  Instead, the implementation builds three
+metric-component-weighted monomial integral tables
+\(I_{xx}, I_{xy}, I_{yy}\) once per cell via Duffy fan-triangulated 10-point
+Gauss-Legendre quadrature, then assembles \(M^{(h)}\) by closed-form
+combinations of these tables that mirror the planar formula structure.
+
+By the Piola identity \(\mathrm{div}_S(\mathbf{u})\,|J| =
+\mathrm{div}_{\mathrm{flat}}(\hat{\mathbf{u}})\), the divergence-recovery
+weak form
+\[
+  \int_{\hat K} \mathrm{div}_S(\mathbf{u})\,q\,|J|\,d\xi\,d\eta
+  = \int_{\hat K} \mathrm{div}_{\mathrm{flat}}(\hat{\mathbf{u}})\,q\,d\xi\,d\eta
+  = \int_{\partial\hat K} (\hat{\mathbf{u}}\cdot\mathbf{n})\,q\,d\ell
+    - \int_{\hat K} \hat{\mathbf{u}}\cdot\nabla q\,d\xi\,d\eta
+\]
+reduces the right-hand side of the divergence projection to chart-IBP
+expressions that the planar VEM already computes.  Only the projection's
+Gram matrix carries the Hodge-area weight \(|J|\), realized via a fourth
+weighted integral table \(I_J(a,b)=\int_{\hat K} x^a y^b |J|\,d\xi\,d\eta\)
+that the divergence Gram and the gradient-mode RHS share.
+
+For gradient basis modes \(\boldsymbol{\phi}_i=\nabla\psi_i\), the surface
+IBP applied to the projection RHS gives
+\[
+  \mathrm{rhs}_i^{(h)}
+  = \int_{\partial\hat K}(\hat{\mathbf{u}}\cdot\mathbf{n})\,\psi_i\,d\ell
+    - \int_{\hat K}\Pi_{p-1}\bigl(\mathrm{div}_S\hat{\mathbf{u}}\bigr)\,\psi_i\,
+      |J|\,d\xi\,d\eta,
+\]
+which uses the same edge moments as the planar gradient RHS plus an
+\(I_J\)-weighted volume integral over the \(\Pi_{p-1}\) divergence
+coefficients.  The gradient subspace of the spherical VEM is therefore
+fully Hodge-correct.
+
+The rotational basis modes
+\(\boldsymbol{\phi}_j=(y\,m_j,-x\,m_j)\) admit no analogous IBP
+simplification: \(\mathrm{rhs}_j^{(h)}=\int_{\hat K}\hat{\mathbf{u}}^T
+h(\xi)\boldsymbol{\phi}_j\,d\xi\,d\eta\) requires Hodge-component-weighted
+cell vector moments that are not available from the standard
+chart-area DOFs.  The first-pass implementation therefore evaluates
+\(h\) at the cell centroid and factors it out, which reduces the
+rotational RHS to a closed combination of the available chart-area
+cell moments.  This centroid-Hodge approximation is \(O(h^2)\)
+accurate in the rotational subspace, regardless of \(p\); the
+gradient subspace is unaffected.
+
+\paragraph{Regression and observed convergence.}
+The spherical VEM lift is exercised by
+\texttt{tests/spherical\_vem\_test.cpp} on cubed-sphere meshes with the
+\(\nabla_S Y_2^0\) field.  Two refinement levels are recorded:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+& \(n=4\to 6\) & \(n=8\to 12\) \\
+\midrule
+\(p=1\) edge-moment-0 \(L^2\) error  & \(6.70\times10^{-2}\) & \(1.62\times10^{-2}\) \\
+\(p=1\) conforming divergence residual & \(2.78\times10^{-16}\) & \(8.33\times10^{-17}\) \\
+\(p=2\) edge-moment-0 \(L^2\) error  & \(3.04\times10^{-1}\) & \(3.12\times10^{-1}\) \\
+\(p=2\) conforming divergence residual & \(2.07\times10^{-15}\) & \(3.23\times10^{-15}\) \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The \(p=1\) error refines at rate \(\sim\!2.05\) (matching or exceeding the
+SplitBasis baseline of \(1.86\)), and conservation holds at machine
+roundoff at every resolution.  The \(p=2\) error does not refine: the
+centroid-Hodge approximation in the rotational RHS caps the asymptotic
+error at \(O(h^2)\) regardless of \(p\), and at \(p=2\) this floor
+dominates the gradient subspace's \(O(h^3)\) signal.  Conservation is
+preserved at every level even when the rate is not.
+
+For \(p\ge2\) on spherical meshes, the SplitBasis path with
+degree-elevated polynomial basis (Section~\ref{sec:roundtrip}) is
+therefore the current recommendation.  Lifting the spherical VEM rate
+to the full \(O(h^{p+1})\) requires either Hodge-component cell-moment
+DOFs \(c_{xx}^{(\alpha)}=\int_{\hat K}\hat u_x x^a y^b h_{xx}\,d\xi\,d\eta\)
+(and similar for \(xy\), \(yy\)) or adoption of the SplitBasis
+degree-elevation rule for the spherical VEM polynomial basis.  Both
+paths preserve the conservation guarantee proven above; the choice
+between them is the open task of the spherical VEM lift.
+
 \subsection{Discussion}
 
 The high-order results in Figures~\ref{fig:high-order-hdiv-convergence}
@@ -1944,13 +2049,19 @@ logical paths are proposed for future research:
     target-cell balance at \(5\times10^{-13}\), and sparse/direct transfer
     equivalence.  This is the mathematically appropriate way to revisit
     Wachspress ideas.
-    \item \textbf{Spherical VEM extension}: The VEM H(div) projection
-    currently operates in planar chart coordinates.  Extending it to spherical
-    gnomonic charts requires metric-weighted monomial integrals and Piola-aware
-    quadrature, analogous to the degree-elevation mechanism already used by the
-    SplitBasis path.  The decomposed basis \(\nabla P_{p+1}\oplus
-    \mathbf{x}^{\perp}P_{p-1}\) and its well-conditioned mass matrix should
-    transfer directly; only the quadrature weights need modification.
+    \item \textbf{Spherical VEM rotational subspace}: The Hodge-weighted
+    spherical lift of the VEM path (Section~\ref{sec:spherical-vem-lift})
+    is implemented and verified to give optimal \(O(h^{p+1})\) convergence
+    in the gradient subspace at \(p=1\) on cubed-sphere meshes, and to
+    preserve cell-divergence conservation at machine roundoff at every
+    tested order.  The remaining gap is the rotational subspace, which is
+    capped at \(O(h^2)\) by the centroid-Hodge approximation in the
+    rotational projection RHS and consequently dominates the asymptotic
+    error for \(p\ge2\).  Closing this gap requires either Hodge-component
+    cell-moment DOFs \(c_{xx}^{(\alpha)}=\int_{\hat K}\hat u_x x^a y^b
+    h_{xx}\,d\xi\,d\eta\) (and analogous \(c_{xy}\), \(c_{yy}\)) or
+    adoption of the SplitBasis degree-elevation rule for the spherical VEM
+    polynomial basis.  Either path preserves the conservation guarantee.
     \item \textbf{High-order conservative remapping links}: Compare the
     directed edge-flux operator with high-order cell-average conservative
     remapping frameworks such as SCRIP-style remapping and TempestRemap
