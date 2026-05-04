@@ -1442,38 +1442,16 @@ round-trip variant that exercises the full single-flux production pipeline:
         L\(\infty\) cell-divergence error against the analytical reference.
 \end{enumerate}
 
-To separate the source-side reconstruction quality from the backward-leg
-amplification, a companion forward-only diagnostic was added that stops after
-the forward transfer and measures the cell-average divergence error on the
-intermediate (CS) mesh against the analytical divergence.  The same
-\(\mu_0\)-only seeding + patch-recovery + VEM reconstruction pipeline is run
-for both the practical patch-recovery path and an analytical reference that
-seeds all high-order moments directly.  Comparing the two isolates the
-patch-recovery cost in the gradient subspace, with no backward-leg confound.
-
-The forward-only data on the manufactured spherical-harmonic gradient field at
-\(n_{\mathrm{CS}}\in\{32,64,128\}\) (RLL source scales as
-\(\mathrm{nlon}=4n_{\mathrm{CS}},\,\mathrm{nlat}=2n_{\mathrm{CS}}\)) gives:
-
-\begin{center}
-\begin{tabular}{lll}
-\toprule
-\(n_{\mathrm{CS}}\) & patch \(p=1\) & patch \(p=2\) \\
-\midrule
-32  & \(8.08\times10^{-2}\) & \(2.22\times10^{-2}\) \\
-64  & \(3.82\times10^{-2}\) & \(1.08\times10^{-2}\) \\
-128 & \(2.15\times10^{-2}\) & \(5.35\times10^{-3}\) \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-Both the \(p=1\) and \(p=2\) patch-recovery paths converge at approximately
-\(O(h)\) (rates \(\sim\!1.0\) across the two halvings), the asymptotic limit
-imposed by the non-great-circle RLL latitude boundaries in gnomonic charts
-(Section~\ref{sec:roundtrip}).  The \(p=2\) error is roughly one quarter of
-the \(p=1\) error at every resolution, confirming that the face-neighbor
-least-squares synthesis of the higher-order moments contributes useful
-accuracy without breaking the geometric clip-limited rate.
+A companion forward-only diagnostic (right panel of
+Figure~\ref{fig:roundtrip-convergence}) isolates source-side reconstruction
+quality by measuring the cell-average divergence error on the intermediate CS
+mesh before the backward leg.  Both \(p=1\) and \(p=2\) converge at
+approximately \(O(h)\), the asymptotic limit imposed by the non-great-circle
+RLL latitude boundaries in gnomonic charts (Section~\ref{sec:roundtrip}).
+The \(p=2\) error is roughly one quarter of the \(p=1\) error at every
+resolution, confirming that the face-neighbor least-squares synthesis of the
+higher-order moments adds useful accuracy without breaking the geometric
+clip-limited rate.
 
 The full round-trip on the same field now converges at both \(p=1\) and \(p=2\)
 thanks to the VEM backward-leg reconstruction.  The practical patch-recovery
