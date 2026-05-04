@@ -1,0 +1,18 @@
+Test project /Users/mahadevan/Code/AI/Mimetic-SphPoly/build
+    Start  5: spherical_geometry_test
+1/6 Test  #5: spherical_geometry_test ......................   Passed    0.05 sec
+    Start  6: spherical_quad_test
+2/6 Test  #6: spherical_quad_test ..........................   Passed    0.84 sec
+    Start  7: spherical_voronoi_test
+3/6 Test  #7: spherical_voronoi_test .......................   Passed    0.66 sec
+    Start  8: spherical_scalar_test
+4/6 Test  #8: spherical_scalar_test ........................   Passed    0.19 sec
+    Start 13: spherical_high_order_moment_test
+5/6 Test #13: spherical_high_order_moment_test .............   Passed    1.14 sec
+    Start 14: spherical_high_order_hdiv_convergence_test
+6/6 Test #14: spherical_high_order_hdiv_convergence_test ...   Passed   72.02 sec
+
+100% tests passed, 0 tests failed out of 6
+
+Total Test time (real) =  74.90 sec
+       74.93 real       165.74 user         2.11 sys
