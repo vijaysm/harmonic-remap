@@ -1193,16 +1193,56 @@ confirms exact polynomial recovery (error ~10⁻¹⁵) on triangles (3 edges),
 pentagons (5 edges), hexagons (6 edges), and irregular 7-gons — all using
 the same code path with no topology-specific branches.
 
-### Limitations of the Current Implementation
+### Spherical Lift (Hodge-Weighted VEM)
 
-1. **Planar only.**  The VEM projection currently operates in planar
-   (chart) coordinates.  For spherical meshes, the VEM path can be applied
-   in gnomonic charts [21,22], but the Piola pullback [20] introduces
-   rational integrands that the current polynomial-basis VEM does not
-   account for.
-   The degree-elevation mechanism (§Degree-Elevated Basis) partially
-   addresses this for the SplitBasis path; a similar extension could be
-   applied to the VEM path.
+When `GeometryOptions::metric_weighted = true` and `GeometryOptions::mode
+= SphericalGnomonic` are both set, the VEM branch of
+`reconstruct_source_polygon` switches to a Hodge-area-weighted assembly
+that respects the surface L²(S²) inner product:
+
+- **Mass matrix.**  `vem_mass_matrix_weighted` integrates the basis with
+  the chart Hodge metric `h(ξ) = JᵀJ / |J|`:
+  `M_{ij} = ∫_K̂ φᵢᵀ h(ξ) φⱼ dξ dη`.  The metric is factored through three
+  precomputed monomial integral tables `I_xx`, `I_xy`, `I_yy` built once
+  per cell via `polygon_monomial_integral_table_weighted`.
+
+- **Divergence projection.**  `vem_reconstruct_divergence_weighted`
+  projects `div_S(u)` onto `P_{p-1}` in surface L²: the Gram matrix uses
+  the Hodge-area weight `|J|` (table `I_J`), and the RHS reduces by the
+  Piola identity `div_S(u)·|J| = div_flat(v̂)` to the chart-IBP
+  expression that the planar VEM already computes.
+
+- **Projection RHS.**  `vem_projection_rhs_weighted` evaluates
+  `(v_h, φᵢ)_S` for each basis mode.  Gradient modes use the surface IBP
+  to the same chart-IBP form as planar (with `I_J` for the divergence
+  volume term).  Rotational modes carry an `O(h²)` centroid-Hodge
+  approximation: `h(ξ)` is evaluated at the cell centroid and factored
+  out so the chart-area cell vector moments suffice.
+
+The verified scope today is the **gradient subspace** of the spherical
+VEM:
+
+- p = 1 cubed-sphere edge-moment-0 error matches the SplitBasis
+  baseline (rate ≈ 2.0 between `h = 1/4` and `h = 1/8` on the
+  manufactured spherical-harmonic gradient field).
+- Conservation: cell-divergence residuals at machine roundoff
+  (≤ 5 × 10⁻¹³) at every tested resolution.
+
+The **rotational subspace** is currently capped at `O(h²)` by the
+centroid-Hodge approximation, which dominates the asymptotic error for
+`p ≥ 2`.  For `p ≥ 2` on spherical meshes, the SplitBasis path remains
+the recommended choice today.  Lifting the rotational rate to the full
+`O(h^{p+1})` requires either (a) introducing Hodge-component cell-moment
+DOFs `c^{(α)}_{xx} = ∫_K̂ v̂ₓ x^a y^b h_xx dξ dη` (and similar for
+xy, yy) or (b) adopting the SplitBasis path's degree-elevation rule for
+the spherical VEM polynomial basis.  This is the single open task in the
+spherical-vem-lift plan (`docs/plans/2026-05-02-spherical-vem-lift.md`).
+
+Test: `tests/spherical_vem_test.cpp` exercises the path at p = 1 with
+strict refinement and conservation assertions, and at p = 2 with
+smoke + conservation only (rate test deferred per the limitation above).
+
+### Other Limitations of the Current Implementation
 
 2. **No adaptive stabilization.**  The mass matrix solve uses LDLT with SVD
    fallback but without Tikhonov regularization or mode truncation.  On
