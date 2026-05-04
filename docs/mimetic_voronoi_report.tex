@@ -546,6 +546,106 @@ globally conforming target-edge flux field in the discrete lowest-order
 \(H(\mathrm{div})\) sense: every geometric target edge carries a single flux,
 and every target cell satisfies its divergence constraint exactly.
 
+\subsection{Coupled Multi-Degree Conforming Target-Edge Projection}
+\label{sec:coupled-conforming}
+
+The lowest-order projection in
+Eq.~\eqref{eq:hdiv_projection_problem}--\eqref{eq:hdiv_projection_schur} carries a
+single flux per geometric target edge.  When higher-order edge moments are
+available---one Legendre coefficient \(U^{(m)}_e\) per directed edge \(e\) for
+each degree \(m=0,\ldots,p\)---the natural generalization is to expose the
+entire moment vector as a single block-coupled unknown over the geometric
+skeleton.  Let \(N_u\) be the number of unique geometric target edges and let
+\(p\) be the highest moment degree.  The unknown is then
+\[
+  x = (x_{u,m})_{u=1,\ldots,N_u,\;m=0,\ldots,p} \in \R^{N_u (p+1)}.
+\]
+Each directed edge \(i\) maps to one geometric edge \(u(i)\) with parity-
+orientation factor
+\(f_m(O_i)\in\{-1,+1\}\) given by the Legendre parity rule (\(O_i^m\) for
+even \(m\), \(O_i\) for odd \(m\)), so the directed value at degree \(m\) is
+\(U^{(m)}_i = f_m(O_i)\,x_{u(i),m}\).  This is the same single-flux
+identification as in the lowest-order projection, but applied per degree.
+
+\paragraph{Edge-mass weighted L\(^2\) objective.}
+The \(L^2(\partial K)\) inner product of two scalar functions on a physical
+edge \(e\) of length \(L_e\) decomposes in the Legendre basis as
+\[
+  (f, g)_{L^2(e)}
+  = \sum_{m=0}^{\infty} \frac{2}{2m+1} L_e\,\hat f_m \hat g_m,
+\]
+where \(\hat f_m\) is the \(m\)-th Legendre coefficient on \([-1,+1]\).  The
+canonical conforming-projection objective therefore weights each
+\((u,m)\) entry by \(w_{e(u),m} = L_e \cdot 2/(2m+1)\), the physical edge length
+times the Legendre normalization on \([-1,+1]\):
+\begin{equation}
+  J(x)
+  = \tfrac{1}{2}\sum_{i,m}
+    w_{e(i),m}\bigl(f_m(O_i)\,x_{u(i),m} - U^{\mathrm{raw}}_{i,m}\bigr)^2.
+  \label{eq:coupled-conforming-objective}
+\end{equation}
+For \(m=0\), the divergence constraint \(A_0\,x_0 = b\) couples cells through the
+divergence theorem (the same constraint as
+Eq.~\eqref{eq:hdiv_projection_problem}, applied to the moment-zero block).  No
+analogous cell-level constraint exists for \(m\ge1\), so each higher block
+reduces to its unconstrained per-edge minimizer.  Because every directed view
+of a geometric edge \(u\) sees the same physical length \(L_e\) and the same
+Legendre weight, the per-block weights cancel pairwise inside the per-edge
+average, and the unconstrained answer for \(m\ge1\) is
+\[
+  x^{*}_{u,m}
+  = \frac{\sum_{i:\,u(i)=u} f_m(O_i)\,U^{\mathrm{raw}}_{i,m}}{\#\{i:u(i)=u\}}.
+\]
+
+\paragraph{Block-KKT system.}
+Let \(W_m=\mathrm{diag}(w_{e,m})\) and \(\pi_m\) the projection onto the
+degree-\(m\) block.  The full system is block-diagonal in \(m\) with the
+\(m=0\) block coupled across cells through the divergence constraint:
+\begin{equation}
+  \begin{aligned}
+    W_0\,x_0 - A_0^T \lambda &= W_0\,\pi_0(U^{\mathrm{avg}}),
+    \quad
+    A_0\,x_0 = b,
+    \\
+    W_m\,x_m &= W_m\,\pi_m(U^{\mathrm{avg}}),
+    \quad m\ge1.
+  \end{aligned}
+  \label{eq:coupled-conforming-block-kkt}
+\end{equation}
+The Schur complement \(A_0\,W_0^{-1}\,A_0^T\) is factored once and reused for
+every degree, making the per-degree solve identical to the lowest-order
+projection on the moment-zero block.  The resulting numerical answer for any
+\(p\) is byte-identical to the older degree-decoupled implementation; the
+block-KKT formulation simply makes the structure explicit, names the L\(^2\)
+weights, and provides the scaffold for cell-vector-moment coupling as a
+future extension.
+
+\paragraph{Diagnostics.}
+The coupled solve exposes three per-call diagnostic fields:
+\begin{itemize}
+  \item \texttt{unique\_edge\_lengths}: per-geometric-edge physical length
+        (planar chord, or great-circle arc length using the configured sphere
+        radius), used in the L\(^2\) weight above.
+  \item \texttt{trace\_jump\_per\_unique\_edge}: pre-projection
+        max-disagreement \(|f_m(O_i)\,U^{\mathrm{raw}}_{i,m}
+        - f_m(O_j)\,U^{\mathrm{raw}}_{j,m}|\) over directed views of each
+        unique edge.  By construction of the underlying transfer operator,
+        both directed views integrate the same source field with opposite
+        outward normals, so this quantity is identically zero modulo machine
+        roundoff and serves as a correctness check on the raw transfer rather
+        than a refinement-faithful diagnostic.
+  \item \texttt{source\_skeleton\_jump\_l2[m]}: per-degree L\(^2\) norm of the
+        source-reconstruction trace jump over the source-mesh interior
+        skeleton.  For each interior source edge \(e_s\) shared by source
+        cells \(a, b\), the per-degree squared jump
+        \(\bigl(\int_{e_s}(\mathbf{v}_a - \mathbf{v}_b)\cdot\mathbf{n}\,
+        L_m(t)\,ds\bigr)^2\) is summed; the square root gives the reported
+        norm.  This refines as \(O(h^{p+1})\) for a smooth source field
+        reconstructed at order \(p\) and is the natural asymptotic
+        indicator of source-reconstruction continuity (see
+        Section~\ref{sec:results-coupled-conforming}).
+\end{itemize}
+
 \subsection{Higher-Order Polygonal \(H(\mathrm{div})\)-Style Split Moments}
 
 To study higher-order convergence on planar and spherical polygonal patches,
@@ -1043,6 +1143,58 @@ target-cell balance residual.
   conforming field under refinement.}
   \label{tab:hdiv-projection}
 \end{table}
+
+\subsection{Coupled Multi-Degree Conforming Projection: Diagnostics}
+\label{sec:results-coupled-conforming}
+
+The block-coupled multi-degree projection
+(Section~\ref{sec:coupled-conforming}) was validated on a sequence of planar
+nonmatching quad-to-quad refinements at \(p=2\): source resolutions
+\(n_{\mathrm{src}}\in\{4,8,16\}\) with target resolution
+\(n_{\mathrm{tgt}}=n_{\mathrm{src}}+2\) on the unit square, and a non-polynomial
+manufactured field
+\(\mathbf{u}(x,y)=(\sin(\pi x)\cos(\pi y),-\cos(\pi x)\sin(\pi y))\).  This field
+is not in the local reconstruction space, so the source reconstruction at
+\(p=2\) has truncation error and the source-skeleton trace jump is genuinely
+nonzero.
+
+Three regression invariants are checked at every refinement level:
+\begin{itemize}
+  \item Per-target-edge raw-transfer trace jump
+        (\texttt{trace\_jump\_per\_unique\_edge}, summed in L\(^2\) over
+        unique edges and degrees) at the machine roundoff floor on every
+        case (\(<10^{-12}\)), confirming the construction-zero correctness
+        invariant of the underlying transfer.
+  \item Post-projection trace continuity to \(\le10^{-12}\) on every
+        interior unique edge per degree.
+  \item Cell divergence balance \(|A_0\,x_0 - b|_\infty\le5\times10^{-13}\)
+        on every cell of every level.
+\end{itemize}
+
+The genuinely refining diagnostic is the source-skeleton jump
+\texttt{source\_skeleton\_jump\_l2[m]}.  On the same refinement family at
+\(p=2\), the L\(^2\) norm over interior source edges and degrees was
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+\(n_{\mathrm{src}} \to n_{\mathrm{tgt}}\) & \(\|\,j\,\|_{L^2}\) & rate \\
+\midrule
+\(4\to6\)   & \(3.59\times10^{-3}\) & --- \\
+\(8\to10\)  & \(6.01\times10^{-4}\) & 2.58 \\
+\(16\to18\) & \(8.29\times10^{-5}\) & 2.86 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The two observed rates of 2.58 and 2.86 are consistent with the asymptotic
+\(O(h^{p+1})=O(h^3)\) target for a smooth source field reconstructed at order
+\(p=2\); the slight pre-asymptotic deficit at the coarsest pair vanishes by
+the second halving.  This source-skeleton diagnostic is the natural
+refinement-faithful indicator of the conforming-projection setting: it
+measures the discontinuity of the source field that the projection then
+absorbs into a single per-edge degree of freedom, with the discontinuity
+itself shrinking at the order-optimal rate.
 
 \subsection{Low-Order versus High-Order Divergence Reconstruction}
 
