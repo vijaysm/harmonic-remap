@@ -2114,6 +2114,111 @@ Eigen::VectorXd vem_reconstruct_divergence(const VemDecomposedBasis& basis,
     return ldlt.solve(g);
 }
 
+// Hodge-area-weighted divergence reconstruction.
+//
+// L^2(S^2) projection of div_S(u) onto P_{p-1} expressed in chart
+// coordinates.  Using the Piola identity div_S(u) |J| = div_flat(v_chart),
+// the weak form
+//     (div_S(u), q)_S = (Pi_{p-1} d, q)_S
+// becomes
+//     integral_K div_flat(v_chart) q dxi deta
+//         = integral_K Pi_{p-1} d * q * |J| dxi deta
+// for every q in P_{p-1}.  The LHS uses standard planar IBP in chart
+// coordinates and reduces to (boundary - chart-area cell moments)
+// (identical to the planar formula).  The RHS Gram matrix carries the
+// |J| weight, hence I_J_table.
+//
+// I_J_table(a, b) = integral_K x^a y^b |J(p + centroid)| dxi deta,
+// built once via polygon_monomial_integral_table_weighted with
+// gnomonic_area_scale as the weight callable.
+Eigen::VectorXd vem_reconstruct_divergence_weighted(const VemDecomposedBasis& basis,
+                                                     const LocalPolygon& poly,
+                                                     const std::vector<LocalEdge>& edges,
+                                                     const int p,
+                                                     const std::vector<std::vector<double>>& edge_moments,
+                                                     const std::vector<Eigen::Vector2d>& cell_vector_moments,
+                                                     const Eigen::MatrixXd& I_J_table,
+                                                     const int max_I_J_degree)
+{
+    const int div_dim = scalar_monomial_basis_count(p - 1);
+    if (div_dim <= 0) {
+        Eigen::VectorXd d(1);
+        double div_integral = 0.0;
+        for (std::size_t ei = 0; ei < edges.size(); ++ei) {
+            div_integral += edge_moments[ei][0];
+        }
+        // In the m = 0 case the test space is constant; the Hodge-area
+        // weight integrates to the spherical area of the cell.
+        const double area = (poly.spherical_area > kTolerance)
+            ? poly.spherical_area : poly.area;
+        d(0) = (std::abs(area) > kTolerance) ? div_integral / area : 0.0;
+        return d;
+    }
+
+    auto IJ = [&](int a, int b) -> double {
+        return lookup_monomial_integral(I_J_table, max_I_J_degree, a, b);
+    };
+
+    Eigen::MatrixXd G(div_dim, div_dim);
+    {
+        int ki = 0;
+        for (int ti = 0; ti <= p - 1; ++ti) {
+            for (int ai = ti; ai >= 0; --ai, ++ki) {
+                const int bi = ti - ai;
+                int kj = 0;
+                for (int tj = 0; tj <= p - 1; ++tj) {
+                    for (int aj = tj; aj >= 0; --aj, ++kj) {
+                        const int bj = tj - aj;
+                        G(ki, kj) = IJ(ai + aj, bi + bj);
+                    }
+                }
+            }
+        }
+    }
+
+    Eigen::VectorXd g(div_dim);
+    {
+        int k = 0;
+        for (int t = 0; t <= p - 1; ++t) {
+            for (int a = t; a >= 0; --a, ++k) {
+                const int b = t - a;
+
+                double boundary = 0.0;
+                for (std::size_t ei = 0; ei < edges.size(); ++ei) {
+                    Eigen::VectorXd E_coeffs;
+                    edge_monomial_to_legendre_coeffs(edges[ei].a, edges[ei].b, a, b, p, E_coeffs);
+                    for (int m = 0; m <= p && m < static_cast<int>(edge_moments[ei].size()); ++m) {
+                        boundary += E_coeffs(m) * edge_moments[ei][m];
+                    }
+                }
+
+                double interior = 0.0;
+                if (a > 0) {
+                    const int cell_idx = scalar_monomial_index(p, a - 1, b);
+                    if (cell_idx >= 0 && cell_idx < static_cast<int>(cell_vector_moments.size())) {
+                        interior += static_cast<double>(a) * cell_vector_moments[cell_idx].x();
+                    }
+                }
+                if (b > 0) {
+                    const int cell_idx = scalar_monomial_index(p, a, b - 1);
+                    if (cell_idx >= 0 && cell_idx < static_cast<int>(cell_vector_moments.size())) {
+                        interior += static_cast<double>(b) * cell_vector_moments[cell_idx].y();
+                    }
+                }
+
+                g(k) = boundary - interior;
+            }
+        }
+    }
+
+    const Eigen::LDLT<Eigen::MatrixXd> ldlt(G);
+    if (ldlt.info() != Eigen::Success || !ldlt.isPositive()) {
+        const Eigen::JacobiSVD<Eigen::MatrixXd> svd(G, Eigen::ComputeThinU | Eigen::ComputeThinV);
+        return svd.solve(g);
+    }
+    return ldlt.solve(g);
+}
+
 // Assemble the RHS of the VEM elliptic projection  M c = rhs,
 // where  M_{ij} = ∫_K φ_i · φ_j dA  and  rhs_i = ∫_K v_h · φ_i dA.
 //
@@ -2206,6 +2311,116 @@ Eigen::VectorXd vem_projection_rhs(const VemDecomposedBasis& basis,
         }
 
         rhs(g + j) = val;
+    }
+
+    return rhs;
+}
+
+// Hodge-area-weighted VEM projection RHS for the spherical lift.
+//
+// Solves the same surface-L^2 projection identity as the planar
+// vem_projection_rhs but with Hodge-area weighting:
+//
+//   For gradient modes phi_i = grad(psi_i), the surface IBP gives
+//     rhs_i = (v_h, grad psi_i)_S
+//           = boundary - integral_K Pi_{p-1}(div_S v_h) psi_i |J| dxi deta
+//   The boundary term is identical to planar (Piola-invariant).  The
+//   div volume term uses the Hodge-area I_J_table for the integral
+//   integral_K x^{a+ai} y^{b+bi} |J| dxi deta.
+//
+//   For rotational modes phi_j = (y m_j, -x m_j), the surface inner
+//   product
+//     (v_h, phi_j)_S = integral_K v_h^T h(p) phi_j dxi deta
+//   has no IBP simplification.  This implementation uses an O(h^2)
+//   centroid-Hodge approximation: replace h(p) with h(centroid)
+//   inside the integrand, factoring it out so the chart-area cell
+//   vector moments suffice.  This preserves O(h^{p+1}) accuracy in the
+//   gradient subspace (the dominant subspace for H(div) reconstruction
+//   of smooth fields) and yields O(h^2) accuracy in the rotational
+//   subspace.  For higher rotational accuracy, define new Hodge-
+//   component cell-moment DOFs or use degree elevation.
+Eigen::VectorXd vem_projection_rhs_weighted(const VemDecomposedBasis& basis,
+                                              const LocalPolygon& poly,
+                                              const std::vector<LocalEdge>& edges,
+                                              const int p,
+                                              const std::vector<std::vector<double>>& edge_moments,
+                                              const std::vector<Eigen::Vector2d>& cell_vector_moments,
+                                              const Eigen::VectorXd& div_coeffs,
+                                              const Eigen::MatrixXd& I_J_table,
+                                              const int max_I_J_degree,
+                                              const Eigen::Matrix2d& h_at_centroid)
+{
+    const int n = basis.gradient_count + basis.rotational_count;
+    Eigen::VectorXd rhs(n);
+
+    auto IJ = [&](int a, int b) -> double {
+        return lookup_monomial_integral(I_J_table, max_I_J_degree, a, b);
+    };
+
+    for (int i = 0; i < basis.gradient_count; ++i) {
+        const int ai = basis.phi_exponents[i].first;
+        const int bi = basis.phi_exponents[i].second;
+
+        double boundary = 0.0;
+        for (std::size_t ei = 0; ei < edges.size(); ++ei) {
+            Eigen::VectorXd E_coeffs;
+            const int phi_degree = ai + bi;
+            edge_monomial_to_legendre_coeffs(edges[ei].a, edges[ei].b, ai, bi,
+                                            std::min(p, phi_degree), E_coeffs);
+            for (int m = 0; m < E_coeffs.size() && m < static_cast<int>(edge_moments[ei].size()); ++m) {
+                boundary += E_coeffs(m) * edge_moments[ei][m];
+            }
+        }
+
+        double div_term = 0.0;
+        const int div_dim = scalar_monomial_basis_count(p - 1);
+        {
+            int dk = 0;
+            for (int dt = 0; dt <= p - 1; ++dt) {
+                for (int da = dt; da >= 0; --da, ++dk) {
+                    const int db = dt - da;
+                    if (dk < div_coeffs.size()) {
+                        div_term += div_coeffs(dk) * IJ(da + ai, db + bi);
+                    }
+                }
+            }
+        }
+
+        rhs(i) = boundary - div_term;
+    }
+
+    // Rotational modes: centroid-Hodge approximation
+    //   integral_K v_h^T h(p) (y m_j, -x m_j) dxi deta
+    //     ~ h_xx(0) <v_x, y m_j> - h_xy(0) <v_x, x m_j>
+    //       + h_xy(0) <v_y, y m_j> - h_yy(0) <v_y, x m_j>
+    // where <v_alpha, x^a y^b> = c^{(a, b)}_alpha is the chart-area
+    // cell vector moment.  Reduces to the planar formula when
+    // h_xx = h_yy = 1 and h_xy = 0.
+    const double hxx = h_at_centroid(0, 0);
+    const double hxy = h_at_centroid(0, 1);
+    const double hyy = h_at_centroid(1, 1);
+
+    const int g = basis.gradient_count;
+    for (int j = 0; j < basis.rotational_count; ++j) {
+        const int cj = basis.m_exponents[j].first;
+        const int dj = basis.m_exponents[j].second;
+
+        // <v_x, y m_j> contribution = c_x^{(cj, dj+1)}
+        const int idx_y_mj = scalar_monomial_index(p, cj, dj + 1);
+        // <v_x, x m_j> contribution = c_x^{(cj+1, dj)}
+        const int idx_x_mj = scalar_monomial_index(p, cj + 1, dj);
+
+        double cx_y_mj = 0.0, cx_x_mj = 0.0, cy_y_mj = 0.0, cy_x_mj = 0.0;
+        if (idx_y_mj >= 0 && idx_y_mj < static_cast<int>(cell_vector_moments.size())) {
+            cx_y_mj = cell_vector_moments[idx_y_mj].x();
+            cy_y_mj = cell_vector_moments[idx_y_mj].y();
+        }
+        if (idx_x_mj >= 0 && idx_x_mj < static_cast<int>(cell_vector_moments.size())) {
+            cx_x_mj = cell_vector_moments[idx_x_mj].x();
+            cy_x_mj = cell_vector_moments[idx_x_mj].y();
+        }
+
+        rhs(g + j) = hxx * cx_y_mj - hxy * cx_x_mj + hxy * cy_y_mj - hyy * cy_x_mj;
     }
 
     return rhs;
