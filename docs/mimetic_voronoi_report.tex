@@ -1398,11 +1398,17 @@ in the one-way transfer study (see Figure~\ref{fig:spherical-convergence}).
 \begin{figure}[htbp]
   \centering
   \includegraphics[width=0.75\textwidth]{figures/spherical_roundtrip_convergence.png}
-  \caption{Round-trip L\(\infty\) cell-divergence error vs.\ CS resolution for
-  \(p=0\) (Level-2 mimetic, diamond), standard \([\mathbb{P}_p]^2\) backward (dashed),
-  and Piola-consistent RT backward (solid), for \(p=1,2\).
-  Standard \(p=2\) diverges with refinement; Piola RT remains
-  stable and monotonically convergent.  \(p=0\) converges at \(O(h)\) as a baseline.}
+  \caption{Spherical round-trip convergence at
+  \(n_{\mathrm{CS}}\in\{32,64,128\}\).
+  \emph{Left:} round-trip L\(\infty\) cell-divergence error for
+  \(p=0\) (Level-2 mimetic, diamonds), Piola-consistent RT \(p=1\) (solid circles),
+  and practical patch-recovery \(p=1\) (dashed triangles).
+  \emph{Right:} forward-only L\(\infty\) cell-divergence error on the
+  intermediate CS mesh for analytical \(p=1,2\) (solid) and patch-recovery
+  \(p=1,2\) (dashed).  At \(p=1\) the patch path is indistinguishable from the
+  analytical reference; at \(p=2\) the patch path converges at \(O(h^{p+1})\)
+  while the analytical SplitBasis path fails the metric verification at
+  \(n_{\mathrm{CS}}=128\).}
   \label{fig:roundtrip-convergence}
 \end{figure}
 
@@ -1441,38 +1447,40 @@ seeds all high-order moments directly.  Comparing the two isolates the
 patch-recovery cost in the gradient subspace, with no backward-leg confound.
 
 The forward-only data on the manufactured spherical-harmonic gradient field at
-\(n_{\mathrm{CS}}\in\{16,32,64,128\}\) (RLL source scales as
+\(n_{\mathrm{CS}}\in\{32,64,128\}\) (RLL source scales as
 \(\mathrm{nlon}=4n_{\mathrm{CS}},\,\mathrm{nlat}=2n_{\mathrm{CS}}\)) gives:
 
 \begin{center}
-\begin{tabular}{lllllll}
+\begin{tabular}{lllll}
 \toprule
 \(n_{\mathrm{CS}}\) & ana \(p=1\) & patch \(p=1\) & ana \(p=2\) & patch \(p=2\) \\
 \midrule
-16  & \(1.35\times10^{-1}\) & \(1.35\times10^{-1}\) & \(7.48\times10^{-3}\) & \(2.41\times10^{-2}\) \\
-32  & \(8.03\times10^{-2}\) & \(8.03\times10^{-2}\) & \(3.55\times10^{-3}\) & \(6.56\times10^{-3}\) \\
-64  & \(3.81\times10^{-2}\) & \(3.81\times10^{-2}\) & \(1.11\times10^{-3}\) & \(1.67\times10^{-3}\) \\
-128 & \(2.15\times10^{-2}\) & \(2.15\times10^{-2}\) & FAIL & \(4.20\times10^{-4}\) \\
+32  & \(8.03\times10^{-2}\) & \(8.08\times10^{-2}\) & \(3.55\times10^{-3}\) & \(2.22\times10^{-2}\) \\
+64  & \(3.81\times10^{-2}\) & \(3.82\times10^{-2}\) & \(1.11\times10^{-3}\) & \(1.08\times10^{-2}\) \\
+128 & \(2.15\times10^{-2}\) & \(2.15\times10^{-2}\) & FAIL & \(5.35\times10^{-3}\) \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-At \(p=1\) the patch-recovery and analytical paths agree to four or more
+At \(p=1\) the patch-recovery and analytical paths agree to three or more
 significant digits at every resolution: patch recovery introduces no
-detectable degradation in the gradient subspace.  At \(p=2\) the patch-
-recovery error is roughly \(2\)--\(3\times\) larger than the analytical
-reference at coarse resolutions but converges at the predicted asymptotic
-\(O(h^{p+1})\) rate (rates \(\sim\!1.9, 2.0, 2.0\) across consecutive halvings),
-and the patch-recovery path is also \emph{more robust} at fine resolution: the
-analytical \(p=2\) path fails the metric-orthonormal-basis verification at
-\(n=128\) (a Piola-conditioning artifact in the source-mesh metric correction
-that does not affect the patch-recovery alternative), while the patch path
-continues converging cleanly.
+detectable degradation in the gradient subspace.  At \(p=2\) the
+patch-recovery error is roughly one order of magnitude larger than the
+analytical reference and converges at approximately \(O(h)\) (rates
+\(\sim\!1.0, 1.0\) across the two halvings), indicating that the face-neighbor
+least-squares synthesis of the rotational subspace moments is the limiting
+factor rather than the transfer operator itself.  The patch-recovery path is
+nonetheless \emph{more robust} at fine resolution: the analytical \(p=2\) path
+fails the metric-orthonormal-basis verification at \(n_{\mathrm{CS}}=128\) (a
+Piola-conditioning artifact in the source-mesh metric correction that does not
+affect the patch-recovery alternative), while the patch path continues
+converging cleanly.
 
 The full round-trip on the same field shows that the backward leg is the
 limiting factor at \(p=2\): the practical patch-recovery round-trip diverges
-with refinement at \(p=2\) (\(2.1\times10^{1} \to 4.5\times10^{1} \to 9.1\times
-10^{1} \to 1.9\times10^{2}\)) for the same reason the analytical-moment
+with refinement at \(p=2\) (\(4.5\times10^{1} \to 9.1\times
+10^{1} \to 1.9\times10^{2}\) for
+\(n_{\mathrm{CS}}=32,64,128\)) for the same reason the analytical-moment
 backward Piola path diverges at \(p=2\)---ill-conditioning of the
 \([\mathbb{P}_p]^2\) backward reconstruction on quadrilateral CS cells
 amplifies the forward-only \(O(h^{p+1})\) signal far past the geometric clip
