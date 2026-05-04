@@ -532,6 +532,39 @@ struct ConformingEdgeMomentTransferResult {
     std::vector<std::size_t> target_edge_to_unique;
     std::vector<int> target_edge_orientations;
     std::vector<std::vector<double>> unique_edge_moments;
+    /// Per-unique-edge, per-degree raw transfer consistency check
+    /// computed BEFORE the conforming projection: for each unique edge u
+    /// and degree m, max over directed pairs (i, j) with u(i)=u(j)=u of
+    ///   |f_m(O_i) U_raw_{i,m} - f_m(O_j) U_raw_{j,m}|.
+    /// Boundary edges have a single directed view and report 0.
+    /// This quantity is identically zero (modulo machine roundoff) by
+    /// construction of transfer_source_to_target_edge_moments: both
+    /// directed views of a unique edge integrate the same source field
+    /// with opposite outward normals, so the orientation-corrected raw
+    /// values agree to roundoff.  It is therefore a CORRECTNESS check
+    /// on the raw transfer (i.e. should be at the noise floor on every
+    /// case) and NOT a refinement diagnostic.  See
+    /// source_trace_jump_per_unique_edge for the genuinely refining
+    /// source-reconstruction discontinuity diagnostic.
+    /// Outer index: unique edge.  Inner index: moment degree.
+    std::vector<std::vector<double>> trace_jump_per_unique_edge;
+    /// Per-degree L^2 norm of the source-reconstruction trace jump
+    /// over the SOURCE-MESH interior skeleton.  For each interior
+    /// source-mesh edge e_s shared by source cells a and b, the per-
+    /// degree squared jump
+    ///   j_m(e_s)^2 = ( integral_{e_s} ( v_a . n_s - v_b . n_s ) L_m(t) ds )^2
+    /// is summed (with the standard cell-side Legendre orientation
+    /// convention) and the entry source_skeleton_jump_l2[m] holds
+    /// sqrt of the sum.  This is a refinement-faithful diagnostic of
+    /// the conforming-projection setting: it shrinks as O(h^{p+1}) for
+    /// a smooth source field reconstructed at order p, independently
+    /// of how source/target are chosen.  Boundary source edges
+    /// contribute 0.  Length matches num_moments.
+    std::vector<double> source_skeleton_jump_l2;
+    /// Per-unique-edge physical edge length used in the L^2-Legendre
+    /// objective.  Planar: chord length.  Spherical: great-circle arc
+    /// length (with the configured GeometryOptions::radius applied).
+    std::vector<double> unique_edge_lengths;
 };
 
 /// Signed shoelace area; positive for counter-clockwise point order.

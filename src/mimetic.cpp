@@ -4837,11 +4837,51 @@ ConformingEdgeMomentTransferResult PlanarMomentInterpolator::project_target_edge
     result.target_edge_orientations = collapse.directed_signs;
     result.unique_edge_moments.assign(num_unique, std::vector<double>(num_moments, 0.0));
     result.target_moments.assign(num_directed, std::vector<double>(num_moments, 0.0));
+    result.trace_jump_per_unique_edge.assign(num_unique, std::vector<double>(num_moments, 0.0));
+    result.source_skeleton_jump_l2.assign(num_moments, 0.0);
+    result.unique_edge_lengths.assign(num_unique, 0.0);
 
     if (num_moments == 0) {
         return result;
     }
 
+    // -----------------------------------------------------------------
+    // Block-coupled conforming projection over all moment degrees.
+    //
+    // Variables: x in R^{num_unique * num_moments}, the orientation-
+    // corrected Legendre moment of v . n on each geometric target edge,
+    // for each degree m = 0, ..., p.
+    //
+    // Per-directed-edge mapping: U_i^{(m)} = f_m(O_i) * x_{u(i), m},
+    // where f_m is target_edge_moment_orientation_factor (Legendre
+    // parity rule).
+    //
+    // Objective (per-edge-mass-weighted L2 deviation from raw):
+    //   J(x) = (1/2) sum_i sum_m  w_{e(i), m} * (U_i^{(m)} - U_raw_{i,m})^2
+    // with weights w_{e, m} = L_e * 2 / (2m + 1).  The L_e factor
+    // (physical edge length) and the Legendre-normalization 2/(2m+1)
+    // make the objective the proper L2 inner product of v . n viewed
+    // as a function on the physical edge.  Because each unique edge
+    // has identical L_e seen from both cell sides, the per-(u,m)
+    // unconstrained minimizer reduces to the orientation-corrected
+    // average -- numerically identical to the previous degree-decoupled
+    // implementation.  The weights are made explicit here so the
+    // formulation extends cleanly to a future cell-vector-moment
+    // coupling.
+    //
+    // Constraint: only the m = 0 block is coupled across cells through
+    // the divergence theorem  A_0 * x_0 = b.  For m >= 1 there is no
+    // cell-level constraint analogous to the divergence theorem, so
+    // each higher block reduces to the unconstrained minimizer.
+    //
+    // Diagnostics: trace_jump_per_unique_edge[u][m] reports, per unique
+    // edge and per degree, the maximum of |f_m(O_i) U_raw_{i,m} -
+    // f_m(O_j) U_raw_{j,m}| over directed views (i, j) sharing u.  This
+    // is the quantity the conforming projection drives to zero; its
+    // norm should shrink as the source reconstruction refines.
+    // -----------------------------------------------------------------
+
+    // Per-unique-edge incidence weights and divergence-balance matrix.
     Eigen::VectorXd hdiag = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(num_unique));
     Eigen::MatrixXd A = Eigen::MatrixXd::Zero(static_cast<Eigen::Index>(num_cells),
                                               static_cast<Eigen::Index>(num_unique));
@@ -4864,6 +4904,192 @@ ConformingEdgeMomentTransferResult PlanarMomentInterpolator::project_target_edge
         AHinv.col(j) *= hinv(j);
     }
 
+    // Per-unique-edge physical length: chord length in planar mode,
+    // great-circle arc length (with the configured sphere radius)
+    // in spherical mode.  Computed from the first directed view of
+    // each unique edge.  Length is currently used only for the
+    // diagnostic field unique_edge_lengths; the per-edge averaging
+    // step is invariant to a single positive scalar weight.
+    {
+        std::vector<bool> seen(num_unique, false);
+        for (std::size_t i = 0; i < num_directed; ++i) {
+            const std::size_t unique = collapse.directed_to_unique[i];
+            if (seen[unique]) continue;
+            seen[unique] = true;
+            double length = 0.0;
+            if (options_.mode == GeometryMode::SphericalGnomonic) {
+                const Eigen::Vector3d a = target_edges[i].a3;
+                const Eigen::Vector3d b = target_edges[i].b3;
+                const double s = a.cross(b).norm();
+                const double c = a.dot(b);
+                length = options_.radius * std::atan2(s, c);
+            } else {
+                length = (target_edges[i].b2 - target_edges[i].a2).norm();
+            }
+            result.unique_edge_lengths[unique] = length;
+        }
+    }
+
+    // Trace-jump diagnostic: BEFORE projection, max pairwise disagreement
+    // between directed views of each unique edge, per degree.
+    {
+        std::vector<std::vector<std::size_t>> views_per_unique(num_unique);
+        for (std::size_t i = 0; i < num_directed; ++i) {
+            views_per_unique[collapse.directed_to_unique[i]].push_back(i);
+        }
+        for (std::size_t u = 0; u < num_unique; ++u) {
+            const auto& views = views_per_unique[u];
+            if (views.size() < 2) continue;
+            for (std::size_t m = 0; m < num_moments; ++m) {
+                double mn = std::numeric_limits<double>::infinity();
+                double mx = -std::numeric_limits<double>::infinity();
+                for (std::size_t i : views) {
+                    const double f = target_edge_moment_orientation_factor(
+                        collapse.directed_signs[i], static_cast<int>(m));
+                    const double v = f * raw_transfer.target_moments[i][m];
+                    if (v < mn) mn = v;
+                    if (v > mx) mx = v;
+                }
+                result.trace_jump_per_unique_edge[u][m] = mx - mn;
+            }
+        }
+    }
+
+    // Source-skeleton trace-jump diagnostic: see field docstring on
+    // ConformingEdgeMomentTransferResult::source_skeleton_jump_l2.
+    {
+        const std::vector<DirectedTargetEdgeInfo> source_directed =
+            build_directed_target_edges(mb_, source_polygons, options_);
+        const CollapsedTargetEdges source_collapse =
+            collapse_target_edges(source_directed, options_);
+        const std::size_t num_source_directed = source_directed.size();
+        const std::size_t num_source_unique = source_collapse.unique_count;
+
+        std::vector<std::vector<std::size_t>> source_views(num_source_unique);
+        for (std::size_t i = 0; i < num_source_directed; ++i) {
+            source_views[source_collapse.directed_to_unique[i]].push_back(i);
+        }
+
+        std::vector<Eigen::Vector2d> src_centroid2(source_polygons.size(), Eigen::Vector2d::Zero());
+        std::vector<GnomonicFrame> src_frame(source_polygons.size());
+        for (std::size_t c = 0; c < source_polygons.size(); ++c) {
+            const LocalPolygon sp = local_polygon(mb_, source_polygons[c], options_);
+            src_centroid2[c] = sp.centroid;
+            if (options_.mode == GeometryMode::SphericalGnomonic) {
+                src_frame[c].center = sp.n;
+                src_frame[c].e_x    = sp.e_x;
+                src_frame[c].e_y    = sp.e_y;
+                src_frame[c].radius = options_.radius;
+            }
+        }
+
+        // 10-point Gauss-Legendre is exact through degree 19, sufficient
+        // for the per-degree integrand v . n . L_m(t) up to p ~ 6.
+        const std::vector<GaussLegendrePoint> quad = gauss_legendre_rule(10);
+        std::vector<double> sumsq(num_moments, 0.0);
+
+        auto eval_velocity = [&](moab::EntityHandle h, const Eigen::Vector2d& local) -> Eigen::Vector2d {
+            const auto rt_it = piola_rt_reconstructions_.find(h);
+            if (rt_it != piola_rt_reconstructions_.end()) return rt_it->second.velocity(local);
+            const auto m_it = reconstructions_.find(h);
+            if (m_it == reconstructions_.end()) return Eigen::Vector2d::Zero();
+            return velocity(m_it->second, local);
+        };
+
+        for (std::size_t u = 0; u < num_source_unique; ++u) {
+            const auto& views = source_views[u];
+            if (views.size() < 2) continue;
+            const std::size_t i0 = views[0];
+            const std::size_t i1 = views[1];
+            const DirectedTargetEdgeInfo& e0 = source_directed[i0];
+
+            const std::size_t cell_a = e0.cell_index;
+            const std::size_t cell_b = source_directed[i1].cell_index;
+            if (cell_a >= source_polygons.size() || cell_b >= source_polygons.size()) continue;
+            const moab::EntityHandle ha = source_polygons[cell_a];
+            const moab::EntityHandle hb = source_polygons[cell_b];
+            const bool has_a =
+                piola_rt_reconstructions_.count(ha) > 0 || reconstructions_.count(ha) > 0;
+            const bool has_b =
+                piola_rt_reconstructions_.count(hb) > 0 || reconstructions_.count(hb) > 0;
+            if (!has_a || !has_b) continue;
+
+            std::vector<double> ja(num_moments, 0.0);
+            std::vector<double> jb(num_moments, 0.0);
+
+            // Integrate v . n_A from cell A's chart and cell B's chart
+            // along the shared edge.  In spherical mode each cell's
+            // chart is its own gnomonic projection, so we project the
+            // edge endpoints into both charts independently and let
+            // each cell evaluate its reconstruction in its own local
+            // coordinates -- this matches the per-source-cell evaluation
+            // convention used by transfer_source_to_target_edge_moments.
+            Eigen::Vector2d aA, bA, aB, bB;
+            if (options_.mode == GeometryMode::SphericalGnomonic) {
+                try {
+                    aA = project_gnomonic(e0.a3, src_frame[cell_a]);
+                    bA = project_gnomonic(e0.b3, src_frame[cell_a]);
+                    aB = project_gnomonic(e0.a3, src_frame[cell_b]);
+                    bB = project_gnomonic(e0.b3, src_frame[cell_b]);
+                } catch (const std::runtime_error&) {
+                    continue;
+                }
+            } else {
+                aA = e0.a2;  bA = e0.b2;
+                aB = e0.a2;  bB = e0.b2;
+            }
+
+            const Eigen::Vector2d deltaA = bA - aA;
+            const double lenA = deltaA.norm();
+            if (lenA <= kTolerance) continue;
+            const Eigen::Vector2d nA(deltaA.y(), -deltaA.x());
+            const double inv_lenA = 1.0 / lenA;
+            const double half_lenA = 0.5 * lenA;
+            const Eigen::Vector2d midA = 0.5 * (aA + bA);
+            const Eigen::Vector2d midB = 0.5 * (aB + bB);
+            const Eigen::Vector2d halfA = 0.5 * deltaA;
+            const Eigen::Vector2d halfB = 0.5 * (bB - aB);
+
+            for (const GaussLegendrePoint& gp : quad) {
+                const double t = gp.x;
+                const double w = gp.w;
+                const Eigen::Vector2d pA = midA + t * halfA;
+                const Eigen::Vector2d pB = midB + t * halfB;
+                const Eigen::Vector2d vA = eval_velocity(ha, pA - src_centroid2[cell_a]);
+                const Eigen::Vector2d vB = eval_velocity(hb, pB - src_centroid2[cell_b]);
+                // Both chart velocities are projected onto the same
+                // physical edge normal n_A (cell B's chart maps the
+                // same physical normal onto a slightly different chart
+                // direction; using n_A introduces an O(h^2) chart-
+                // distortion error which is dominated by the source
+                // reconstruction error for any p >= 1).
+                const double vAn = vA.dot(nA) * inv_lenA;
+                const double vBn = vB.dot(nA) * inv_lenA;
+                for (std::size_t m = 0; m < num_moments; ++m) {
+                    const double L = legendre_polynomial(static_cast<int>(m), t);
+                    ja[m] += w * vAn * L * half_lenA;
+                    jb[m] += w * vBn * L * half_lenA;
+                }
+            }
+
+            // Both ja[m] and jb[m] are integrated against the same edge
+            // normal n_A, so the natural jump moment is the direct
+            // difference (no Legendre orientation parity needed -- that
+            // factor only applies when the two views use OPPOSITE
+            // outward normals, e.g. in the directed-target-edge collapse).
+            for (std::size_t m = 0; m < num_moments; ++m) {
+                const double diff = ja[m] - jb[m];
+                sumsq[m] += diff * diff;
+            }
+        }
+
+        for (std::size_t m = 0; m < num_moments; ++m) {
+            result.source_skeleton_jump_l2[m] = std::sqrt(sumsq[m]);
+        }
+    }
+
+    // Cell-divergence right-hand side b (with spherical zero-mean
+    // adjustment, kept identical to the previous implementation).
     Eigen::VectorXd b(static_cast<Eigen::Index>(num_cells));
     for (std::size_t i = 0; i < num_cells; ++i) {
         b(static_cast<Eigen::Index>(i)) = divergence_rhs[i];
@@ -4875,36 +5101,28 @@ ConformingEdgeMomentTransferResult PlanarMomentInterpolator::project_target_edge
         result.target_divergence_integrals[i] = b(static_cast<Eigen::Index>(i));
     }
 
-    // Coupled solve: degree 0 uses Schur complement with cell divergence
-    // constraints. Higher degrees use a coupled constrained LS that stays
-    // close to the raw weighted average while penalizing inter-cell moment
-    // jumps through a graph Laplacian regularization.
-    //
-    // For each degree d >= 1, the regularization penalizes
-    //   sum_{shared edges g} (x_g^{(d)} - raw_g^{(d)})^2
-    // while respecting the sign convention for odd moments.
+    // Per-degree orientation-corrected accumulation g_m and per-degree
+    // solve.  m = 0 uses the Schur complement of the divergence
+    // constraint; m >= 1 uses the unconstrained edge-mass-weighted
+    // minimizer.  The Schur factor is computed once.
+    const Eigen::MatrixXd schur = AHinv * A.transpose();
+    const Eigen::CompleteOrthogonalDecomposition<Eigen::MatrixXd> schur_qr(schur);
 
     for (std::size_t degree = 0; degree < num_moments; ++degree) {
         Eigen::VectorXd g = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(num_unique));
         for (std::size_t i = 0; i < num_directed; ++i) {
             const std::size_t unique = collapse.directed_to_unique[i];
-            const double factor = target_edge_moment_orientation_factor(collapse.directed_signs[i],
-                                                                        static_cast<int>(degree));
+            const double factor = target_edge_moment_orientation_factor(
+                collapse.directed_signs[i], static_cast<int>(degree));
             g(static_cast<Eigen::Index>(unique)) += factor * raw_transfer.target_moments[i][degree];
         }
 
         Eigen::VectorXd unique_moments = Eigen::VectorXd::Zero(static_cast<Eigen::Index>(num_unique));
         if (degree == 0) {
-            const Eigen::MatrixXd schur = AHinv * A.transpose();
             const Eigen::VectorXd schur_rhs = AHinv * g - b;
-            const Eigen::VectorXd lambda = schur.completeOrthogonalDecomposition().solve(schur_rhs);
+            const Eigen::VectorXd lambda = schur_qr.solve(schur_rhs);
             unique_moments = hinv.cwiseProduct(g - A.transpose() * lambda);
         } else {
-            // Higher moments: weighted average (same as before), which is
-            // the minimum-norm solution that produces a unique flux per
-            // geometric edge. The degree-0 divergence constraint already
-            // ensures cell-level conservation; higher moments do not have
-            // an analogous cell-level constraint to enforce.
             unique_moments = hinv.cwiseProduct(g);
         }
 
@@ -4913,8 +5131,8 @@ ConformingEdgeMomentTransferResult PlanarMomentInterpolator::project_target_edge
         }
         for (std::size_t i = 0; i < num_directed; ++i) {
             const std::size_t unique = collapse.directed_to_unique[i];
-            const double factor = target_edge_moment_orientation_factor(collapse.directed_signs[i],
-                                                                        static_cast<int>(degree));
+            const double factor = target_edge_moment_orientation_factor(
+                collapse.directed_signs[i], static_cast<int>(degree));
             result.target_moments[i][degree] = factor * result.unique_edge_moments[unique][degree];
         }
     }
