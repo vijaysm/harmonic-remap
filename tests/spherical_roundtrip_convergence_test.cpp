@@ -26,6 +26,8 @@
 #include <iomanip>
 #include <cmath>
 #include <chrono>
+#include <set>
+#include <map>
 
 using namespace mimetic;
 using namespace mimetic::test_sphere;
@@ -198,6 +200,263 @@ exact_cell_div(moab::Core& mb, const std::vector<moab::EntityHandle>& cells,
     return res;
 }
 
+// ── Face-neighbor map via shared vertex pairs ────────────────────────────────
+static std::map<moab::EntityHandle, std::vector<moab::EntityHandle>>
+build_face_neighbors(moab::Core& mb, const std::vector<moab::EntityHandle>& cells)
+{
+    using VPair = std::pair<moab::EntityHandle, moab::EntityHandle>;
+    std::map<VPair, std::vector<moab::EntityHandle>> edge_to_cells;
+
+    for (const moab::EntityHandle cell : cells) {
+        const moab::EntityHandle* conn = nullptr;
+        int nv = 0;
+        mb.get_connectivity(cell, conn, nv);
+        for (int i = 0; i < nv; ++i) {
+            moab::EntityHandle v0 = conn[i], v1 = conn[(i + 1) % nv];
+            VPair key = (v0 < v1) ? std::make_pair(v0, v1) : std::make_pair(v1, v0);
+            edge_to_cells[key].push_back(cell);
+        }
+    }
+
+    std::map<moab::EntityHandle, std::vector<moab::EntityHandle>> neighbors;
+    for (const moab::EntityHandle cell : cells) {
+        std::set<moab::EntityHandle> nbr_set;
+        const moab::EntityHandle* conn = nullptr;
+        int nv = 0;
+        mb.get_connectivity(cell, conn, nv);
+        for (int i = 0; i < nv; ++i) {
+            moab::EntityHandle v0 = conn[i], v1 = conn[(i + 1) % nv];
+            VPair key = (v0 < v1) ? std::make_pair(v0, v1) : std::make_pair(v1, v0);
+            for (moab::EntityHandle other : edge_to_cells[key])
+                if (other != cell) nbr_set.insert(other);
+        }
+        neighbors[cell] = std::vector<moab::EntityHandle>(nbr_set.begin(), nbr_set.end());
+    }
+    return neighbors;
+}
+
+// ── Patch-recovery round-trip: realistic solver workflow ─────────────────────
+// Source: moment-0 only (analytical) → patch recovery → VEM reconstruct
+// Forward: source → intermediate (produces full p+1 moments on intermediate)
+// Intermediate: use transferred moments directly → VEM reconstruct
+// Backward: intermediate → source → measure roundtrip error
+static std::vector<double>
+roundtrip_patch_recovery(moab::Core& mb_shared,
+                         const std::vector<moab::EntityHandle>& src_cells,
+                         const std::vector<moab::EntityHandle>& inter_cells,
+                         const GeometryOptions& spherical,
+                         int order)
+{
+    MomentMethodOptions opts;
+    opts.edge_moment_order  = order;
+    opts.quadrature_points  = 10;
+    opts.regularization     = 1.0e-12;
+    opts.exact_constraints  = false;
+    opts.reconstruction_mode = ReconstructionMode::PatchRecoveryVem;
+
+    // ── Forward leg: source → intermediate ──
+    moab::Core mb_fwd;
+    const auto src_fwd   = duplicate_mesh(mb_shared, src_cells,   mb_fwd);
+    const auto inter_fwd = duplicate_mesh(mb_shared, inter_cells, mb_fwd);
+
+    PlanarMomentInterpolator fwd(mb_fwd);
+    fwd.set_geometry_options(spherical);
+
+    // Step 1: Set ONLY moment-0 on source edges (analytical flux)
+    for (const moab::EntityHandle cell : src_fwd) {
+        const LocalPolygon poly = local_polygon(mb_fwd, cell, spherical);
+        for (std::size_t i = 0; i < poly.vertices.size(); ++i) {
+            const double flux = exact_chart_edge_flux(mb_fwd, cell, i,
+                                                       spherical_harmonic_gradient);
+            fwd.set_source_edge_moments(cell, i, {flux});
+        }
+    }
+
+    // Step 2: Patch recovery on source to bootstrap high-order moments.
+    // build_face_neighbors uses vertex handles, so run on the original shared
+    // mesh (where cells share vertices), then translate through the index map.
+    const auto orig_neighbors = build_face_neighbors(mb_shared, src_cells);
+    std::map<moab::EntityHandle, moab::EntityHandle> orig_to_fwd;
+    for (std::size_t i = 0; i < src_cells.size(); ++i)
+        orig_to_fwd[src_cells[i]] = src_fwd[i];
+
+    for (std::size_t ci = 0; ci < src_fwd.size(); ++ci) {
+        std::vector<moab::EntityHandle> nbrs_fwd;
+        auto it = orig_neighbors.find(src_cells[ci]);
+        if (it != orig_neighbors.end()) {
+            for (const moab::EntityHandle orig_nbr : it->second) {
+                auto jt = orig_to_fwd.find(orig_nbr);
+                if (jt != orig_to_fwd.end())
+                    nbrs_fwd.push_back(jt->second);
+            }
+        }
+        fwd.recover_moments_from_patch(src_fwd[ci], order, nbrs_fwd);
+    }
+
+    // Step 3: VEM reconstruct each source cell
+    for (const moab::EntityHandle cell : src_fwd)
+        fwd.reconstruct_source_polygon(cell, opts);
+
+    // Step 4: Forward transfer (produces all p+1 moments on intermediate edges)
+    const EdgeMomentTransferResult fwd_xfer =
+        fwd.transfer_source_to_target_edge_moments(src_fwd, inter_fwd, order);
+
+    // ── Backward leg: intermediate → source ──
+    moab::Core mb_bwd;
+    const auto inter_bwd = duplicate_mesh(mb_shared, inter_cells, mb_bwd);
+    const auto src_bwd   = duplicate_mesh(mb_shared, src_cells,   mb_bwd);
+
+    GeometryOptions bwd_geo = spherical;
+    bwd_geo.metric_weighted = false;
+
+    PlanarMomentInterpolator bwd(mb_bwd);
+    bwd.set_geometry_options(bwd_geo);
+
+    // Step 5: Set transferred moments (all p+1 Legendre moments) on intermediate
+    MomentMethodOptions bwd_opts = opts;
+    bwd_opts.reconstruction_mode = ReconstructionMode::VemProjection;
+
+    std::size_t dof = 0;
+    for (std::size_t ci = 0; ci < inter_bwd.size(); ++ci) {
+        const LocalPolygon poly = local_polygon(mb_bwd, inter_bwd[ci], bwd_geo);
+        for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++dof)
+            bwd.set_source_edge_moments(inter_bwd[ci], i, fwd_xfer.target_moments[dof]);
+
+        // Cell vector moments not available — VEM degrades gracefully
+        // (gradient modes from edge data, rotational modes zeroed)
+        bwd.reconstruct_source_polygon(inter_bwd[ci], bwd_opts);
+    }
+
+    // Step 6: Backward transfer
+    const EdgeMomentTransferResult bwd_xfer =
+        bwd.transfer_source_to_target_edge_moments(inter_bwd, src_bwd, order);
+
+    // Step 7: Compute roundtripped cell-average divergence
+    std::vector<double> result;
+    std::size_t d = 0;
+    for (const moab::EntityHandle cell : src_bwd) {
+        const LocalPolygon poly = local_polygon(mb_bwd, cell, spherical);
+        double flux = 0;
+        for (std::size_t e = 0; e < poly.vertices.size(); ++e, ++d)
+            flux += bwd_xfer.target_moments[d][0];
+        result.push_back(flux / poly.area);
+    }
+    return result;
+}
+
+// ── Forward-only patch-recovery transfer: source → intermediate ──────────────
+// Returns cell-average divergence on the intermediate (CS) grid from the
+// transferred moment-0 values (no backward pass).
+static std::vector<double>
+forward_only_patch_recovery(moab::Core& mb_shared,
+                            const std::vector<moab::EntityHandle>& src_cells,
+                            const std::vector<moab::EntityHandle>& inter_cells,
+                            const GeometryOptions& spherical,
+                            int order)
+{
+    MomentMethodOptions opts;
+    opts.edge_moment_order  = order;
+    opts.quadrature_points  = 10;
+    opts.regularization     = 1.0e-12;
+    opts.exact_constraints  = false;
+    opts.reconstruction_mode = ReconstructionMode::PatchRecoveryVem;
+
+    moab::Core mb_fwd;
+    const auto src_fwd   = duplicate_mesh(mb_shared, src_cells,   mb_fwd);
+    const auto inter_fwd = duplicate_mesh(mb_shared, inter_cells, mb_fwd);
+
+    PlanarMomentInterpolator fwd(mb_fwd);
+    fwd.set_geometry_options(spherical);
+
+    for (const moab::EntityHandle cell : src_fwd) {
+        const LocalPolygon poly = local_polygon(mb_fwd, cell, spherical);
+        for (std::size_t i = 0; i < poly.vertices.size(); ++i) {
+            const double flux = exact_chart_edge_flux(mb_fwd, cell, i,
+                                                       spherical_harmonic_gradient);
+            fwd.set_source_edge_moments(cell, i, {flux});
+        }
+    }
+
+    const auto orig_neighbors = build_face_neighbors(mb_shared, src_cells);
+    std::map<moab::EntityHandle, moab::EntityHandle> orig_to_fwd;
+    for (std::size_t i = 0; i < src_cells.size(); ++i)
+        orig_to_fwd[src_cells[i]] = src_fwd[i];
+
+    for (std::size_t ci = 0; ci < src_fwd.size(); ++ci) {
+        std::vector<moab::EntityHandle> nbrs_fwd;
+        auto it = orig_neighbors.find(src_cells[ci]);
+        if (it != orig_neighbors.end()) {
+            for (const moab::EntityHandle orig_nbr : it->second) {
+                auto jt = orig_to_fwd.find(orig_nbr);
+                if (jt != orig_to_fwd.end())
+                    nbrs_fwd.push_back(jt->second);
+            }
+        }
+        fwd.recover_moments_from_patch(src_fwd[ci], order, nbrs_fwd);
+    }
+
+    for (const moab::EntityHandle cell : src_fwd)
+        fwd.reconstruct_source_polygon(cell, opts);
+
+    const EdgeMomentTransferResult fwd_xfer =
+        fwd.transfer_source_to_target_edge_moments(src_fwd, inter_fwd, order);
+
+    // Accumulate transferred moment-0 per intermediate cell → cell-avg divergence
+    std::vector<double> result;
+    std::size_t dof = 0;
+    for (const moab::EntityHandle cell : inter_fwd) {
+        const LocalPolygon poly = local_polygon(mb_fwd, cell, spherical);
+        double flux = 0;
+        for (std::size_t e = 0; e < poly.vertices.size(); ++e, ++dof)
+            flux += fwd_xfer.target_moments[dof][0];
+        result.push_back(flux / poly.area);
+    }
+    return result;
+}
+
+// ── Forward-only with analytical moments (existing LS/KKT path) ──────────────
+static std::vector<double>
+forward_only_analytical(moab::Core& mb_shared,
+                        const std::vector<moab::EntityHandle>& src_cells,
+                        const std::vector<moab::EntityHandle>& inter_cells,
+                        const GeometryOptions& spherical,
+                        int order)
+{
+    MomentMethodOptions opts;
+    opts.edge_moment_order  = order;
+    opts.cell_moment_order  = std::max(1, order - 1);
+    opts.quadrature_points  = 10;
+    opts.regularization     = 1.0e-12;
+    opts.exact_constraints  = false;
+
+    moab::Core mb_fwd;
+    const auto src_fwd   = duplicate_mesh(mb_shared, src_cells,   mb_fwd);
+    const auto inter_fwd = duplicate_mesh(mb_shared, inter_cells, mb_fwd);
+
+    PlanarMomentInterpolator fwd(mb_fwd);
+    fwd.set_geometry_options(spherical);
+
+    for (const moab::EntityHandle cell : src_fwd)
+        set_exact_moments(mb_fwd, fwd, {cell}, spherical, order, false);
+
+    for (const moab::EntityHandle cell : src_fwd)
+        fwd.reconstruct_source_polygon(cell, opts);
+
+    const EdgeMomentTransferResult fwd_xfer =
+        fwd.transfer_source_to_target_edge_moments(src_fwd, inter_fwd, order);
+
+    std::vector<double> result;
+    std::size_t dof = 0;
+    for (const moab::EntityHandle cell : inter_fwd) {
+        const LocalPolygon poly = local_polygon(mb_fwd, cell, spherical);
+        double flux = 0;
+        for (std::size_t e = 0; e < poly.vertices.size(); ++e, ++dof)
+            flux += fwd_xfer.target_moments[dof][0];
+        result.push_back(flux / poly.area);
+    }
+    return result;
+}
+
 // ── Core round-trip function ──────────────────────────────────────────────────
 // fwd_piola_rt: use Piola RT on source (RLL) forward leg quad cells
 // bwd_piola_rt: use Piola RT on intermediate (CS) backward leg quad cells
@@ -354,6 +613,7 @@ int main(int argc, char** argv)
 
     // Uniform refinement: n_cs = 16, 32, 64, 128 (doublings as requested).
     // RLL: nlon=4*n_cs, nlat=2*n_cs → equatorial cell size ≈ 90/n_cs deg.
+    const bool forward_only = (argc > 2 && std::string(argv[2]) == "--forward-only");
     const std::vector<int> cs_levels = {16, 32, 64, 128};
 
     std::cout << "=== Spherical Round-Trip Convergence Study ===\n";
@@ -370,11 +630,14 @@ int main(int argc, char** argv)
     // p=2: PlanarMomentInterpolator order=2 (3 Legendre moments per edge)
     csv << "n_cs,n_rll,n_cs_cells,"
            "std_p0,std_p1,std_p2,"
-           "rt_p0,rt_p1,rt_p2\n";
+           "rt_p0,rt_p1,rt_p2,"
+           "patch_p1,patch_p2,"
+           "fwd_ana_p1,fwd_ana_p2,"
+           "fwd_patch_p1,fwd_patch_p2\n";
     csv << std::scientific << std::setprecision(6);
 
-    // Per-p previous errors for rate computation (index 0=p0, 1=p1, 2=p2)
-    std::vector<double> prev_std(3, 0.0), prev_rt(3, 0.0);
+    std::vector<double> prev_std(3, 0.0), prev_rt(3, 0.0), prev_patch(3, 0.0);
+    std::vector<double> prev_fwd_ana(3, 0.0), prev_fwd_patch(3, 0.0);
 
     for (const int n_cs : cs_levels) {
         const int nlon = 4 * n_cs;
@@ -387,11 +650,9 @@ int main(int argc, char** argv)
 
         std::cout << "n_cs=" << n_cs << "  RLL=" << ll.size() << "  CS=" << cs.size() << "\n";
 
-        std::vector<double> err_std(3), err_rt(3);
+        std::vector<double> err_std(3), err_rt(3), err_patch(3, 0.0);
 
-        // pi=0 → p=0 (MimeticInterpolator, same for std and RT)
-        // pi=1 → p=1 (PlanarMomentInterpolator order=1)
-        // pi=2 → p=2 (PlanarMomentInterpolator order=2)
+        if (!forward_only)
         for (int pi = 0; pi < 3; ++pi) {
             const int p_label = pi;  // displayed p value
 
@@ -438,10 +699,22 @@ int main(int argc, char** argv)
                     err_rt[pi] = -1.0;
                     std::cout << "    [RT p=" << p << " FAILED: " << e.what() << "]\n";
                 }
+
+                // Patch-recovery roundtrip (practical solver workflow)
+                const auto tp0 = std::chrono::steady_clock::now();
+                try {
+                    const auto rt_patch = roundtrip_patch_recovery(mb, ll, cs, spherical, p);
+                    err_patch[pi] = maxerr(rt_patch, exact);
+                } catch (const std::exception& e) {
+                    err_patch[pi] = -1.0;
+                    std::cout << "    [PATCH p=" << p << " FAILED: " << e.what() << "]\n";
+                }
+                (void)tp0;
             }
 
             const double rate_std   = (prev_std[pi] > 0 && err_std[pi] > 0) ? std::log2(prev_std[pi] / err_std[pi]) : 0.0;
             const double rate_piola = (prev_rt[pi]  > 0 && err_rt[pi]  > 0) ? std::log2(prev_rt[pi]  / err_rt[pi])  : 0.0;
+            const double rate_patch = (prev_patch[pi] > 0 && err_patch[pi] > 0) ? std::log2(prev_patch[pi] / err_patch[pi]) : 0.0;
 
             std::cout << "  p=" << p_label << "  std=";
             if (err_std[pi] < 0) std::cout << "FAIL";
@@ -454,6 +727,11 @@ int main(int argc, char** argv)
                 else std::cout << err_rt[pi];
                 if (prev_rt[pi] > 0 && err_rt[pi] > 0)
                     std::cout << "(r=" << std::fixed << std::setprecision(1) << rate_piola << ")";
+                std::cout << "  PATCH=" << std::scientific << std::setprecision(4);
+                if (err_patch[pi] < 0) std::cout << "FAIL";
+                else std::cout << err_patch[pi];
+                if (prev_patch[pi] > 0 && err_patch[pi] > 0)
+                    std::cout << "(r=" << std::fixed << std::setprecision(1) << rate_patch << ")";
             }
             std::cout << "  [" << std::fixed << std::setprecision(1)
                       << t1_val << "s/" << t2_val << "s]\n"
@@ -461,12 +739,58 @@ int main(int argc, char** argv)
 
             prev_std[pi] = (err_std[pi] > 0) ? err_std[pi] : 0.0;
             prev_rt[pi]  = (err_rt[pi]  > 0) ? err_rt[pi]  : 0.0;
+            prev_patch[pi] = (err_patch[pi] > 0) ? err_patch[pi] : 0.0;
         }
+
+        // Forward-only error: measure cell-avg divergence on the CS grid
+        const auto exact_cs = exact_cell_div(mb, cs, spherical);
+        std::vector<double> err_fwd_ana(3, 0.0), err_fwd_patch(3, 0.0);
+
+        for (int pi = 1; pi <= 2; ++pi) {
+            try {
+                const auto fwd_ana = forward_only_analytical(mb, ll, cs, spherical, pi);
+                err_fwd_ana[pi] = maxerr(fwd_ana, exact_cs);
+            } catch (const std::exception& e) {
+                err_fwd_ana[pi] = -1.0;
+                std::cout << "    [fwd_ana p=" << pi << " FAILED: " << e.what() << "]\n";
+            }
+            try {
+                const auto fwd_patch = forward_only_patch_recovery(mb, ll, cs, spherical, pi);
+                err_fwd_patch[pi] = maxerr(fwd_patch, exact_cs);
+            } catch (const std::exception& e) {
+                err_fwd_patch[pi] = -1.0;
+                std::cout << "    [fwd_patch p=" << pi << " FAILED: " << e.what() << "]\n";
+            }
+
+            const double rate_fa = (prev_fwd_ana[pi] > 0 && err_fwd_ana[pi] > 0)
+                ? std::log2(prev_fwd_ana[pi] / err_fwd_ana[pi]) : 0.0;
+            const double rate_fp = (prev_fwd_patch[pi] > 0 && err_fwd_patch[pi] > 0)
+                ? std::log2(prev_fwd_patch[pi] / err_fwd_patch[pi]) : 0.0;
+
+            std::cout << "  FWD p=" << pi << "  ana=";
+            if (err_fwd_ana[pi] < 0) std::cout << "FAIL";
+            else std::cout << std::scientific << std::setprecision(4) << err_fwd_ana[pi];
+            if (prev_fwd_ana[pi] > 0 && err_fwd_ana[pi] > 0)
+                std::cout << "(r=" << std::fixed << std::setprecision(1) << rate_fa << ")";
+            std::cout << "  patch=";
+            if (err_fwd_patch[pi] < 0) std::cout << "FAIL";
+            else std::cout << std::scientific << std::setprecision(4) << err_fwd_patch[pi];
+            if (prev_fwd_patch[pi] > 0 && err_fwd_patch[pi] > 0)
+                std::cout << "(r=" << std::fixed << std::setprecision(1) << rate_fp << ")";
+            std::cout << "\n" << std::scientific << std::setprecision(4);
+
+            prev_fwd_ana[pi] = (err_fwd_ana[pi] > 0) ? err_fwd_ana[pi] : 0.0;
+            prev_fwd_patch[pi] = (err_fwd_patch[pi] > 0) ? err_fwd_patch[pi] : 0.0;
+        }
+
         std::cout << "\n";
 
         csv << n_cs << "," << ll.size() << "," << cs.size()
             << "," << err_std[0] << "," << err_std[1] << "," << err_std[2]
-            << "," << err_rt[0]  << "," << err_rt[1]  << "," << err_rt[2]  << "\n";
+            << "," << err_rt[0]  << "," << err_rt[1]  << "," << err_rt[2]
+            << "," << err_patch[1] << "," << err_patch[2]
+            << "," << err_fwd_ana[1] << "," << err_fwd_ana[2]
+            << "," << err_fwd_patch[1] << "," << err_fwd_patch[2] << "\n";
         csv.flush();
     }
 
