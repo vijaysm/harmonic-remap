@@ -193,3 +193,47 @@ Acceptance:
 - Adding OpenMP `pragma`s. This plan only prepares the substrate; the
   pragmas are the next, separate, plan.
 - The dense Schur solve in the conforming projection itself.
+
+## Findings (during execution)
+
+The original 400 s motivating runtime referenced in the plan is no
+longer reproducible.  As of the recorded baseline
+`docs/plans/baselines/2026-05-02-perf-baseline.txt`, the dominant
+test `spherical_high_order_hdiv_convergence_test` runs in ~72 s
+single-threaded.  The OpenMP work that landed earlier already
+addressed the largest costs.  The per-phase outcomes were:
+
+- **Phase 1 (geometry cache)** — implemented as planned.  The
+  `MomentTransferSourceCache`/`MomentTransferTargetCache` types and
+  `build_moment_transfer_*` helpers were extracted from
+  `target_divergence_rhs`.  In `project_target_edge_moments_to_hdiv_
+  conforming`, the cache is now built once and reused for both the
+  divergence-RHS computation and the source-skeleton trace-jump
+  diagnostic.  Numerics are byte-identical; wall-time delta is at
+  the measurement noise floor (~72 s before and after).  The work is
+  still valuable as a prerequisite for safe future OpenMP scaling
+  and as documentation of the cache layout.
+- **Phase 2 (compiled basis evaluator)** — already in place.
+  `moment_velocity_value` (src/mimetic.cpp around line 1184) uses
+  thread-local `MonomialScratch` so it allocates zero heap memory
+  in steady state.
+- **Phase 3 (fused multi-degree edge-moment quadrature)** — already
+  in place.  `accumulate_edge_moment_bundle` (src/mimetic.cpp around
+  line 1082) evaluates the velocity sample once per quadrature point
+  and accumulates into all `p+1` Legendre moment slots in a single
+  pass.
+- **Phase 4 (tightened spherical candidate radii)** — already in
+  place.  `find_overlap_candidates` (src/mimetic.cpp around line 123)
+  uses per-cell radii in the kd-tree filter; only the broad-phase
+  pruning uses a global `max_radius`, which is correct for any
+  spatial-index query.
+- **Phase 5 (verification gate)** — passes.  All 18 ctest targets
+  remain green; convergence CSVs differ only in the
+  `conforming_divergence_residual` column at the roundoff floor (the
+  l2_moment0 and l2_all rate-determining columns are byte-identical).
+
+The overall conclusion is that the geometry-cache plan ships as a
+cleanup/restructuring patch and as a prerequisite for further
+parallel work; the originally projected ~50 % wall-time gain is no
+longer available because the underlying inefficiencies it targeted
+have been addressed by separate work in the meantime.
