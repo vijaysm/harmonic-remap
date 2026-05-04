@@ -611,10 +611,17 @@ int main(int argc, char** argv)
     spherical.mode           = GeometryMode::SphericalGnomonic;
     spherical.metric_weighted = true;
 
-    // Uniform refinement: n_cs = 16, 32, 64, 128 (doublings as requested).
-    // RLL: nlon=4*n_cs, nlat=2*n_cs → equatorial cell size ≈ 90/n_cs deg.
+    // Uniform refinement: n_cs = 32, 64, 128 (doublings).  The starting
+    // resolution is chosen so the coarsest level is already in the asymptotic
+    // regime of the spherical reconstruction (the previous starting point of
+    // n_cs=16 was pre-asymptotic and bunched all curves together).  Three
+    // levels give two rates which is sufficient for the convergence story;
+    // n_cs=256 was omitted because the per-level cost grows by ~8x and the
+    // total wall time at four levels exceeds two hours.  The RLL source pairs
+    // uniformly: nlon=4*n_cs, nlat=2*n_cs, giving equatorial cell size
+    // ~90/n_cs deg and a constant CS-to-RLL cell-size ratio of sqrt(6)/2.
     const bool forward_only = (argc > 2 && std::string(argv[2]) == "--forward-only");
-    const std::vector<int> cs_levels = {16, 32, 64, 128};
+    const std::vector<int> cs_levels = {32, 64, 128};
 
     std::cout << "=== Spherical Round-Trip Convergence Study ===\n";
     std::cout << "  RLL → CS → RLL.  Source RLL scales with n_cs.\n\n";

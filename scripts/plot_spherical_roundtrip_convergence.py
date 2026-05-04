@@ -1,18 +1,39 @@
 """
-Plot spherical round-trip convergence study: standard [P_p]^2 vs Piola RT.
+Plot the spherical round-trip convergence study.
+
+Two side-by-side panels share the x-axis (cell-size h in degrees):
+
+  Left panel  -- Round-trip RLL -> CS -> RLL convergence.
+                 p=0 baseline, Piola-RT backward (p=1, p=2), and the
+                 practical patch-recovery round-trip (p=1, p=2).  The
+                 standard [P_p]^2 backward at p=2 is intentionally NOT
+                 plotted: it diverges with refinement (a known
+                 conditioning failure of the [P_p]^2 backward path on
+                 quad CS cells) and previously dominated the y-axis.
+
+  Right panel -- Forward-only RLL -> CS convergence.  Stops after the
+                 forward leg and measures cell-average divergence
+                 error on the CS grid.  Compares the analytical-moment
+                 path (full mu_0..mu_p seeded analytically) with the
+                 patch-recovery path (only mu_0 seeded, higher moments
+                 synthesized via least-squares fit on a face-neighbor
+                 patch).  Isolates source-side reconstruction quality
+                 from backward-leg amplification.
 
 Usage:
-    python scripts/plot_spherical_roundtrip_convergence.py \
-        docs/spherical_roundtrip_convergence.csv \
+    python scripts/plot_spherical_roundtrip_convergence.py \\
+        docs/spherical_roundtrip_convergence.csv \\
         docs/figures/spherical_roundtrip_convergence.png
 """
 
 import sys
+import csv
 import numpy as np
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import csv
+
 
 def read_csv(path):
     data = {}
@@ -29,80 +50,111 @@ def read_csv(path):
                     data[k][n] = float(v)
                 except ValueError:
                     data[k][n] = np.nan
-    # Convert to sorted arrays
     ns = sorted(set(n for k in data for n in data[k]))
     result = {"n_cs": np.array(ns)}
     for k, d in data.items():
         result[k] = np.array([d.get(n, np.nan) for n in ns])
     return result
 
+
+def plot_curve(ax, h, y, color, ls, marker, label):
+    mask = np.isfinite(y) & (y > 0)
+    if mask.sum() >= 1:
+        ax.semilogy(h[mask], y[mask], color=color, ls=ls, marker=marker,
+                    ms=6, label=label)
+
+
 def main():
-    csv_path = sys.argv[1] if len(sys.argv) > 1 else "docs/spherical_roundtrip_convergence.csv"
-    out_path = sys.argv[2] if len(sys.argv) > 2 else "docs/figures/spherical_roundtrip_convergence.png"
+    csv_path = sys.argv[1] if len(sys.argv) > 1 else \
+        "docs/spherical_roundtrip_convergence.csv"
+    out_path = sys.argv[2] if len(sys.argv) > 2 else \
+        "docs/figures/spherical_roundtrip_convergence.png"
 
     d = read_csv(csv_path)
     ns = d["n_cs"]
-    h  = 90.0 / ns  # approximate cell size in degrees
+    # Approximate equatorial cell size in degrees (CS great-circle side).
+    h = 90.0 / ns
 
-    fig, ax = plt.subplots(figsize=(7, 5))
+    fig, (ax_rt, ax_fwd) = plt.subplots(1, 2, figsize=(13, 5),
+                                         sharey=True)
 
-    colors = {"p0": "#9467bd", "p1": "#1f77b4", "p2": "#ff7f0e"}
-    ls_std  = "--"
-    ls_rt   = "-"
+    color_p0 = "#9467bd"
+    color_p1 = "#1f77b4"
+    color_p2 = "#ff7f0e"
 
-    # p=0: MimeticInterpolator (same std and RT — only plot once)
-    y0 = d["std_p0"]
-    mask0 = np.isfinite(y0) & (y0 > 0)
-    if mask0.sum() >= 1:
-        ax.semilogy(h[mask0], y0[mask0],
-                    color=colors["p0"], ls="-", marker="D", ms=6,
-                    label="p=0 (Level-2 mimetic)")
+    # ---- Left panel: round-trip ----
+    plot_curve(ax_rt, h, d["std_p0"], color_p0, "-", "D",
+               r"$p{=}0$ Level-2 mimetic")
+    plot_curve(ax_rt, h, d["rt_p1"], color_p1, "-", "o",
+               r"$p{=}1$ Piola-RT round-trip")
+    plot_curve(ax_rt, h, d["rt_p2"], color_p2, "-", "o",
+               r"$p{=}2$ Piola-RT round-trip")
+    if "patch_p1" in d:
+        plot_curve(ax_rt, h, d["patch_p1"], color_p1, "--", "^",
+                   r"$p{=}1$ patch recovery round-trip")
+    if "patch_p2" in d:
+        plot_curve(ax_rt, h, d["patch_p2"], color_p2, "--", "^",
+                   r"$p{=}2$ patch recovery round-trip")
 
-    # Standard (dashed) for p=1,2
-    for p in [1, 2]:
-        key = f"std_p{p}"
-        y = d[key]
-        mask = np.isfinite(y) & (y > 0)
-        if mask.sum() >= 1:
-            ax.semilogy(h[mask], y[mask],
-                        color=colors[f"p{p}"], ls=ls_std, marker="s", ms=6,
-                        label=f"Standard p={p}")
+    # Reference O(h^1) slope
+    ref_y = None
+    for cand in ("rt_p1", "std_p0"):
+        if cand in d:
+            v = d[cand]
+            mask = np.isfinite(v) & (v > 0)
+            if mask.sum() >= 1:
+                ref_y = float(v[mask][0]) * 1.5
+                break
+    if ref_y is not None:
+        h_ref = np.array([h[0], h[-1]])
+        ax_rt.semilogy(h_ref, ref_y * (h_ref / h_ref[0]) ** 1,
+                       "k:", lw=1.0, label=r"$O(h^1)$ reference")
 
-    # Piola RT (solid) for p=1,2
-    for p in [1, 2]:
-        key = f"rt_p{p}"
-        y = d[key]
-        mask = np.isfinite(y) & (y > 0)
-        if mask.sum() >= 1:
-            ax.semilogy(h[mask], y[mask],
-                        color=colors[f"p{p}"], ls=ls_rt, marker="o", ms=6,
-                        label=f"Piola RT p={p}")
+    ax_rt.set_xlabel("Approximate cell size $h$ (degrees)")
+    ax_rt.set_ylabel(r"Max cell-divergence error ($L_\infty$)")
+    ax_rt.set_title("Round-trip RLL$\\to$CS$\\to$RLL")
+    ax_rt.set_xscale("log")
+    ax_rt.invert_xaxis()
+    ax_rt.grid(True, which="both", alpha=0.3)
+    ax_rt.legend(fontsize=8, loc="lower right")
 
-    # Reference slope O(h^1)
-    h_ref = np.array([h[0], h[-1]])
-    e0 = d["rt_p1"][np.isfinite(d["rt_p1"])][0] * 2.0
-    ax.semilogy(h_ref, e0 * (h_ref / h_ref[0])**1, "k:", lw=1.2, label=r"$O(h^1)$")
+    # ---- Right panel: forward-only ----
+    if "fwd_ana_p1" in d:
+        plot_curve(ax_fwd, h, d["fwd_ana_p1"], color_p1, "-", "o",
+                   r"$p{=}1$ analytical moments (forward)")
+    if "fwd_ana_p2" in d:
+        plot_curve(ax_fwd, h, d["fwd_ana_p2"], color_p2, "-", "o",
+                   r"$p{=}2$ analytical moments (forward)")
+    if "fwd_patch_p1" in d:
+        plot_curve(ax_fwd, h, d["fwd_patch_p1"], color_p1, "--", "^",
+                   r"$p{=}1$ patch recovery (forward)")
+    if "fwd_patch_p2" in d:
+        plot_curve(ax_fwd, h, d["fwd_patch_p2"], color_p2, "--", "^",
+                   r"$p{=}2$ patch recovery (forward)")
 
-    ax.set_xlabel("Approximate cell size h (degrees)", fontsize=12)
-    ax.set_ylabel("Max cell-div error (L∞)", fontsize=12)
-    ax.set_title("Round-trip RLL→CS→RLL: Standard vs Piola RT", fontsize=12)
-    ax.legend(ncol=2, fontsize=9, loc="upper left")
-    ax.invert_xaxis()
-    ax.set_xscale("log")
-    ax.grid(True, which="both", alpha=0.3)
+    if ref_y is not None:
+        for slope, lbl in [(1, r"$O(h^1)$"), (2, r"$O(h^2)$"),
+                            (3, r"$O(h^3)$")]:
+            ax_fwd.semilogy(h_ref, ref_y * (h_ref / h_ref[0]) ** slope,
+                            "k:", lw=0.8, alpha=0.5)
+            ax_fwd.annotate(lbl, xy=(h_ref[-1],
+                                     ref_y * (h_ref[-1] / h_ref[0]) ** slope),
+                            fontsize=7, color="gray", ha="left", va="center")
 
-    # Annotation: highlight divergence
-    std_p2 = d["std_p2"]
-    valid = np.isfinite(std_p2) & (std_p2 > 0)
-    if valid.sum() >= 2:
-        ax.annotate("Standard p=1,2\ndivergence", xy=(h[valid][-1], std_p2[valid][-1]),
-                    xytext=(h[valid][-1]*1.8, std_p2[valid][-1]*2),
-                    arrowprops=dict(arrowstyle="->", color="gray"),
-                    fontsize=8, color="gray")
+    ax_fwd.set_xlabel("Approximate cell size $h$ (degrees)")
+    ax_fwd.set_title("Forward-only RLL$\\to$CS")
+    ax_fwd.set_xscale("log")
+    ax_fwd.invert_xaxis()
+    ax_fwd.grid(True, which="both", alpha=0.3)
+    ax_fwd.legend(fontsize=8, loc="lower right")
 
-    fig.tight_layout()
-    fig.savefig(out_path, dpi=150)
+    fig.suptitle("Spherical round-trip and forward-only convergence "
+                 "($\\nabla_S Y_2^0$ field)",
+                 fontsize=12)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
     print(f"Saved: {out_path}")
+
 
 if __name__ == "__main__":
     main()
