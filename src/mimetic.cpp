@@ -1737,6 +1737,55 @@ Eigen::MatrixXd polygon_monomial_integral_table(const std::vector<Eigen::Vector2
     return table;
 }
 
+// Weighted polygon monomial integral I(a, b) = integral_K x^a y^b w(p) dA,
+// where w is an arbitrary scalar weight evaluated at the integration point.
+// Uses Duffy fan triangulation with 10-point Gauss-Legendre, matching the
+// metric-weighted SplitBasis spherical path.  When w identically returns 1,
+// the result equals polygon_monomial_integral(vertices, a, b) up to the
+// quadrature accuracy of the 10-point rule.
+template <typename Weight>
+double polygon_monomial_integral_weighted(const std::vector<Eigen::Vector2d>& vertices,
+                                          const int a,
+                                          const int b,
+                                          const Weight& weight_fn)
+{
+    const int N = static_cast<int>(vertices.size());
+    if (N < 3 || a < 0 || b < 0) {
+        return 0.0;
+    }
+
+    const std::vector<GaussLegendrePoint> rule = gauss_legendre_rule(10);
+    double integral = 0.0;
+    const Eigen::Vector2d origin = Eigen::Vector2d::Zero();
+    for (int i = 0; i < N; ++i) {
+        const Eigen::Vector2d& v0 = vertices[i];
+        const Eigen::Vector2d& v1 = vertices[(i + 1) % N];
+        integral += integrate_triangle_duffy(origin, v0, v1, rule,
+            [&](const Eigen::Vector2d& p) {
+                const double monomial = std::pow(p.x(), a) * std::pow(p.y(), b);
+                return monomial * weight_fn(p);
+            });
+    }
+    return integral;
+}
+
+template <typename Weight>
+Eigen::MatrixXd polygon_monomial_integral_table_weighted(const std::vector<Eigen::Vector2d>& vertices,
+                                                          const int max_degree,
+                                                          const Weight& weight_fn)
+{
+    const int dim = scalar_monomial_basis_count(max_degree);
+    Eigen::MatrixXd table(dim, 1);
+    int index = 0;
+    for (int total_degree = 0; total_degree <= max_degree; ++total_degree) {
+        for (int a = total_degree; a >= 0; --a, ++index) {
+            const int b = total_degree - a;
+            table(index, 0) = polygon_monomial_integral_weighted(vertices, a, b, weight_fn);
+        }
+    }
+    return table;
+}
+
 double lookup_monomial_integral(const Eigen::MatrixXd& table, const int degree, const int a, const int b)
 {
     const int index = scalar_monomial_index(degree, a, b);
