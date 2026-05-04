@@ -4508,21 +4508,73 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
         }
 
         const int max_I_degree = 2 * p + 4;
-        const Eigen::MatrixXd I_table = polygon_monomial_integral_table(poly.points, max_I_degree);
-
         const VemDecomposedBasis vem_basis = build_vem_decomposed_basis(p);
+        const bool use_surface_metric_vem =
+            options_.metric_weighted && options_.mode == GeometryMode::SphericalGnomonic;
 
-        const Eigen::VectorXd div_coeffs =
-            vem_reconstruct_divergence(vem_basis, poly, edges, p,
-                                       all_edge_moments, cell_moments,
-                                       I_table, max_I_degree);
+        Eigen::MatrixXd M;
+        Eigen::VectorXd div_coeffs;
+        Eigen::VectorXd rhs;
 
-        const Eigen::MatrixXd M = vem_mass_matrix(vem_basis, I_table, max_I_degree);
+        if (use_surface_metric_vem) {
+            // Spherical lift: assemble the four metric-weighted monomial
+            // integral tables once
+            //   I_J  = integral_K x^a y^b |J| dxi deta
+            //   I_xx = integral_K x^a y^b h_xx(p) dxi deta
+            //   I_xy = integral_K x^a y^b h_xy(p) dxi deta
+            //   I_yy = integral_K x^a y^b h_yy(p) dxi deta
+            // where h is the chart Hodge metric J^T J / |J|.  Each cell
+            // chart is centered at its own centroid, so the gnomonic
+            // weight callable shifts the local-chart coordinate by the
+            // centroid before evaluating |J| or h.
+            const GnomonicFrame frame{poly.n, poly.e_x, poly.e_y, options_.radius};
+            const Eigen::Vector2d centroid = poly.centroid;
 
-        const Eigen::VectorXd rhs =
-            vem_projection_rhs(vem_basis, poly, edges, p,
-                               all_edge_moments, cell_moments, div_coeffs,
-                               I_table, max_I_degree);
+            auto weight_J = [&](const Eigen::Vector2d& p_local) {
+                return gnomonic_area_scale(p_local + centroid, frame);
+            };
+            auto weight_hxx = [&](const Eigen::Vector2d& p_local) {
+                return gnomonic_hodge_metric(p_local + centroid, frame)(0, 0);
+            };
+            auto weight_hxy = [&](const Eigen::Vector2d& p_local) {
+                return gnomonic_hodge_metric(p_local + centroid, frame)(0, 1);
+            };
+            auto weight_hyy = [&](const Eigen::Vector2d& p_local) {
+                return gnomonic_hodge_metric(p_local + centroid, frame)(1, 1);
+            };
+
+            const Eigen::MatrixXd I_J_table  =
+                polygon_monomial_integral_table_weighted(poly.points, max_I_degree, weight_J);
+            const Eigen::MatrixXd I_xx_table =
+                polygon_monomial_integral_table_weighted(poly.points, max_I_degree, weight_hxx);
+            const Eigen::MatrixXd I_xy_table =
+                polygon_monomial_integral_table_weighted(poly.points, max_I_degree, weight_hxy);
+            const Eigen::MatrixXd I_yy_table =
+                polygon_monomial_integral_table_weighted(poly.points, max_I_degree, weight_hyy);
+
+            div_coeffs = vem_reconstruct_divergence_weighted(
+                vem_basis, poly, edges, p,
+                all_edge_moments, cell_moments,
+                I_J_table, max_I_degree);
+
+            M = vem_mass_matrix_weighted(vem_basis, I_xx_table, I_xy_table, I_yy_table, max_I_degree);
+
+            const Eigen::Matrix2d h_centroid = gnomonic_hodge_metric(centroid, frame);
+            rhs = vem_projection_rhs_weighted(
+                vem_basis, poly, edges, p,
+                all_edge_moments, cell_moments, div_coeffs,
+                I_J_table, max_I_degree, h_centroid);
+        } else {
+            const Eigen::MatrixXd I_table = polygon_monomial_integral_table(poly.points, max_I_degree);
+
+            div_coeffs = vem_reconstruct_divergence(vem_basis, poly, edges, p,
+                                                    all_edge_moments, cell_moments,
+                                                    I_table, max_I_degree);
+            M = vem_mass_matrix(vem_basis, I_table, max_I_degree);
+            rhs = vem_projection_rhs(vem_basis, poly, edges, p,
+                                     all_edge_moments, cell_moments, div_coeffs,
+                                     I_table, max_I_degree);
+        }
 
         Eigen::VectorXd decomposed_coeffs;
         {
