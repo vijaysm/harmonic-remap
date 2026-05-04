@@ -2207,32 +2207,64 @@ void patch_recover_moments_impl(
 
     std::vector<PatchEdge> patch_edges;
 
-    // Centroid offset: cell_poly coords are relative to cell_poly.centroid.
-    // We re-express them relative to target_poly.centroid via 3D projection.
+    const bool spherical = (geo_options.mode == GeometryMode::SphericalGnomonic);
+
+    // For spherical geometry, build a gnomonic frame centered on the target cell
+    // so ALL neighbor edges are projected into the same chart (the target's).
+    // The planar path uses centroid-relative translation which is exact in R².
+    GnomonicFrame target_frame;
+    if (spherical) {
+        target_frame.center = target_poly.n;
+        target_frame.e_x    = target_poly.e_x;
+        target_frame.e_y    = target_poly.e_y;
+        target_frame.radius = 1.0;
+    }
+
     for (const moab::EntityHandle cell : patch_cells) {
         const LocalPolygon cell_poly = local_polygon(mb, cell, geo_options);
         const std::vector<LocalEdge> cell_edges = local_edges(mb, cell_poly);
+        const int n_edges_cell = static_cast<int>(cell_edges.size());
 
-        const Eigen::Vector2d delta(
-            (cell_poly.centroid_3d - target_poly.centroid_3d).dot(target_poly.e_x),
-            (cell_poly.centroid_3d - target_poly.centroid_3d).dot(target_poly.e_y));
+        // In spherical mode, re-project cell's 3D vertices into the TARGET
+        // cell's gnomonic chart (centroid-relative). This avoids the chart
+        // mismatch that arises when each cell uses its own gnomonic frame.
+        std::vector<Eigen::Vector2d> verts_in_target_chart;
+        if (spherical) {
+            verts_in_target_chart.resize(cell_poly.points_3d.size());
+            for (std::size_t vi = 0; vi < cell_poly.points_3d.size(); ++vi) {
+                verts_in_target_chart[vi] =
+                    project_gnomonic(cell_poly.points_3d[vi], target_frame)
+                    - target_poly.centroid;
+            }
+        }
 
-        for (std::size_t ei = 0; ei < cell_edges.size(); ++ei) {
-            auto key = std::make_pair(cell, ei);
+        for (int ei = 0; ei < n_edges_cell; ++ei) {
+            auto key = std::make_pair(cell, static_cast<std::size_t>(ei));
             auto it = directed_source_moments.find(key);
             if (it == directed_source_moments.end() || it->second.empty()) {
                 continue;
             }
 
-            const Eigen::Vector2d edge_a_tf = cell_edges[ei].a + delta;
-            const Eigen::Vector2d edge_b_tf = cell_edges[ei].b + delta;
-            const Eigen::Vector2d edge_dir = edge_b_tf - edge_a_tf;
+            Eigen::Vector2d edge_a, edge_b;
+            if (spherical) {
+                const int next = (ei + 1) % n_edges_cell;
+                edge_a = verts_in_target_chart[ei];
+                edge_b = verts_in_target_chart[next];
+            } else {
+                const Eigen::Vector2d delta(
+                    (cell_poly.centroid_3d - target_poly.centroid_3d).dot(target_poly.e_x),
+                    (cell_poly.centroid_3d - target_poly.centroid_3d).dot(target_poly.e_y));
+                edge_a = cell_edges[ei].a + delta;
+                edge_b = cell_edges[ei].b + delta;
+            }
+
+            const Eigen::Vector2d edge_dir = edge_b - edge_a;
             const double edge_len = edge_dir.norm();
             if (edge_len < kTolerance) continue;
 
             PatchEdge pe;
-            pe.a = edge_a_tf;
-            pe.b = edge_b_tf;
+            pe.a = edge_a;
+            pe.b = edge_b;
             pe.outward_normal = Eigen::Vector2d(edge_dir.y(), -edge_dir.x()) / edge_len;
             pe.length = edge_len;
             pe.flux = it->second[0];
@@ -2294,14 +2326,18 @@ void patch_recover_moments_impl(
         b_vec(i) = pe.flux * inv_scale;
     }
 
-    // SVD solve
+    // SVD solve — Eigen's JacobiSVD already applies default threshold-based
+    // rank truncation (singular values < max_sv * epsilon * max(m,n) are zeroed).
+    // We only guard against a fully degenerate system (no usable singular values).
     const Eigen::JacobiSVD<Eigen::MatrixXd> svd(A, Eigen::ComputeThinU | Eigen::ComputeThinV);
+    const Eigen::VectorXd& sv = svd.singularValues();
+    if (sv.size() == 0 || sv(0) < kTolerance) {
+        return;
+    }
     const Eigen::VectorXd coeffs_scaled = svd.solve(b_vec);
 
-    // Convert coefficients back to unscaled coordinates
-    // In scaled coords: v_h(x_s) = sum c_j x_s^{a_j} y_s^{b_j} e_{comp_j}
-    // In unscaled: x_s = x/scale, so x_s^a = x^a / scale^a
-    // Thus c_unscaled = c_scaled / scale^{a+b}
+    // Convert coefficients back to unscaled coordinates:
+    // x_s = x/scale → x_s^a = x^a / scale^a → c_unscaled = c_scaled / scale^{a+b}
     Eigen::VectorXd coeffs(n_basis);
     for (int j = 0; j < n_basis; ++j) {
         const int deg = basis[j].a + basis[j].b;
