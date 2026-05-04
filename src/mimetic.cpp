@@ -1899,7 +1899,7 @@ Eigen::VectorXd vem_reconstruct_divergence(const VemDecomposedBasis& basis,
         for (std::size_t ei = 0; ei < edges.size(); ++ei) {
             div_integral += edge_moments[ei][0];
         }
-        d(0) = div_integral / poly.area;
+        d(0) = (std::abs(poly.area) > kTolerance) ? div_integral / poly.area : 0.0;
         return d;
     }
 
@@ -1959,7 +1959,16 @@ Eigen::VectorXd vem_reconstruct_divergence(const VemDecomposedBasis& basis,
         }
     }
 
-    return G.ldlt().solve(g);
+    const Eigen::LDLT<Eigen::MatrixXd> ldlt(G);
+    if (ldlt.info() != Eigen::Success || !ldlt.isPositive()) {
+        // Gram matrix G should be SPD for any non-degenerate polygon.  If the
+        // factorization fails (e.g. a degenerate sliver cell whose monomial
+        // integrals are near-rank-deficient), fall back to a pseudoinverse via
+        // SVD so the caller gets a best-effort answer instead of garbage.
+        const Eigen::JacobiSVD<Eigen::MatrixXd> svd(G, Eigen::ComputeThinU | Eigen::ComputeThinV);
+        return svd.solve(g);
+    }
+    return ldlt.solve(g);
 }
 
 // Assemble the RHS of the VEM elliptic projection  M c = rhs,
@@ -4071,17 +4080,38 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
         const int p = options.edge_moment_order;
 
         std::vector<std::vector<double>> all_edge_moments(edges.size());
+        bool edge_moments_complete = true;
         for (std::size_t ei = 0; ei < edges.size(); ++ei) {
             all_edge_moments[ei] = source_edge_moments(polygon, ei);
             if (static_cast<int>(all_edge_moments[ei].size()) != p + 1) {
-                throw std::runtime_error("Source edge moments do not match requested moment order");
+                edge_moments_complete = false;
             }
         }
+        if (!edge_moments_complete) {
+            if (options.reconstruction_mode == ReconstructionMode::VemProjection) {
+                throw std::runtime_error("Source edge moments do not match requested moment order");
+            }
+            // PatchRecoveryVem: patch recovery did not produce full-order moments
+            // for this cell (e.g. boundary cell with insufficient neighbors).
+            // Fall through to the LS/KKT path below.
+        } else {
 
-        std::vector<Eigen::Vector2d> cell_moments;
         const int cell_moment_order = p;
         const int num_cell_moments = vector_moment_basis_count(cell_moment_order);
-        cell_moments = source_cell_vector_moments(polygon);
+        std::vector<Eigen::Vector2d> cell_moments;
+        {
+            const auto it = source_cell_vector_moments_.find(polygon);
+            if (it != source_cell_vector_moments_.end()) {
+                cell_moments = it->second;
+            }
+        }
+        if (static_cast<int>(cell_moments.size()) < num_cell_moments) {
+            // Pad with zeros: the VEM projection degrades gracefully — gradient
+            // modes are fully determined by edge data, only rotational modes
+            // lose accuracy.  This is the expected path when patch recovery
+            // produced insufficient cell moments.
+            cell_moments.resize(static_cast<std::size_t>(num_cell_moments), Eigen::Vector2d::Zero());
+        }
 
         const int max_I_degree = 2 * p + 4;
         const Eigen::MatrixXd I_table = polygon_monomial_integral_table(poly.points, max_I_degree);
@@ -4100,7 +4130,16 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
                                all_edge_moments, cell_moments, div_coeffs,
                                I_table, max_I_degree);
 
-        const Eigen::VectorXd decomposed_coeffs = M.ldlt().solve(rhs);
+        Eigen::VectorXd decomposed_coeffs;
+        {
+            const Eigen::LDLT<Eigen::MatrixXd> ldlt(M);
+            if (ldlt.info() != Eigen::Success || !ldlt.isPositive()) {
+                const Eigen::JacobiSVD<Eigen::MatrixXd> svd(M, Eigen::ComputeThinU | Eigen::ComputeThinV);
+                decomposed_coeffs = svd.solve(rhs);
+            } else {
+                decomposed_coeffs = ldlt.solve(rhs);
+            }
+        }
 
         const Eigen::VectorXd cart_coeffs = vem_decomposed_to_cartesian(vem_basis, decomposed_coeffs, p);
 
@@ -4117,7 +4156,8 @@ MomentReconstruction PlanarMomentInterpolator::reconstruct_source_polygon(const 
 
         reconstructions_[polygon] = reconstruction;
         return reconstruction;
-    }
+        } // end edge_moments_complete
+    } // end use_vem
 
     const bool use_surface_metric = options_.metric_weighted && options_.mode == GeometryMode::SphericalGnomonic;
 
