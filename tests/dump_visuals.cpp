@@ -15,6 +15,7 @@
 #include <string>
 #include <map>
 #include <numeric>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -1003,6 +1004,117 @@ void set_exact_moments(moab::Core& mb,
 /// cell vector moments computed from the forward-reconstructed field
 /// (two-pass: first reconstruct from edge moments only, then evaluate
 /// the reconstruction to get cell moments, then re-reconstruct).
+/// Build face-neighbor adjacency by matching vertex COORDINATES (not handles).
+/// Meshes created by generate_icosahedral_dual and similar generators do not
+/// share MOAB vertex handles across cells, so a handle-based adjacency lookup
+/// would return empty neighbor lists.  This function hashes vertex positions
+/// to an integer key and matches edges by (key_a, key_b) pairs.
+std::map<moab::EntityHandle, std::vector<moab::EntityHandle>>
+build_face_neighbors(moab::Core& mb, const std::vector<moab::EntityHandle>& cells)
+{
+    // Quantize 3D coordinates to integer keys: round to ~1e-10 resolution.
+    auto coord_key = [](double x, double y, double z) -> std::tuple<long long, long long, long long> {
+        const double inv = 1.0e10;
+        return {static_cast<long long>(std::round(x * inv)),
+                static_cast<long long>(std::round(y * inv)),
+                static_cast<long long>(std::round(z * inv))};
+    };
+
+    using VKey = std::tuple<long long, long long, long long>;
+    using EdgeKey = std::pair<VKey, VKey>;
+
+    auto make_edge_key = [](VKey a, VKey b) -> EdgeKey {
+        return (a < b) ? std::make_pair(a, b) : std::make_pair(b, a);
+    };
+
+    // Collect edge keys per cell
+    std::map<EdgeKey, std::vector<moab::EntityHandle>> edge_to_cells;
+
+    for (const moab::EntityHandle cell : cells) {
+        const moab::EntityHandle* conn = nullptr;
+        int nv = 0;
+        mb.get_connectivity(cell, conn, nv);
+
+        std::vector<VKey> keys(nv);
+        for (int i = 0; i < nv; ++i) {
+            double xyz[3];
+            mb.get_coords(&conn[i], 1, xyz);
+            keys[i] = coord_key(xyz[0], xyz[1], xyz[2]);
+        }
+
+        for (int i = 0; i < nv; ++i) {
+            EdgeKey ek = make_edge_key(keys[i], keys[(i + 1) % nv]);
+            edge_to_cells[ek].push_back(cell);
+        }
+    }
+
+    std::map<moab::EntityHandle, std::vector<moab::EntityHandle>> neighbors;
+    for (const moab::EntityHandle cell : cells) {
+        const moab::EntityHandle* conn = nullptr;
+        int nv = 0;
+        mb.get_connectivity(cell, conn, nv);
+
+        std::vector<VKey> keys(nv);
+        for (int i = 0; i < nv; ++i) {
+            double xyz[3];
+            mb.get_coords(&conn[i], 1, xyz);
+            keys[i] = coord_key(xyz[0], xyz[1], xyz[2]);
+        }
+
+        std::set<moab::EntityHandle> nbr_set;
+        for (int i = 0; i < nv; ++i) {
+            EdgeKey ek = make_edge_key(keys[i], keys[(i + 1) % nv]);
+            for (moab::EntityHandle other : edge_to_cells[ek])
+                if (other != cell) nbr_set.insert(other);
+        }
+        neighbors[cell] = std::vector<moab::EntityHandle>(nbr_set.begin(), nbr_set.end());
+    }
+    return neighbors;
+}
+
+/// Helper: run patch recovery on a mesh to produce cell vector moments.
+/// Requires shared-mesh neighbor lookup translated to the duplicated mesh.
+void patch_recover_on_mesh(
+    moab::Core& mb_shared,
+    const std::vector<moab::EntityHandle>& cells_shared,
+    const std::vector<moab::EntityHandle>& cells_dup,
+    mimetic::PlanarMomentInterpolator& interp,
+    int order)
+{
+    const auto orig_neighbors = build_face_neighbors(mb_shared, cells_shared);
+    std::map<moab::EntityHandle, moab::EntityHandle> orig_to_dup;
+    for (std::size_t i = 0; i < cells_shared.size(); ++i)
+        orig_to_dup[cells_shared[i]] = cells_dup[i];
+
+    for (std::size_t ci = 0; ci < cells_dup.size(); ++ci) {
+        std::vector<moab::EntityHandle> nbrs_dup;
+        auto it = orig_neighbors.find(cells_shared[ci]);
+        if (it != orig_neighbors.end()) {
+            for (const moab::EntityHandle orig_nbr : it->second) {
+                auto jt = orig_to_dup.find(orig_nbr);
+                if (jt != orig_to_dup.end())
+                    nbrs_dup.push_back(jt->second);
+            }
+        }
+        interp.recover_moments_from_patch(cells_dup[ci], order, nbrs_dup);
+    }
+}
+
+/// Symmetric VEM round-trip: both legs use the same algorithm.
+///
+/// Each leg:
+///   1. Set μ₀ on edges (forward: analytical; backward: transferred moment-0).
+///   2. Patch-recover higher moments + cell vector moments from neighbor patch.
+///   3. VEM-project from edge moments + cell moments.
+///   4. Transfer to the next mesh.
+///
+/// The forward transfer produces all p+1 edge moments on the intermediate
+/// mesh by construction.  On the backward leg, we use all transferred edge
+/// moments (not just μ₀) for a richer reconstruction, but still run patch
+/// recovery to obtain the cell vector moments that VEM needs for the
+/// rotational subspace.  The transferred edge moments are restored after
+/// patch recovery (which would otherwise overwrite them with LS-derived
+/// values).
 std::vector<double> roundtrip_highorder(moab::Core& mb_shared,
                                         const std::vector<moab::EntityHandle>& source_cells,
                                         const std::vector<moab::EntityHandle>& inter_cells,
@@ -1010,76 +1122,91 @@ std::vector<double> roundtrip_highorder(moab::Core& mb_shared,
                                         int order)
 {
     using namespace mimetic::test_sphere;
-    mimetic::MomentMethodOptions opts;
-    opts.edge_moment_order = order;
-    opts.cell_moment_order = std::max(1, order - 1);
-    opts.quadrature_points = 10;
-    opts.regularization = 1.0e-12;
-    opts.exact_constraints = false;
+    const int p = order;
 
-    // Forward: high-order source → intermediate (fresh MOAB)
+    mimetic::MomentMethodOptions opts;
+    opts.edge_moment_order  = p;
+    opts.quadrature_points  = 10;
+    opts.regularization     = 1.0e-12;
+    opts.exact_constraints  = false;
+    opts.reconstruction_mode = mimetic::ReconstructionMode::PatchRecoveryVem;
+
+    // ── Forward leg: source → intermediate ──────────────────────────────
     moab::Core mb_fwd;
-    auto src_fwd = duplicate_mesh(mb_shared, source_cells, mb_fwd);
-    auto inter_fwd = duplicate_mesh(mb_shared, inter_cells, mb_fwd);
+    auto src_fwd   = duplicate_mesh(mb_shared, source_cells, mb_fwd);
+    auto inter_fwd = duplicate_mesh(mb_shared, inter_cells,  mb_fwd);
 
     mimetic::PlanarMomentInterpolator fwd(mb_fwd);
     fwd.set_geometry_options(spherical);
-    set_exact_moments(mb_fwd, fwd, src_fwd, spherical, order);
-    for (const moab::EntityHandle cell : src_fwd)
-        fwd.reconstruct_source_polygon(cell, opts);
 
-    const mimetic::EdgeMomentTransferResult fwd_xfer =
-        fwd.transfer_source_to_target_edge_moments(src_fwd, inter_fwd, order);
-
-    // Backward: high-order intermediate → source (another fresh MOAB)
-    moab::Core mb_bwd;
-    auto inter_bwd = duplicate_mesh(mb_shared, inter_cells, mb_bwd);
-    auto src_bwd = duplicate_mesh(mb_shared, source_cells, mb_bwd);
-
-    mimetic::GeometryOptions bwd_geo = spherical;
-    bwd_geo.metric_weighted = false;  // disable degree elevation on backward leg
-    mimetic::PlanarMomentInterpolator bwd(mb_bwd);
-    bwd.set_geometry_options(bwd_geo);
-
-    // Backward reconstruction using Piola-consistent RT for quad cells.
-    // For 4-sided cells: uses the RT basis with cond(A)=1 (no Piola ill-conditioning).
-    // For other topologies (Voronoi, triangles): falls back to standard [P_p]^2 LS.
-    const int p = opts.edge_moment_order;
-    const int basis_dim = (p + 1) * (p + 2);
-    const int cmo = std::max(1, p - 1);
-    int n_cm = 0;
-    for (int td = 0; td <= cmo; ++td) n_cm += td + 1;
-
-    std::size_t dof = 0;
-    for (std::size_t ci = 0; ci < inter_bwd.size(); ++ci) {
-        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb_bwd, inter_bwd[ci], bwd_geo);
-        const int n_edges = static_cast<int>(poly.vertices.size());
-
-        // Collect edge moments for this cell.
-        for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++dof)
-            bwd.set_source_edge_moments(inter_bwd[ci], i, fwd_xfer.target_moments[dof]);
-
-        if (n_edges == 4) {
-            // Piola RT: cond(A)=1 → no amplification of forward transfer errors.
-            // Works for any p, exactly determined (4(p+1) DOFs for 4(p+1)-dim RT space).
-            bwd.reconstruct_source_polygon_piola_rt(inter_bwd[ci], p);
-        } else {
-            // Non-quad (Voronoi, triangles): use edge-only [P_p]^2 reconstruction.
-            // cell_weight=0 always: avoids corrupting exactly-determined cells
-            // (e.g. pentagon Voronoi at p=3: 20=20) with zero-valued soft constraints.
-            // Overdetermined cells (6-sided Voronoi at p=3: 24>20) are robust edge-only.
-            mimetic::MomentMethodOptions bwd_opts = opts;
-            bwd_opts.cell_weight = 0.0;
-            bwd.set_source_cell_vector_moments(inter_bwd[ci],
-                std::vector<Eigen::Vector2d>(static_cast<std::size_t>(n_cm), Eigen::Vector2d::Zero()));
-            bwd.reconstruct_source_polygon(inter_bwd[ci], bwd_opts);
+    // Step 1: seed moment-0 only (analytical flux)
+    for (const moab::EntityHandle cell : src_fwd) {
+        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb_fwd, cell, spherical);
+        for (std::size_t i = 0; i < poly.vertices.size(); ++i) {
+            const double flux = exact_chart_edge_flux(mb_fwd, cell, i,
+                                                       spherical_harmonic_gradient);
+            fwd.set_source_edge_moments(cell, i, {flux});
         }
     }
 
-    // Transfer back: intermediate → source
-    const mimetic::EdgeMomentTransferResult bwd_xfer =
-        bwd.transfer_source_to_target_edge_moments(inter_bwd, src_bwd, order);
+    // Step 2: patch recovery → higher edge moments + cell vector moments
+    patch_recover_on_mesh(mb_shared, source_cells, src_fwd, fwd, p);
 
+    // Step 3: VEM reconstruct each source cell
+    for (const moab::EntityHandle cell : src_fwd)
+        fwd.reconstruct_source_polygon(cell, opts);
+
+    // Step 4: forward transfer (produces all p+1 moments on intermediate edges)
+    const mimetic::EdgeMomentTransferResult fwd_xfer =
+        fwd.transfer_source_to_target_edge_moments(src_fwd, inter_fwd, p);
+
+    // ── Backward leg: intermediate → source ─────────────────────────────
+    moab::Core mb_bwd;
+    auto inter_bwd = duplicate_mesh(mb_shared, inter_cells,  mb_bwd);
+    auto src_bwd   = duplicate_mesh(mb_shared, source_cells, mb_bwd);
+
+    mimetic::GeometryOptions bwd_geo = spherical;
+    bwd_geo.metric_weighted = false;  // chart-coordinate moments from transfer
+    mimetic::PlanarMomentInterpolator bwd(mb_bwd);
+    bwd.set_geometry_options(bwd_geo);
+
+    // Step 5: set ALL transferred edge moments (μ₀..μ_p) on intermediate cells
+    // Save them so we can restore after patch recovery.
+    struct CellEdgeMoments {
+        moab::EntityHandle cell;
+        std::size_t edge_idx;
+        std::vector<double> moments;
+    };
+    std::vector<CellEdgeMoments> transferred;
+
+    std::size_t dof = 0;
+    for (std::size_t ci = 0; ci < inter_bwd.size(); ++ci) {
+        const mimetic::LocalPolygon poly = mimetic::local_polygon(mb_bwd, inter_bwd[ci], spherical);
+        for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++dof) {
+            bwd.set_source_edge_moments(inter_bwd[ci], i, fwd_xfer.target_moments[dof]);
+            transferred.push_back({inter_bwd[ci], i, fwd_xfer.target_moments[dof]});
+        }
+    }
+
+    // Step 6: patch recovery to obtain cell vector moments.
+    // This also overwrites edge moments with LS-derived values, so we
+    // restore the transferred edge moments immediately afterward.
+    patch_recover_on_mesh(mb_shared, inter_cells, inter_bwd, bwd, p);
+
+    for (const auto& cem : transferred)
+        bwd.set_source_edge_moments(cem.cell, cem.edge_idx, cem.moments);
+
+    // Step 7: VEM reconstruct each intermediate cell
+    mimetic::MomentMethodOptions bwd_opts = opts;
+    bwd_opts.reconstruction_mode = mimetic::ReconstructionMode::VemProjection;
+    for (const moab::EntityHandle cell : inter_bwd)
+        bwd.reconstruct_source_polygon(cell, bwd_opts);
+
+    // Step 8: backward transfer
+    const mimetic::EdgeMomentTransferResult bwd_xfer =
+        bwd.transfer_source_to_target_edge_moments(inter_bwd, src_bwd, p);
+
+    // Step 9: roundtripped cell-average divergence
     std::vector<double> result;
     std::size_t d3 = 0;
     for (const moab::EntityHandle cell : src_bwd) {
@@ -1090,7 +1217,6 @@ std::vector<double> roundtrip_highorder(moab::Core& mb_shared,
         result.push_back(flux / poly.area);
     }
     return result;
-
 }
 
 /// Compute exact cell-averaged divergence from manufactured field.

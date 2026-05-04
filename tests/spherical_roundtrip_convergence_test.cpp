@@ -204,30 +204,51 @@ exact_cell_div(moab::Core& mb, const std::vector<moab::EntityHandle>& cells,
 static std::map<moab::EntityHandle, std::vector<moab::EntityHandle>>
 build_face_neighbors(moab::Core& mb, const std::vector<moab::EntityHandle>& cells)
 {
-    using VPair = std::pair<moab::EntityHandle, moab::EntityHandle>;
-    std::map<VPair, std::vector<moab::EntityHandle>> edge_to_cells;
+    // Match edges by quantized 3D vertex coordinates (not handles).
+    // Meshes with non-shared vertices (e.g. icosahedral dual) need this.
+    auto coord_key = [](double x, double y, double z) -> std::tuple<long long, long long, long long> {
+        const double inv = 1.0e10;
+        return {static_cast<long long>(std::round(x * inv)),
+                static_cast<long long>(std::round(y * inv)),
+                static_cast<long long>(std::round(z * inv))};
+    };
 
+    using VKey = std::tuple<long long, long long, long long>;
+    using EdgeKey = std::pair<VKey, VKey>;
+    auto make_edge_key = [](VKey a, VKey b) -> EdgeKey {
+        return (a < b) ? std::make_pair(a, b) : std::make_pair(b, a);
+    };
+
+    std::map<EdgeKey, std::vector<moab::EntityHandle>> edge_to_cells;
     for (const moab::EntityHandle cell : cells) {
         const moab::EntityHandle* conn = nullptr;
         int nv = 0;
         mb.get_connectivity(cell, conn, nv);
+        std::vector<VKey> keys(nv);
         for (int i = 0; i < nv; ++i) {
-            moab::EntityHandle v0 = conn[i], v1 = conn[(i + 1) % nv];
-            VPair key = (v0 < v1) ? std::make_pair(v0, v1) : std::make_pair(v1, v0);
-            edge_to_cells[key].push_back(cell);
+            double xyz[3];
+            mb.get_coords(&conn[i], 1, xyz);
+            keys[i] = coord_key(xyz[0], xyz[1], xyz[2]);
+        }
+        for (int i = 0; i < nv; ++i) {
+            edge_to_cells[make_edge_key(keys[i], keys[(i + 1) % nv])].push_back(cell);
         }
     }
 
     std::map<moab::EntityHandle, std::vector<moab::EntityHandle>> neighbors;
     for (const moab::EntityHandle cell : cells) {
-        std::set<moab::EntityHandle> nbr_set;
         const moab::EntityHandle* conn = nullptr;
         int nv = 0;
         mb.get_connectivity(cell, conn, nv);
+        std::vector<VKey> keys(nv);
         for (int i = 0; i < nv; ++i) {
-            moab::EntityHandle v0 = conn[i], v1 = conn[(i + 1) % nv];
-            VPair key = (v0 < v1) ? std::make_pair(v0, v1) : std::make_pair(v1, v0);
-            for (moab::EntityHandle other : edge_to_cells[key])
+            double xyz[3];
+            mb.get_coords(&conn[i], 1, xyz);
+            keys[i] = coord_key(xyz[0], xyz[1], xyz[2]);
+        }
+        std::set<moab::EntityHandle> nbr_set;
+        for (int i = 0; i < nv; ++i) {
+            for (moab::EntityHandle other : edge_to_cells[make_edge_key(keys[i], keys[(i + 1) % nv])])
                 if (other != cell) nbr_set.insert(other);
         }
         neighbors[cell] = std::vector<moab::EntityHandle>(nbr_set.begin(), nbr_set.end());
@@ -306,32 +327,60 @@ roundtrip_patch_recovery(moab::Core& mb_shared,
     const auto inter_bwd = duplicate_mesh(mb_shared, inter_cells, mb_bwd);
     const auto src_bwd   = duplicate_mesh(mb_shared, src_cells,   mb_bwd);
 
-    GeometryOptions bwd_geo = spherical;
-    bwd_geo.metric_weighted = false;
-
     PlanarMomentInterpolator bwd(mb_bwd);
-    bwd.set_geometry_options(bwd_geo);
+    bwd.set_geometry_options(spherical);  // same geometry as forward
 
-    // Step 5: Set transferred moments (all p+1 Legendre moments) on intermediate
-    MomentMethodOptions bwd_opts = opts;
-    bwd_opts.reconstruction_mode = ReconstructionMode::VemProjection;
+    // Step 5: set ALL transferred edge moments (μ₀..μ_p), saving them
+    struct CellEdgeMoments {
+        moab::EntityHandle cell;
+        std::size_t edge_idx;
+        std::vector<double> moments;
+    };
+    std::vector<CellEdgeMoments> transferred;
 
     std::size_t dof = 0;
     for (std::size_t ci = 0; ci < inter_bwd.size(); ++ci) {
-        const LocalPolygon poly = local_polygon(mb_bwd, inter_bwd[ci], bwd_geo);
-        for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++dof)
+        const LocalPolygon poly = local_polygon(mb_bwd, inter_bwd[ci], spherical);
+        for (std::size_t i = 0; i < poly.vertices.size(); ++i, ++dof) {
             bwd.set_source_edge_moments(inter_bwd[ci], i, fwd_xfer.target_moments[dof]);
-
-        // Cell vector moments not available — VEM degrades gracefully
-        // (gradient modes from edge data, rotational modes zeroed)
-        bwd.reconstruct_source_polygon(inter_bwd[ci], bwd_opts);
+            transferred.push_back({inter_bwd[ci], i, fwd_xfer.target_moments[dof]});
+        }
     }
 
-    // Step 6: Backward transfer
+    // Step 6: patch recovery to obtain cell vector moments, then restore
+    // the transferred edge moments (patch recovery overwrites them).
+    const auto inter_neighbors = build_face_neighbors(mb_shared, inter_cells);
+    std::map<moab::EntityHandle, moab::EntityHandle> inter_orig_to_bwd;
+    for (std::size_t i = 0; i < inter_cells.size(); ++i)
+        inter_orig_to_bwd[inter_cells[i]] = inter_bwd[i];
+
+    for (std::size_t ci = 0; ci < inter_bwd.size(); ++ci) {
+        std::vector<moab::EntityHandle> nbrs;
+        auto it = inter_neighbors.find(inter_cells[ci]);
+        if (it != inter_neighbors.end()) {
+            for (const moab::EntityHandle orig_nbr : it->second) {
+                auto jt = inter_orig_to_bwd.find(orig_nbr);
+                if (jt != inter_orig_to_bwd.end())
+                    nbrs.push_back(jt->second);
+            }
+        }
+        bwd.recover_moments_from_patch(inter_bwd[ci], order, nbrs);
+    }
+
+    for (const auto& cem : transferred)
+        bwd.set_source_edge_moments(cem.cell, cem.edge_idx, cem.moments);
+
+    // Step 7: VEM reconstruct each intermediate cell
+    MomentMethodOptions bwd_opts = opts;
+    bwd_opts.reconstruction_mode = ReconstructionMode::VemProjection;
+    for (const moab::EntityHandle cell : inter_bwd)
+        bwd.reconstruct_source_polygon(cell, bwd_opts);
+
+    // Step 8: backward transfer
     const EdgeMomentTransferResult bwd_xfer =
         bwd.transfer_source_to_target_edge_moments(inter_bwd, src_bwd, order);
 
-    // Step 7: Compute roundtripped cell-average divergence
+    // Step 9: roundtripped cell-average divergence
     std::vector<double> result;
     std::size_t d = 0;
     for (const moab::EntityHandle cell : src_bwd) {
