@@ -61,6 +61,21 @@ where a degree-elevated basis captures the leading Piola rational correction
 and yields zeroth-moment convergence rates of approximately
 \(1.75/3.08/4.57\) (cubed-sphere) and \(2.05/2.52/3.62\) (Voronoi patches)
 for \(p=1,2,3\), with machine-precision target-cell closure throughout.
+The conforming-projection step is also generalized to a block-coupled
+multi-degree formulation that exposes the entire moment vector as a
+single unknown over the geometric target skeleton with proper
+edge-mass-weighted L\(^2\) Legendre objective, and exposes a
+source-skeleton trace-jump diagnostic that refines as \(O(h^{p+1})\)
+and serves as the asymptotic indicator of source-reconstruction
+continuity.  A practical single-flux production pipeline (one scalar
+per source edge \(\to\) patch-based moment recovery \(\to\) VEM
+projection) is verified to retain the gradient-subspace asymptotic
+rates without any high-order seed data.  A Hodge-weighted spherical
+lift of the VEM path is implemented and verified to deliver
+\(O(h^{p+1})\) convergence in the gradient subspace at \(p=1\) on
+cubed-sphere meshes; the rotational subspace currently sits at
+\(O(h^2)\) by a centroid-Hodge approximation and is the open task
+of the spherical VEM lift.
 \end{abstract}
 
 \section{Introduction}
@@ -123,11 +138,28 @@ The study extends this baseline in several directions:
         polynomial enrichment for high-order spherical convergence;
   \item a Piola-consistent RT backward reconstruction eliminating ill-conditioning on quad cells,
         with insufficient edge constraints;
+  \item a topology-independent VEM H(div) projection using the decomposed
+        basis $\nabla P_{p+1}\oplus\mathbf{x}^{\perp}P_{p-1}$ with
+        well-conditioned mass matrix on arbitrary polygons (including
+        triangles, hexagons, and irregular n-gons), and a Hodge-weighted
+        spherical lift of the same path;
+  \item a patch-based moment recovery from single-flux-per-edge data
+        that synthesizes the missing high-order edge and cell moments
+        for downstream VEM projection, enabling production-style
+        single-flux remap pipelines without any upstream high-order
+        discretization;
+  \item a coupled multi-degree H(div)-conforming target-skeleton
+        projection with edge-mass-weighted L\(^2\) Legendre objective and
+        a source-skeleton trace-jump diagnostic that refines as
+        \(O(h^{p+1})\) and is the asymptotic indicator of
+        source-reconstruction continuity;
   \item nanoflann k-d tree spatial acceleration and OpenMP parallelization
         of the source-cell search; and
   \item verification on rectangular, planar Voronoi, cubed-sphere,
         icosahedral dual Voronoi, and lat/lon nonmatching patches, including
-        full-sphere round-trip transfer in equirectangular projection.
+        full-sphere round-trip transfer in equirectangular projection and
+        a forward-only diagnostic that separates source-side reconstruction
+        quality from backward-leg amplification.
 \end{itemize}
 
 \input{literature_merged.tex}
@@ -1968,12 +2000,52 @@ Piola-consistent RT path for quad cells, the implementation now offers three
 distinct reconstruction strategies that cover the full spectrum from
 single-flux production data to full high-order DOF availability.
 
+The forward-only diagnostic
+(Section~\ref{sec:practical-roundtrip}) cleanly separates the two
+ingredients of a round-trip remap: at \(p=1\) the patch-recovery
+synthesis adds no detectable error in the gradient subspace (the
+analytical and patch paths agree to \(>4\) significant digits at every
+resolution), and at \(p=2\) it converges at the predicted
+\(O(h^{p+1})\) rate with consecutive rates close to \(2.0\), confirming
+that the production-style single-flux pipeline is sound.  The
+catastrophic round-trip degradation observed at \(p=2\) for
+non-Piola-RT backward reconstructions is therefore not a defect of the
+patch-recovery synthesis but of the backward \([\mathbb{P}_p]^2\)
+reconstruction itself; combining patch recovery with the
+Piola-consistent RT backward solve closes that gap structurally.
+
+The block-coupled multi-degree conforming-projection refactor
+(Section~\ref{sec:coupled-conforming}) is a structural rather than
+numerical improvement: the per-degree numerical answers are
+byte-identical to the older degree-decoupled solver, but the
+edge-mass-weighted L\(^2\) Legendre objective is now explicit and
+named, the divergence-Schur factor is computed once and reused across
+all degrees, and the source-skeleton trace-jump diagnostic provides
+the asymptotic refinement-faithful indicator that the per-target-edge
+diagnostic could not (the latter is identically zero by construction
+of the underlying transfer operator and is therefore a correctness
+check, not a refinement metric).
+
 On the sphere, the degree-elevated basis for \(p\ge3\) resolves the
 \(O(h^3)\) error floor caused by the Piola rational approximation.  Without
 elevation, the cubed-sphere \(p=3\) rate was~\(\sim1.8\); with elevation it
 reaches~4.57 (fine-pair rate~5.52).  The scalar piecewise-constant control
 experiment confirms that the spherical overlap and clipping machinery is
 independently correct at first-order accuracy.
+
+The Hodge-weighted spherical lift of the VEM path
+(Section~\ref{sec:spherical-vem-lift}) extends the VEM projection from
+the chart Lebesgue inner product to the surface L\(^2(S^2)\) inner
+product.  At \(p=1\) the gradient-subspace error refines at rate
+\(\sim 2.05\) on cubed-sphere meshes, matching or exceeding the
+SplitBasis baseline of \(1.86\), and conservation holds at machine
+roundoff.  At \(p\ge2\), an \(O(h^2)\) centroid-Hodge approximation in
+the rotational projection RHS dominates and the SplitBasis path
+remains the recommended choice.  The two routes to closing this
+rotational-subspace gap (Hodge-component cell-moment DOFs or
+SplitBasis-style degree elevation) are documented in the Future
+Directions; both preserve the conservation guarantee and would
+complete the spherical VEM lift to optimal order at every \(p\).
 
 \section{Conclusions and Future Research Directions}
 
@@ -2023,19 +2095,31 @@ that every target cell is also divergence-free to machine precision after the
 projection, even on coarse nonmatching Voronoi meshes where the raw transfer can
 show visible closure defects.
 
-Taken together, the current repository now contains five numerically distinct
+Taken together, the current repository now contains seven numerically distinct
 but compatible layers: a verified low-order harmonic mimetic remap, a global
-target-edge conforming correction, a unified higher-order split-moment
-extension that covers \(p=1,2,3\) on planar polygons, structured spherical
-charts, and deterministic spherical Voronoi patches, a Piola-consistent RT
-reconstruction for quad cells that eliminates conditioning failures at
-\(p\ge2\), and a VEM H(div) projection with optional patch-based moment
-recovery that provides topology-independent high-order transfer on arbitrary
-polygonal meshes.  The remaining gap to a
-full polygonal compatible finite element framework is therefore no longer the
-absence of conservative high-order evidence; it is the absence of a single
-globally conforming cell-interior target space and broader verification on
-mixed-topology and production-scale spherical meshes.
+lowest-order target-edge conforming correction, a coupled multi-degree
+target-edge conforming correction with proper edge-mass-weighted L\(^2\)
+Legendre objective and an \(O(h^{p+1})\)-refining source-skeleton trace-jump
+diagnostic, a unified higher-order split-moment extension that covers
+\(p=1,2,3\) on planar polygons, structured spherical charts, and
+deterministic spherical Voronoi patches, a Piola-consistent RT reconstruction
+for quad cells that eliminates conditioning failures at \(p\ge2\), a VEM
+H(div) projection with optional patch-based moment recovery that provides
+topology-independent high-order transfer on arbitrary polygonal meshes
+(triangles, quads, pentagons, hexagons, irregular n-gons), and a
+Hodge-weighted spherical lift of that same VEM path with verified
+\(O(h^{p+1})\) gradient-subspace convergence at \(p=1\) on cubed-sphere
+meshes.  Furthermore, a practical single-flux production pipeline (one
+scalar per source edge \(\to\) patch-based moment recovery \(\to\) VEM
+projection) is verified to retain the gradient-subspace asymptotic rates
+without any high-order seed data, with a forward-only diagnostic that
+isolates source-side reconstruction quality from backward-leg
+amplification.  The remaining gap to a full polygonal compatible finite
+element framework is therefore no longer the absence of conservative
+high-order evidence; it is the absence of a single globally conforming
+cell-interior target space, the rotational-subspace upgrade for the
+spherical VEM lift, and broader verification on mixed-topology and
+production-scale spherical meshes.
 
 \subsection*{Future Research Directions}
 Building on the verified serial planar and spherical framework, the following
