@@ -647,6 +647,122 @@ bool test_vem_convergence()
 // Main
 // ============================================================================
 
+// ============================================================================
+// Test 4: Topology independence — VEM recovery on triangle, hexagon, irregular
+// ============================================================================
+
+bool test_vem_topology_independence()
+{
+    std::cout << "\n=== VEM topology independence ===\n";
+    bool pass = true;
+
+    auto linear_field = [](const Eigen::Vector2d& p) -> Eigen::Vector2d {
+        return Eigen::Vector2d(1.0 + 2.0 * p.x() + 0.5 * p.y(),
+                               -0.5 + p.x() + 3.0 * p.y());
+    };
+
+    auto quadratic_field = [](const Eigen::Vector2d& p) -> Eigen::Vector2d {
+        return Eigen::Vector2d(p.x() * p.x() + 0.5 * p.x() * p.y(),
+                               p.y() * p.y() - 0.3 * p.x() * p.y());
+    };
+
+    struct ShapeCase {
+        std::string name;
+        std::vector<Eigen::Vector2d> vertices;
+    };
+
+    const std::vector<ShapeCase> shapes = {
+        {"triangle", {
+            Eigen::Vector2d(0.2, 0.1),
+            Eigen::Vector2d(0.8, 0.2),
+            Eigen::Vector2d(0.4, 0.9),
+        }},
+        {"hexagon", {
+            Eigen::Vector2d(0.5, 0.1),
+            Eigen::Vector2d(0.85, 0.25),
+            Eigen::Vector2d(0.9, 0.6),
+            Eigen::Vector2d(0.55, 0.9),
+            Eigen::Vector2d(0.15, 0.7),
+            Eigen::Vector2d(0.1, 0.35),
+        }},
+        {"irregular-7", {
+            Eigen::Vector2d(0.3, 0.1),
+            Eigen::Vector2d(0.7, 0.05),
+            Eigen::Vector2d(0.95, 0.3),
+            Eigen::Vector2d(0.85, 0.7),
+            Eigen::Vector2d(0.5, 0.95),
+            Eigen::Vector2d(0.15, 0.8),
+            Eigen::Vector2d(0.05, 0.4),
+        }},
+    };
+
+    struct FieldCase {
+        std::string name;
+        FieldFunc field;
+        int order;
+    };
+
+    const std::vector<FieldCase> fields = {
+        {"linear p=1", linear_field, 1},
+        {"linear p=2", linear_field, 2},
+        {"quadratic p=2", quadratic_field, 2},
+    };
+
+    const double tol = 1.0e-9;
+
+    for (const ShapeCase& shape : shapes) {
+        for (const FieldCase& fc : fields) {
+            std::cout << "  " << shape.name << ", " << fc.name << ": ";
+
+            moab::Core mb;
+            const moab::EntityHandle poly_handle = create_polygon(mb, shape.vertices);
+            std::vector<moab::EntityHandle> polygons = {poly_handle};
+            merge_polygon_vertices(mb, polygons);
+
+            PlanarMomentInterpolator interpolator(mb);
+            MomentMethodOptions opts;
+            opts.edge_moment_order = fc.order;
+            opts.cell_moment_order = fc.order;
+            opts.quadrature_points = 10;
+            opts.reconstruction_mode = ReconstructionMode::VemProjection;
+
+            set_source_moments_vem(mb, interpolator, poly_handle, fc.order,
+                                   fc.order, fc.field);
+
+            const MomentReconstruction recon =
+                interpolator.reconstruct_source_polygon(poly_handle, opts);
+            const LocalPolygon lpoly = local_polygon(mb, poly_handle);
+
+            double max_error = 0.0;
+            const int ntest = 5;
+            for (int i = 0; i < ntest; ++i) {
+                for (int j = 0; j < ntest; ++j) {
+                    const double s = (static_cast<double>(i) + 0.5) / ntest;
+                    const double t = (static_cast<double>(j) + 0.5) / ntest;
+                    const Eigen::Vector2d test_pt = lpoly.centroid +
+                        s * (lpoly.points[0]) + t * (lpoly.points[1]);
+
+                    const Eigen::Vector2d computed =
+                        interpolator.velocity(recon, test_pt - lpoly.centroid);
+                    const Eigen::Vector2d exact = fc.field(test_pt);
+                    const double err = (computed - exact).norm();
+                    max_error = std::max(max_error, err);
+                }
+            }
+
+            std::cout << "max_error=" << std::scientific << std::setprecision(3) << max_error;
+            if (max_error > tol) {
+                std::cout << " FAIL (>" << tol << ")\n";
+                pass = false;
+            } else {
+                std::cout << " OK\n";
+            }
+        }
+    }
+
+    return pass;
+}
+
 int main()
 {
     int failures = 0;
@@ -660,6 +776,10 @@ int main()
     }
 
     if (!test_vem_convergence()) {
+        ++failures;
+    }
+
+    if (!test_vem_topology_independence()) {
         ++failures;
     }
 
