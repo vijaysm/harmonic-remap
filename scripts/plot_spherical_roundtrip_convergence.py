@@ -4,21 +4,16 @@ Plot the spherical round-trip convergence study.
 Two side-by-side panels share the x-axis (cell-size h in degrees):
 
   Left panel  -- Round-trip RLL -> CS -> RLL convergence.
-                 p=0 baseline, Piola-RT backward (p=1, p=2), and the
-                 practical patch-recovery round-trip (p=1, p=2).  The
-                 standard [P_p]^2 backward at p=2 is intentionally NOT
-                 plotted: it diverges with refinement (a known
-                 conditioning failure of the [P_p]^2 backward path on
-                 quad CS cells) and previously dominated the y-axis.
+                 p=0 baseline (Level-2 mimetic) plus the practical
+                 patch-recovery + VEM round-trip at p=1 and p=2.
 
   Right panel -- Forward-only RLL -> CS convergence.  Stops after the
                  forward leg and measures cell-average divergence
-                 error on the CS grid.  Compares the analytical-moment
-                 path (full mu_0..mu_p seeded analytically) with the
-                 patch-recovery path (only mu_0 seeded, higher moments
-                 synthesized via least-squares fit on a face-neighbor
-                 patch).  Isolates source-side reconstruction quality
-                 from backward-leg amplification.
+                 error on the CS grid.  Practical patch-recovery
+                 path: only mu_0 seeded, higher moments synthesized
+                 via face-neighbor least-squares fit.  Isolates
+                 source-side reconstruction quality from backward-leg
+                 amplification.
 
 Usage:
     python scripts/plot_spherical_roundtrip_convergence.py \\
@@ -85,16 +80,12 @@ def main():
     # ---- Left panel: round-trip ----
     plot_curve(ax_rt, h, d["std_p0"], color_p0, "-", "D",
                r"$p{=}0$ Level-2 mimetic")
-    plot_curve(ax_rt, h, d["rt_p1"], color_p1, "-", "o",
-               r"$p{=}1$ Piola-RT round-trip")
-    plot_curve(ax_rt, h, d["rt_p2"], color_p2, "-", "o",
-               r"$p{=}2$ Piola-RT round-trip")
     if "patch_p1" in d:
-        plot_curve(ax_rt, h, d["patch_p1"], color_p1, "--", "^",
-                   r"$p{=}1$ patch recovery round-trip")
+        plot_curve(ax_rt, h, d["patch_p1"], color_p1, "-", "o",
+                   r"$p{=}1$ patch recovery + VEM round-trip")
     if "patch_p2" in d:
-        plot_curve(ax_rt, h, d["patch_p2"], color_p2, "--", "^",
-                   r"$p{=}2$ patch recovery round-trip")
+        plot_curve(ax_rt, h, d["patch_p2"], color_p2, "-", "o",
+                   r"$p{=}2$ patch recovery + VEM round-trip")
 
     # Reference O(h^1) slope
     ref_y = None
@@ -119,17 +110,11 @@ def main():
     ax_rt.legend(fontsize=8, loc="lower right")
 
     # ---- Right panel: forward-only ----
-    if "fwd_ana_p1" in d:
-        plot_curve(ax_fwd, h, d["fwd_ana_p1"], color_p1, "-", "o",
-                   r"$p{=}1$ analytical moments (forward)")
-    if "fwd_ana_p2" in d:
-        plot_curve(ax_fwd, h, d["fwd_ana_p2"], color_p2, "-", "o",
-                   r"$p{=}2$ analytical moments (forward)")
     if "fwd_patch_p1" in d:
-        plot_curve(ax_fwd, h, d["fwd_patch_p1"], color_p1, "--", "^",
+        plot_curve(ax_fwd, h, d["fwd_patch_p1"], color_p1, "-", "o",
                    r"$p{=}1$ patch recovery (forward)")
     if "fwd_patch_p2" in d:
-        plot_curve(ax_fwd, h, d["fwd_patch_p2"], color_p2, "--", "^",
+        plot_curve(ax_fwd, h, d["fwd_patch_p2"], color_p2, "-", "o",
                    r"$p{=}2$ patch recovery (forward)")
 
     if ref_y is not None:

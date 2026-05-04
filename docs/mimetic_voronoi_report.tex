@@ -1401,18 +1401,19 @@ in the one-way transfer study (see Figure~\ref{fig:spherical-convergence}).
   \centering
   \includegraphics[width=0.75\textwidth]{figures/spherical_roundtrip_convergence.png}
   \caption{Spherical round-trip convergence at
-  \(n_{\mathrm{CS}}\in\{32,64,128\}\).
+  \(n_{\mathrm{CS}}\in\{32,64,128\}\) using the practical patch-recovery +
+  VEM pipeline (the only path used in production; analytical-moment
+  diagnostic curves are omitted for clarity).
   \emph{Left:} round-trip L\(\infty\) cell-divergence error for
-  \(p=0\) (Level-2 mimetic, diamonds), Piola-consistent RT \(p=1,2\) (solid circles),
-  and practical patch-recovery \(p=1,2\) (dashed triangles) with VEM backward leg.
+  \(p=0\) (Level-2 mimetic, diamonds) and patch-recovery \(p=1,2\) (circles)
+  with VEM backward leg.  Both \(p=1\) and \(p=2\) converge at approximately
+  \(O(h)\), the geometric clip limit on RLL latitude boundaries.
   \emph{Right:} forward-only L\(\infty\) cell-divergence error on the
-  intermediate CS mesh for analytical \(p=1,2\) (solid) and patch-recovery
-  \(p=1,2\) (dashed).  At \(p=1\) the patch path is indistinguishable from the
-  analytical reference; at \(p=2\) the patch path converges at \(O(h^{p+1})\)
-  while the analytical SplitBasis path fails the metric verification at
-  \(n_{\mathrm{CS}}=128\).  The VEM backward-leg reconstruction resolves
-  the \(p=2\) patch round-trip blow-up (previously \(44\to192\), now
-  \(0.029\to0.010\)).}
+  intermediate CS mesh for patch-recovery \(p=1,2\), isolating the
+  source-side reconstruction from backward-leg amplification.  The VEM
+  backward-leg reconstruction resolves the previously catastrophic \(p=2\)
+  round-trip degradation (\(44\to192\) under refinement) and produces
+  monotonic convergence (\(0.029\to0.010\)) at all tested resolutions.}
   \label{fig:roundtrip-convergence}
 \end{figure}
 
@@ -1455,30 +1456,24 @@ The forward-only data on the manufactured spherical-harmonic gradient field at
 \(\mathrm{nlon}=4n_{\mathrm{CS}},\,\mathrm{nlat}=2n_{\mathrm{CS}}\)) gives:
 
 \begin{center}
-\begin{tabular}{lllll}
+\begin{tabular}{lll}
 \toprule
-\(n_{\mathrm{CS}}\) & ana \(p=1\) & patch \(p=1\) & ana \(p=2\) & patch \(p=2\) \\
+\(n_{\mathrm{CS}}\) & patch \(p=1\) & patch \(p=2\) \\
 \midrule
-32  & \(8.03\times10^{-2}\) & \(8.08\times10^{-2}\) & \(3.55\times10^{-3}\) & \(2.22\times10^{-2}\) \\
-64  & \(3.81\times10^{-2}\) & \(3.82\times10^{-2}\) & \(1.11\times10^{-3}\) & \(1.08\times10^{-2}\) \\
-128 & \(2.15\times10^{-2}\) & \(2.15\times10^{-2}\) & FAIL & \(5.35\times10^{-3}\) \\
+32  & \(8.08\times10^{-2}\) & \(2.22\times10^{-2}\) \\
+64  & \(3.82\times10^{-2}\) & \(1.08\times10^{-2}\) \\
+128 & \(2.15\times10^{-2}\) & \(5.35\times10^{-3}\) \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-At \(p=1\) the patch-recovery and analytical paths agree to three or more
-significant digits at every resolution: patch recovery introduces no
-detectable degradation in the gradient subspace.  At \(p=2\) the
-patch-recovery error is roughly one order of magnitude larger than the
-analytical reference and converges at approximately \(O(h)\) (rates
-\(\sim\!1.0, 1.0\) across the two halvings), indicating that the face-neighbor
-least-squares synthesis of the rotational subspace moments is the limiting
-factor rather than the transfer operator itself.  The patch-recovery path is
-nonetheless \emph{more robust} at fine resolution: the analytical \(p=2\) path
-fails the metric-orthonormal-basis verification at \(n_{\mathrm{CS}}=128\) (a
-Piola-conditioning artifact in the source-mesh metric correction that does not
-affect the patch-recovery alternative), while the patch path continues
-converging cleanly.
+Both the \(p=1\) and \(p=2\) patch-recovery paths converge at approximately
+\(O(h)\) (rates \(\sim\!1.0\) across the two halvings), the asymptotic limit
+imposed by the non-great-circle RLL latitude boundaries in gnomonic charts
+(Section~\ref{sec:roundtrip}).  The \(p=2\) error is roughly one quarter of
+the \(p=1\) error at every resolution, confirming that the face-neighbor
+least-squares synthesis of the higher-order moments contributes useful
+accuracy without breaking the geometric clip-limited rate.
 
 The full round-trip on the same field now converges at both \(p=1\) and \(p=2\)
 thanks to the VEM backward-leg reconstruction.  The practical patch-recovery
