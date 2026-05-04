@@ -1,0 +1,16 @@
+Test project /Users/mahadevan/Code/AI/Mimetic-SphPoly/build
+    Start 11: high_order_edge_moment_test
+1/4 Test #11: high_order_edge_moment_test ..................   Passed    0.06 sec
+    Start 12: high_order_hdiv_convergence_test
+2/4 Test #12: high_order_hdiv_convergence_test .............   Passed    2.95 sec
+    Start 13: spherical_high_order_moment_test
+3/4 Test #13: spherical_high_order_moment_test .............   Passed    1.18 sec
+    Start 14: spherical_high_order_hdiv_convergence_test
+4/4 Test #14: spherical_high_order_hdiv_convergence_test ...   Passed   73.66 sec
+
+100% tests passed, 0 tests failed out of 4
+
+Total Test time (real) =  77.86 sec
+real 77.89
+user 174.17
+sys 2.24
