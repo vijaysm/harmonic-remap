@@ -183,6 +183,70 @@ per geometric target edge and exact target-cell divergence constraints.  It does
 not yet build a single globally conforming cell-interior vector field on the
 target mesh.
 
+### High-order coupled multi-degree projection
+
+`PlanarMomentInterpolator::project_target_edge_moments_to_hdiv_conforming`
+generalizes the lowest-order skeleton projection to the full Legendre
+moment vector `m = 0, ..., p` per directed target edge.  The block
+formulation makes the structure of the conforming subspace explicit:
+
+- Variables: `x in R^{N_unique * (p+1)}`, the orientation-corrected
+  Legendre moment per geometric edge per degree.
+- Per-directed-edge mapping: `U_i^{(m)} = f_m(O_i) * x_{u(i), m}` where
+  `f_m` is the Legendre parity-orientation factor encoded in
+  `target_edge_moment_orientation_factor`.
+- Objective: edge-mass-weighted L2 deviation from the raw transferred
+  moments, with weights `w_{e, m} = L_e * 2 / (2m+1)` (physical edge
+  length times Legendre normalization on `[-1, 1]`).
+- Constraint: the cell divergence theorem `A_0 * x_0 = b` couples the
+  `m = 0` block across cells; for `m >= 1` no analogous cell-level
+  constraint exists, so each higher block reduces to the unconstrained
+  per-edge L2 minimizer.
+
+For `m = 0` the Schur complement of the divergence constraint is
+factored once via complete-orthogonal decomposition and reused for
+every degree; the per-degree answer is byte-identical to the previous
+degree-decoupled implementation, so all spherical and planar
+high-order convergence tests remain unchanged.
+
+Three diagnostic fields are added to `ConformingEdgeMomentTransferResult`:
+
+- `unique_edge_lengths[u]` -- planar chord length, or great-circle arc
+  length with the configured `GeometryOptions::radius`, computed once
+  per unique geometric edge.
+- `trace_jump_per_unique_edge[u][m]` -- a CORRECTNESS check on the raw
+  transfer.  By construction of
+  `transfer_source_to_target_edge_moments`, both directed views of any
+  unique target edge integrate the same source field with opposite
+  outward normals, so after the Legendre parity flip the orientation-
+  corrected raw values agree to machine roundoff.  This field is
+  therefore identically zero (modulo roundoff) on every case; a
+  nonzero value indicates a transfer-side bug, not a refinement-faithful
+  diagnostic.  Boundary edges (single directed view) report zero by
+  definition.
+- `source_skeleton_jump_l2[m]` -- the genuinely refining diagnostic.
+  For each interior source-mesh edge shared by source cells `a`, `b`,
+  the per-degree squared moment of `(v_a . n - v_b . n) L_m(t)` is
+  accumulated; `source_skeleton_jump_l2[m] = sqrt(sum)`.  This refines
+  as `O(h^{p+1})` for a smooth source field reconstructed at order `p`,
+  independently of the source/target meshes chosen.  It is the natural
+  asymptotic indicator of source-reconstruction continuity and is the
+  quantity exercised by the regression test below.
+
+A regression suite in `tests/coupled_conforming_projection_test.cpp`
+verifies post-projection trace continuity to `1e-12`, divergence
+balance to `5e-13`, that the per-target-edge raw trace jump is at the
+roundoff floor (< `1e-12`), and that the source-skeleton jump rate is
+`>= 1.5` between successive levels of a 4 -> 8 -> 16 quad-to-quad
+refinement at `p = 2` (asymptotic rate `O(h^3) ~ 3`; conservative
+threshold to absorb pre-asymptotic effects).
+
+A future extension layered on the same block scaffold introduces
+target cell vector moments as additional variables, coupled to the
+edge moments through the VEM-Pi_p integration-by-parts identity; see
+`docs/plans/2026-05-02-coupled-conforming-projection.md` for the full
+plan.
+
 ## Diagnostics and VTK Output
 
 `tests/spherical_quad_test.cpp` writes target-cell diagnostic tags:
@@ -549,8 +613,13 @@ and b are **exactly computable** from the DOFs:
   These are exactly the DOFs that make the rotational subspace observable.
 
 The resulting system `M c = b` is symmetric positive definite and solved via
-LDLT factorization.  The decomposed coefficients are then converted back to
-the Cartesian `[P_p]²` monomial basis for field evaluation and transfer.
+LDLT factorization with an SVD fallback: if the LDLT factorization reports
+failure or a non-positive-definite matrix (e.g. due to a degenerate sliver
+cell), the solve falls back to a Jacobi SVD pseudoinverse for robustness.
+The same LDLT-with-SVD-fallback strategy is applied to the divergence
+reconstruction Gram matrix `G d = g`.  The decomposed coefficients are then
+converted back to the Cartesian `[P_p]²` monomial basis for field evaluation
+and transfer.
 
 ### Stability and Conditioning
 
@@ -779,7 +848,11 @@ un-scaled afterwards: `c_unscaled = c_scaled / D^{a+b}`.
 The system is solved via the Jacobi SVD with thin U and V factors.  This
 is numerically stable even when the system is mildly rank-deficient (which
 can occur at p=3 when the patch has few edges) and provides automatic
-regularization through the SVD truncation threshold.
+regularization through the SVD truncation threshold.  A degenerate-system
+guard rejects fits where the largest singular value is below `kTolerance`
+(fully rank-deficient patch), in which case the recovery returns no
+moments for that cell and the VEM path falls through to the LS/KKT
+reconstruction.
 
 ### Recovery Pipeline
 
@@ -838,6 +911,21 @@ order moments.
 For robust p ≥ 3 reconstruction, genuine high-order edge moments and cell
 vector moments should be provided directly (via analytical evaluation or
 upstream high-order discretization), using `ReconstructionMode::VemProjection`.
+
+### Graceful Degradation
+
+When `PatchRecoveryVem` mode fails to produce full-order edge moments for a
+cell (e.g. boundary cells with insufficient face-neighbors, or patch systems
+rejected by the SVD degenerate-system guard), the VEM path falls through to
+the LS/KKT reconstruction using whatever edge moments are available.  This
+ensures the pipeline does not abort on problematic cells — those cells receive
+a lower-order reconstruction while interior cells with sufficient neighbors
+get the full VEM projection.
+
+Similarly, if cell vector moments are unavailable or undersized, the VEM
+projection pads with zeros and proceeds.  This degrades only the rotational
+(divergence-free) component of the projection; the gradient modes remain fully
+determined by edge boundary data.
 
 ### Convergence Results
 
@@ -1100,6 +1188,11 @@ This makes the VEM path particularly well-suited for climate model remap,
 where the source mesh may contain a mix of quads (cubed-sphere), pentagons
 and hexagons (icosahedral), and arbitrary Voronoi cells.
 
+**Verified:** `test_vem_topology_independence()` in `vem_projection_test.cpp`
+confirms exact polynomial recovery (error ~10⁻¹⁵) on triangles (3 edges),
+pentagons (5 edges), hexagons (6 edges), and irregular 7-gons — all using
+the same code path with no topology-specific branches.
+
 ### Limitations of the Current Implementation
 
 1. **Planar only.**  The VEM projection currently operates in planar
@@ -1111,12 +1204,12 @@ and hexagons (icosahedral), and arbitrary Voronoi cells.
    addresses this for the SplitBasis path; a similar extension could be
    applied to the VEM path.
 
-2. **No adaptive stabilization.**  The mass matrix solve uses a plain LDLT
-   factorization without Tikhonov regularization or mode truncation.  On
+2. **No adaptive stabilization.**  The mass matrix solve uses LDLT with SVD
+   fallback but without Tikhonov regularization or mode truncation.  On
    very thin or degenerate cells, the mass matrix may have small eigenvalues
-   that amplify noise in the DOFs.  The SplitBasis path's regularization
-   parameter (`MomentMethodOptions::regularization`) does not apply to the
-   VEM path.
+   that amplify noise in the DOFs.  The SVD fallback provides robustness
+   against factorization failure, but does not apply the SplitBasis path's
+   regularization parameter (`MomentMethodOptions::regularization`).
 
 3. **No incremental update.**  Each call to `reconstruct_source_polygon()`
    recomputes the monomial integral table, decomposed basis, and mass matrix
