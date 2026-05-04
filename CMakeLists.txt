@@ -128,6 +128,10 @@ add_executable(coupled_conforming_projection_test tests/coupled_conforming_proje
 target_link_libraries(coupled_conforming_projection_test PRIVATE mimetic)
 target_include_directories(coupled_conforming_projection_test PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/tests ${MOAB_INCLUDE_DIRS})
 
+add_executable(spherical_vem_test tests/spherical_vem_test.cpp)
+target_link_libraries(spherical_vem_test PRIVATE mimetic)
+target_include_directories(spherical_vem_test PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/tests ${MOAB_INCLUDE_DIRS})
+
 enable_testing()
 add_test(NAME patch_test COMMAND patch_test)
 add_test(NAME conservative_intersection_test COMMAND conservative_intersection_test)
@@ -145,6 +149,7 @@ add_test(NAME spherical_high_order_moment_test COMMAND spherical_high_order_mome
 add_test(NAME spherical_high_order_hdiv_convergence_test COMMAND spherical_high_order_hdiv_convergence_test)
 set_tests_properties(spherical_high_order_hdiv_convergence_test PROPERTIES TIMEOUT 300)
 add_test(NAME coupled_conforming_projection_test COMMAND coupled_conforming_projection_test)
+add_test(NAME spherical_vem_test COMMAND spherical_vem_test)
 
 add_executable(dump_visuals tests/dump_visuals.cpp)
 target_link_libraries(dump_visuals PRIVATE mimetic ${MOAB_LIBRARY})
