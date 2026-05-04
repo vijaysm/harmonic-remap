@@ -1558,28 +1558,33 @@ double moment_polygon_boundary_flux(const MomentReconstruction& reconstruction,
     return flux;
 }
 
-std::vector<double> target_divergence_rhs(moab::Core& mb,
-                                          const GeometryOptions& options,
-                                          const std::map<moab::EntityHandle, MomentReconstruction>& reconstructions,
-                                          const std::vector<moab::EntityHandle>& source_polygons,
-                                          const std::vector<moab::EntityHandle>& target_polygons)
+// Per-source-polygon precomputed data shared between
+// target_divergence_rhs (moment overload) and any caller that wants
+// to amortize the geometry pass (e.g. the source-skeleton diagnostic
+// in PlanarMomentInterpolator::project_target_edge_moments_to_hdiv_
+// conforming).  Build once via build_moment_transfer_source_cache.
+struct MomentTransferSourceCache {
+    moab::EntityHandle polygon;
+    LocalPolygon local;
+    std::vector<Eigen::Vector2d> absolute;
+    MomentReconstruction reconstruction;
+    GnomonicFrame frame;
+    PolygonSearchGeometry search;
+};
+
+struct MomentTransferTargetCache {
+    moab::EntityHandle polygon;
+    LocalPolygon local;
+    PolygonSearchGeometry search;
+};
+
+std::vector<MomentTransferSourceCache> build_moment_transfer_source_cache(
+    moab::Core& mb,
+    const GeometryOptions& options,
+    const std::map<moab::EntityHandle, MomentReconstruction>& reconstructions,
+    const std::vector<moab::EntityHandle>& source_polygons)
 {
-    struct SourceCache {
-        moab::EntityHandle polygon;
-        LocalPolygon local;
-        std::vector<Eigen::Vector2d> absolute;
-        MomentReconstruction reconstruction;
-        GnomonicFrame frame;
-        PolygonSearchGeometry search;
-    };
-
-    struct TargetCache {
-        moab::EntityHandle polygon;
-        LocalPolygon local;
-        PolygonSearchGeometry search;
-    };
-
-    std::vector<SourceCache> sources;
+    std::vector<MomentTransferSourceCache> sources;
     sources.reserve(source_polygons.size());
     for (const moab::EntityHandle source_polygon : source_polygons) {
         const auto it = reconstructions.find(source_polygon);
@@ -1587,7 +1592,7 @@ std::vector<double> target_divergence_rhs(moab::Core& mb,
             throw std::runtime_error("Missing high-order reconstruction for source polygon");
         }
         const LocalPolygon local = local_polygon(mb, source_polygon, options);
-        sources.push_back(SourceCache{
+        sources.push_back(MomentTransferSourceCache{
             source_polygon,
             local,
             absolute_points(local),
@@ -1596,35 +1601,48 @@ std::vector<double> target_divergence_rhs(moab::Core& mb,
             polygon_search_geometry(local, options),
         });
     }
+    return sources;
+}
 
-    const std::vector<GaussLegendrePoint> quadrature = gauss_legendre_rule(10);
-    const SpatialIndex div_idx = build_spatial_index_from_sources(
-        sources, options.mode == GeometryMode::SphericalGnomonic);
-
-    std::vector<TargetCache> targets;
+std::vector<MomentTransferTargetCache> build_moment_transfer_target_cache(
+    moab::Core& mb,
+    const GeometryOptions& options,
+    const std::vector<moab::EntityHandle>& target_polygons)
+{
+    std::vector<MomentTransferTargetCache> targets;
     targets.reserve(target_polygons.size());
     for (const moab::EntityHandle target_polygon : target_polygons) {
         const LocalPolygon local = local_polygon(mb, target_polygon, options);
-        targets.push_back(TargetCache{
+        targets.push_back(MomentTransferTargetCache{
             target_polygon,
             local,
             polygon_search_geometry(local, options),
         });
     }
+    return targets;
+}
 
-    std::vector<double> rhs(target_polygons.size(), 0.0);
+std::vector<double> target_divergence_rhs_with_cache(
+    const GeometryOptions& options,
+    const std::vector<MomentTransferSourceCache>& sources,
+    const std::vector<MomentTransferTargetCache>& targets,
+    const SpatialIndex& div_idx)
+{
+    const std::vector<GaussLegendrePoint> quadrature = gauss_legendre_rule(10);
+
+    std::vector<double> rhs(targets.size(), 0.0);
 #ifdef MIMETIC_ENABLE_OPENMP
 #pragma omp parallel for schedule(static) if(targets.size() >= 64)
 #endif
     for (int target_index = 0; target_index < static_cast<int>(targets.size()); ++target_index) {
-        const TargetCache& target = targets[static_cast<std::size_t>(target_index)];
+        const MomentTransferTargetCache& target = targets[static_cast<std::size_t>(target_index)];
         const auto div_cands = find_overlap_candidates(div_idx,
                                                        target.search.center,
                                                        target.search.radius,
                                                        sources.size());
 
         for (const std::size_t si : div_cands) {
-            const SourceCache& source = sources[si];
+            const MomentTransferSourceCache& source = sources[si];
             std::vector<Eigen::Vector2d> target_in_source;
             if (options.mode == GeometryMode::SphericalGnomonic) {
                 target_in_source.reserve(target.local.points_3d.size());
@@ -1653,6 +1671,21 @@ std::vector<double> target_divergence_rhs(moab::Core& mb,
         }
     }
     return rhs;
+}
+
+std::vector<double> target_divergence_rhs(moab::Core& mb,
+                                          const GeometryOptions& options,
+                                          const std::map<moab::EntityHandle, MomentReconstruction>& reconstructions,
+                                          const std::vector<moab::EntityHandle>& source_polygons,
+                                          const std::vector<moab::EntityHandle>& target_polygons)
+{
+    const std::vector<MomentTransferSourceCache> sources =
+        build_moment_transfer_source_cache(mb, options, reconstructions, source_polygons);
+    const SpatialIndex div_idx = build_spatial_index_from_sources(
+        sources, options.mode == GeometryMode::SphericalGnomonic);
+    const std::vector<MomentTransferTargetCache> targets =
+        build_moment_transfer_target_cache(mb, options, target_polygons);
+    return target_divergence_rhs_with_cache(options, sources, targets, div_idx);
 }
 
 void write_edge_map_csv(const std::string& path, const std::vector<DirectedEdgeDof>& edges)
@@ -5225,8 +5258,21 @@ ConformingEdgeMomentTransferResult PlanarMomentInterpolator::project_target_edge
     verify_raw_target_order(raw_transfer, target_edges);
 
     const CollapsedTargetEdges collapse = collapse_target_edges(target_edges, options_);
+
+    // Build the moment-transfer geometry cache once and reuse it for
+    // (a) the divergence-RHS computation and (b) the source-skeleton
+    // trace-jump diagnostic below.  Previously each of these
+    // independently rebuilt the per-source-polygon LocalPolygon and
+    // GnomonicFrame structures.
+    const std::vector<MomentTransferSourceCache> source_cache =
+        build_moment_transfer_source_cache(mb_, options_, reconstructions_, source_polygons);
+    const SpatialIndex source_index = build_spatial_index_from_sources(
+        source_cache, options_.mode == GeometryMode::SphericalGnomonic);
+    const std::vector<MomentTransferTargetCache> target_cache =
+        build_moment_transfer_target_cache(mb_, options_, target_polygons);
+
     const std::vector<double> divergence_rhs =
-        target_divergence_rhs(mb_, options_, reconstructions_, source_polygons, target_polygons);
+        target_divergence_rhs_with_cache(options_, source_cache, target_cache, source_index);
 
     const std::size_t num_unique = collapse.unique_count;
     const std::size_t num_directed = target_edges.size();
@@ -5380,17 +5426,14 @@ ConformingEdgeMomentTransferResult PlanarMomentInterpolator::project_target_edge
             source_views[source_collapse.directed_to_unique[i]].push_back(i);
         }
 
+        // Source-cell centroids and frames are read from the shared
+        // source_cache built above (avoids a second per-cell
+        // local_polygon pass).
         std::vector<Eigen::Vector2d> src_centroid2(source_polygons.size(), Eigen::Vector2d::Zero());
         std::vector<GnomonicFrame> src_frame(source_polygons.size());
         for (std::size_t c = 0; c < source_polygons.size(); ++c) {
-            const LocalPolygon sp = local_polygon(mb_, source_polygons[c], options_);
-            src_centroid2[c] = sp.centroid;
-            if (options_.mode == GeometryMode::SphericalGnomonic) {
-                src_frame[c].center = sp.n;
-                src_frame[c].e_x    = sp.e_x;
-                src_frame[c].e_y    = sp.e_y;
-                src_frame[c].radius = options_.radius;
-            }
+            src_centroid2[c] = source_cache[c].local.centroid;
+            src_frame[c]     = source_cache[c].frame;
         }
 
         // 10-point Gauss-Legendre is exact through degree 19, sufficient
