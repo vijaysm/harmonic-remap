@@ -1086,17 +1086,21 @@ void patch_recover_on_mesh(
     for (std::size_t i = 0; i < cells_shared.size(); ++i)
         orig_to_dup[cells_shared[i]] = cells_dup[i];
 
-    for (std::size_t ci = 0; ci < cells_dup.size(); ++ci) {
+    std::map<moab::EntityHandle, std::vector<moab::EntityHandle>> dup_neighbor_map;
+    for (const auto& kv : orig_neighbors) {
+        auto ct = orig_to_dup.find(kv.first);
+        if (ct == orig_to_dup.end()) continue;
         std::vector<moab::EntityHandle> nbrs_dup;
-        auto it = orig_neighbors.find(cells_shared[ci]);
-        if (it != orig_neighbors.end()) {
-            for (const moab::EntityHandle orig_nbr : it->second) {
-                auto jt = orig_to_dup.find(orig_nbr);
-                if (jt != orig_to_dup.end())
-                    nbrs_dup.push_back(jt->second);
-            }
+        for (const moab::EntityHandle orig_nbr : kv.second) {
+            auto jt = orig_to_dup.find(orig_nbr);
+            if (jt != orig_to_dup.end())
+                nbrs_dup.push_back(jt->second);
         }
-        interp.recover_moments_from_patch(cells_dup[ci], order, nbrs_dup);
+        dup_neighbor_map[ct->second] = std::move(nbrs_dup);
+    }
+
+    for (std::size_t ci = 0; ci < cells_dup.size(); ++ci) {
+        interp.recover_moments_from_patch(cells_dup[ci], order, dup_neighbor_map);
     }
 }
 

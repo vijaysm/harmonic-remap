@@ -2676,16 +2676,22 @@ void patch_recover_moments_impl(
     const double scale = (max_dist > kTolerance) ? max_dist : 1.0;
     const double inv_scale = 1.0 / scale;
 
-    // Fitting polynomial degree: use p for the fitting space
-    // dim([P_p]²) = (p+1)(p+2) unknowns
-    const int q = p;
-    const std::vector<VectorBasisTerm>& basis = cached_vector_polynomial_basis(q);
-    const int n_basis = static_cast<int>(basis.size());
+    // For p≥2, elevate the fitting degree to q=p+1: the extra polynomial
+    // capacity captures within-edge curvature that μ₀ averages out.
+    // For p=1, μ₀ already characterizes linear v·n — elevation adds noise.
+    // Fall back to q=p if the patch is too small for the elevated basis.
+    int q = (p >= 2) ? p + 1 : p;
     const int n_edges = static_cast<int>(patch_edges.size());
+    int n_basis = static_cast<int>(cached_vector_polynomial_basis(q).size());
 
     if (n_edges < n_basis) {
-        return;
+        q = p;
+        n_basis = static_cast<int>(cached_vector_polynomial_basis(q).size());
+        if (n_edges < n_basis) {
+            return;
+        }
     }
+    const std::vector<VectorBasisTerm>& basis = cached_vector_polynomial_basis(q);
 
     // Build LS matrix: A(i,j) = ∫_{e_i} φ_j · n_i ds (in scaled coords)
     const std::vector<GaussLegendrePoint> quad = gauss_legendre_rule(std::max(8, 2 * q + 2));
@@ -4431,6 +4437,65 @@ void PlanarMomentInterpolator::recover_moments_from_patch(
 
     patch_recover_moments_impl(mb_, options_, polygon, target_order,
                                neighbor_polygons, directed_source_moments_,
+                               recovered_moments, recovered_cell_moments);
+
+    for (auto& kv : recovered_moments) {
+        directed_source_moments_[kv.first] = std::move(kv.second);
+    }
+
+    for (auto& kv : recovered_cell_moments) {
+        source_cell_vector_moments_[kv.first] = std::move(kv.second);
+    }
+}
+
+void PlanarMomentInterpolator::recover_moments_from_patch(
+    const moab::EntityHandle polygon,
+    const int target_order,
+    const std::map<moab::EntityHandle, std::vector<moab::EntityHandle>>& neighbor_map)
+{
+    // For p≥2, target q=p+1; for p=1, keep q=p (see patch_recover_moments_impl).
+    // BFS-expand rings until the patch has ≥ 2× dim([P_q]²) edges.
+    const int q = (target_order >= 2) ? target_order + 1 : target_order;
+    const int min_edges = 2 * static_cast<int>(cached_vector_polynomial_basis(q).size());
+    const int max_rings = 6;
+
+    std::vector<moab::EntityHandle> patch_cells;
+    std::set<moab::EntityHandle> visited;
+    patch_cells.push_back(polygon);
+    visited.insert(polygon);
+    std::vector<moab::EntityHandle> frontier = {polygon};
+
+    for (int ring = 0; ring < max_rings && !frontier.empty(); ++ring) {
+        std::vector<moab::EntityHandle> next_frontier;
+        for (const moab::EntityHandle cell : frontier) {
+            auto it = neighbor_map.find(cell);
+            if (it == neighbor_map.end()) continue;
+            for (const moab::EntityHandle nbr : it->second) {
+                if (visited.insert(nbr).second) {
+                    patch_cells.push_back(nbr);
+                    next_frontier.push_back(nbr);
+                }
+            }
+        }
+        frontier = std::move(next_frontier);
+
+        int total_edges = 0;
+        for (const moab::EntityHandle c : patch_cells) {
+            const moab::EntityHandle* conn = nullptr;
+            int nv = 0;
+            mb_.get_connectivity(c, conn, nv);
+            total_edges += nv;
+        }
+        if (total_edges >= min_edges) break;
+    }
+
+    std::vector<moab::EntityHandle> neighbors(patch_cells.begin() + 1, patch_cells.end());
+
+    std::map<std::pair<moab::EntityHandle, std::size_t>, std::vector<double>> recovered_moments;
+    std::map<moab::EntityHandle, std::vector<Eigen::Vector2d>> recovered_cell_moments;
+
+    patch_recover_moments_impl(mb_, options_, polygon, target_order,
+                               neighbors, directed_source_moments_,
                                recovered_moments, recovered_cell_moments);
 
     for (auto& kv : recovered_moments) {

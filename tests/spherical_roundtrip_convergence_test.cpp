@@ -294,24 +294,28 @@ roundtrip_patch_recovery(moab::Core& mb_shared,
     }
 
     // Step 2: Patch recovery on source to bootstrap high-order moments.
-    // build_face_neighbors uses vertex handles, so run on the original shared
-    // mesh (where cells share vertices), then translate through the index map.
+    // build_face_neighbors uses coordinate matching on mb_shared; translate
+    // the map to fwd-handle space so multi-ring BFS works.
     const auto orig_neighbors = build_face_neighbors(mb_shared, src_cells);
     std::map<moab::EntityHandle, moab::EntityHandle> orig_to_fwd;
     for (std::size_t i = 0; i < src_cells.size(); ++i)
         orig_to_fwd[src_cells[i]] = src_fwd[i];
 
-    for (std::size_t ci = 0; ci < src_fwd.size(); ++ci) {
+    std::map<moab::EntityHandle, std::vector<moab::EntityHandle>> fwd_neighbor_map;
+    for (const auto& kv : orig_neighbors) {
+        auto ct = orig_to_fwd.find(kv.first);
+        if (ct == orig_to_fwd.end()) continue;
         std::vector<moab::EntityHandle> nbrs_fwd;
-        auto it = orig_neighbors.find(src_cells[ci]);
-        if (it != orig_neighbors.end()) {
-            for (const moab::EntityHandle orig_nbr : it->second) {
-                auto jt = orig_to_fwd.find(orig_nbr);
-                if (jt != orig_to_fwd.end())
-                    nbrs_fwd.push_back(jt->second);
-            }
+        for (const moab::EntityHandle orig_nbr : kv.second) {
+            auto jt = orig_to_fwd.find(orig_nbr);
+            if (jt != orig_to_fwd.end())
+                nbrs_fwd.push_back(jt->second);
         }
-        fwd.recover_moments_from_patch(src_fwd[ci], order, nbrs_fwd);
+        fwd_neighbor_map[ct->second] = std::move(nbrs_fwd);
+    }
+
+    for (std::size_t ci = 0; ci < src_fwd.size(); ++ci) {
+        fwd.recover_moments_from_patch(src_fwd[ci], order, fwd_neighbor_map);
     }
 
     // Step 3: VEM reconstruct each source cell
@@ -354,17 +358,21 @@ roundtrip_patch_recovery(moab::Core& mb_shared,
     for (std::size_t i = 0; i < inter_cells.size(); ++i)
         inter_orig_to_bwd[inter_cells[i]] = inter_bwd[i];
 
-    for (std::size_t ci = 0; ci < inter_bwd.size(); ++ci) {
+    std::map<moab::EntityHandle, std::vector<moab::EntityHandle>> bwd_neighbor_map;
+    for (const auto& kv : inter_neighbors) {
+        auto ct = inter_orig_to_bwd.find(kv.first);
+        if (ct == inter_orig_to_bwd.end()) continue;
         std::vector<moab::EntityHandle> nbrs;
-        auto it = inter_neighbors.find(inter_cells[ci]);
-        if (it != inter_neighbors.end()) {
-            for (const moab::EntityHandle orig_nbr : it->second) {
-                auto jt = inter_orig_to_bwd.find(orig_nbr);
-                if (jt != inter_orig_to_bwd.end())
-                    nbrs.push_back(jt->second);
-            }
+        for (const moab::EntityHandle orig_nbr : kv.second) {
+            auto jt = inter_orig_to_bwd.find(orig_nbr);
+            if (jt != inter_orig_to_bwd.end())
+                nbrs.push_back(jt->second);
         }
-        bwd.recover_moments_from_patch(inter_bwd[ci], order, nbrs);
+        bwd_neighbor_map[ct->second] = std::move(nbrs);
+    }
+
+    for (std::size_t ci = 0; ci < inter_bwd.size(); ++ci) {
+        bwd.recover_moments_from_patch(inter_bwd[ci], order, bwd_neighbor_map);
     }
 
     for (const auto& cem : transferred)
@@ -431,17 +439,21 @@ forward_only_patch_recovery(moab::Core& mb_shared,
     for (std::size_t i = 0; i < src_cells.size(); ++i)
         orig_to_fwd[src_cells[i]] = src_fwd[i];
 
-    for (std::size_t ci = 0; ci < src_fwd.size(); ++ci) {
+    std::map<moab::EntityHandle, std::vector<moab::EntityHandle>> fwd_nbr_map;
+    for (const auto& kv : orig_neighbors) {
+        auto ct = orig_to_fwd.find(kv.first);
+        if (ct == orig_to_fwd.end()) continue;
         std::vector<moab::EntityHandle> nbrs_fwd;
-        auto it = orig_neighbors.find(src_cells[ci]);
-        if (it != orig_neighbors.end()) {
-            for (const moab::EntityHandle orig_nbr : it->second) {
-                auto jt = orig_to_fwd.find(orig_nbr);
-                if (jt != orig_to_fwd.end())
-                    nbrs_fwd.push_back(jt->second);
-            }
+        for (const moab::EntityHandle orig_nbr : kv.second) {
+            auto jt = orig_to_fwd.find(orig_nbr);
+            if (jt != orig_to_fwd.end())
+                nbrs_fwd.push_back(jt->second);
         }
-        fwd.recover_moments_from_patch(src_fwd[ci], order, nbrs_fwd);
+        fwd_nbr_map[ct->second] = std::move(nbrs_fwd);
+    }
+
+    for (std::size_t ci = 0; ci < src_fwd.size(); ++ci) {
+        fwd.recover_moments_from_patch(src_fwd[ci], order, fwd_nbr_map);
     }
 
     for (const moab::EntityHandle cell : src_fwd)
@@ -660,17 +672,15 @@ int main(int argc, char** argv)
     spherical.mode           = GeometryMode::SphericalGnomonic;
     spherical.metric_weighted = true;
 
-    // Uniform refinement: n_cs = 32, 64, 128 (doublings).  The starting
+    // Uniform refinement: n_cs = 32, 64, 128, 256 (doublings).  The starting
     // resolution is chosen so the coarsest level is already in the asymptotic
-    // regime of the spherical reconstruction (the previous starting point of
-    // n_cs=16 was pre-asymptotic and bunched all curves together).  Three
-    // levels give two rates which is sufficient for the convergence story;
-    // n_cs=256 was omitted because the per-level cost grows by ~8x and the
-    // total wall time at four levels exceeds two hours.  The RLL source pairs
-    // uniformly: nlon=4*n_cs, nlat=2*n_cs, giving equatorial cell size
+    // regime of the spherical reconstruction.  Four levels give three rates;
+    // the n_cs=256 level is very expensive (~90 min with multi-ring patch
+    // recovery) but provides the crucial third halving rate.  The RLL source
+    // pairs uniformly: nlon=4*n_cs, nlat=2*n_cs, giving equatorial cell size
     // ~90/n_cs deg and a constant CS-to-RLL cell-size ratio of sqrt(6)/2.
     const bool forward_only = (argc > 2 && std::string(argv[2]) == "--forward-only");
-    const std::vector<int> cs_levels = {32, 64, 128};
+    const std::vector<int> cs_levels = {32, 64, 128, 256};
 
     std::cout << "=== Spherical Round-Trip Convergence Study ===\n";
     std::cout << "  RLL → CS → RLL.  Source RLL scales with n_cs.\n\n";

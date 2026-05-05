@@ -799,6 +799,13 @@ class PlanarMomentInterpolator {
         int target_order,
         const std::vector<moab::EntityHandle>& neighbor_polygons);
 
+    /// Multi-ring overload: expands the patch from the 1-ring neighbor map
+    /// until the patch has enough edges for the q=p+1 elevated fitting basis.
+    void recover_moments_from_patch(
+        moab::EntityHandle polygon,
+        int target_order,
+        const std::map<moab::EntityHandle, std::vector<moab::EntityHandle>>& neighbor_map);
+
   private:
     moab::Core& mb_;
     GeometryOptions options_;
