@@ -1334,11 +1334,11 @@ The resulting maximum round-trip errors at \(n=53\) CS and \(n=40\) Voronoi are:
 Intermediate & \(p=0\) & \(p=1\) & \(p=2\) & ordering \\
 \midrule
 Cubed-sphere (\(n=53\), 16\,854 cells) &
-  \(4.3\times10^{-2}\) & \(4.0\times10^{-2}\) & \(1.5\times10^{-2}\) &
-  \(p=2 < p=1 < p=0\) \\
+  \(4.3\times10^{-2}\) & \(4.0\times10^{-2}\) & \(6.3\times10^{-3}\) &
+  \(p=2 \ll p=1 < p=0\) \\
 Voronoi (\(n=40\), 16\,002 cells) &
-  \(3.9\times10^{-2}\) & \(3.7\times10^{-2}\) & \(4.8\times10^{-2}\) &
-  \(p=1 < p=0 < p=2\) \\
+  \(3.9\times10^{-2}\) & \(3.7\times10^{-2}\) & \(8.9\times10^{-3}\) &
+  \(p=2 \ll p=1 < p=0\) \\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -1346,8 +1346,11 @@ Voronoi (\(n=40\), 16\,002 cells) &
 Here \(p=0\) is the Level-2 mimetic reconstruction (flux-only, \texttt{MimeticInterpolator}),
 \(p=1{,}2\) use 2 or 3 Legendre moments per edge with patch-recovery cell moments
 and VEM elliptic projection on the backward leg.
-For CS, \(p=2\) improves over \(p=0\) by \(\approx 2.9\times\).
-On Voronoi, \(p=1\) now recovers cleanly (\(3.7\times10^{-2}\)) thanks to the
+For CS, \(p=2\) improves over \(p=0\) by \(\approx 6.9\times\);
+on Voronoi, by \(\approx 4.4\times\).  Both improvements are driven by the
+multi-ring elevated (\(q=p+1\)) patch-recovery fitting, which captures
+within-edge curvature invisible to~\(\mu_0\).
+On Voronoi, \(p=1\) recovers cleanly (\(3.7\times10^{-2}\)) thanks to the
 VEM projection, which avoids the ill-conditioned direct solve that previously
 rendered this case unstable.
 The backward leg uses coordinate-based face-neighbor detection for patch
@@ -1364,11 +1367,12 @@ round-trip completes in approximately 25 seconds on four cores for CS \(p=2\).
   \caption{Round-trip cell-divergence error in equirectangular projection
   (\(180\times90\) RLL source, \(n=53\) CS top row, \(n=40\) Voronoi bottom row).
   Columns: \(p=0\) (Level-2 mimetic), \(p=1\) (VEM with patch-recovery cell moments),
-  \(p=2\) (VEM with patch-recovery cell moments).
-  CS (top): \(p=2\) (max \(1.5\times10^{-2}\)) outperforms \(p=0\) (max \(4.3\times10^{-2}\))
-  by \(2.9\times\).
-  Voronoi (bottom): \(p=1\) (max \(3.7\times10^{-2}\)) is now stable and slightly
-  better than \(p=0\) (max \(3.9\times10^{-2}\)), confirming the VEM projection
+  \(p=2\) (VEM with multi-ring \(q=p+1\) patch-recovery cell moments).
+  CS (top): \(p=2\) (max \(6.3\times10^{-3}\)) outperforms \(p=0\) (max \(4.3\times10^{-2}\))
+  by \(6.9\times\).
+  Voronoi (bottom): \(p=2\) (max \(8.9\times10^{-3}\)) outperforms \(p=0\)
+  (max \(3.9\times10^{-2}\)) by \(4.4\times\), and \(p=1\)
+  (max \(3.7\times10^{-2}\)) is stable, confirming the VEM projection
   resolves the previous hexagonal ill-conditioning.}
   \label{fig:mercator-roundtrip}
 \end{figure}
@@ -1389,13 +1393,93 @@ At \(p=2\), the error \emph{fails to converge}, stagnating and beginning to grow
 reflecting catastrophic Piola ill-conditioning.
 
 \textit{Piola RT}: at \emph{all} orders \(p=1,2,3\) the error converges monotonically
-at \(O(h)\) in L\(\infty\), with no growth or stagnation. The \(O(h)\) rate is a
-geometric limit: RLL latitude circles are not great circles, so they appear as
-curves in any gnomonic chart. Conservative clipping treats them as chord approximations,
-introducing \(O(h^2)\) geometric errors that limit the L\(\infty\) cell-divergence
-rate to \(O(h)\) regardless of polynomial degree. The correct high-order metric—L2
-relative error in target edge moments \(m=0,\ldots,p$---shows \(O(h^{p+1})\) rates
-in the one-way transfer study (see Figure~\ref{fig:spherical-convergence}).
+at \(O(h)\) in L\(\infty\), with no growth or stagnation.  The correct
+high-order metric---L2 relative error in target edge moments
+\(m=0,\ldots,p\)---shows \(O(h^{p+1})\) rates in the one-way transfer study
+(see Figure~\ref{fig:spherical-convergence}).
+
+\phantomsection
+\subsubsection*{Origin of the \(O(h)\) Cell-Divergence Limit}
+\label{sec:oh-limit}
+
+The \(O(h)\) asymptotic rate observed in the L\(\infty\) cell-divergence metric
+is a \emph{geometric} limitation of the current gnomonic clipping
+infrastructure, not a deficiency of the patch-recovery polynomial
+reconstruction.  Three independent lines of evidence establish this.
+
+\paragraph{Evidence~1: analytical vs.\ patch-recovery forward error.}
+The forward-only diagnostic (right panel of
+Figure~\ref{fig:roundtrip-convergence}) compares the cell-divergence error when
+the source reconstruction is seeded with analytically exact edge moments
+(\(\mu_0,\ldots,\mu_p\)) against the practical path that starts from
+\(\mu_0\) only and synthesizes higher moments via patch recovery.  At \(p=1\),
+the two curves are identical to three significant figures at every resolution,
+proving that the patch recovery adds no measurable error at that order.  The
+\(O(h)\) rate is therefore entirely attributable to the transfer/clipping
+pipeline.
+
+\paragraph{Evidence~2: \(p=0\) baseline convergence.}
+Even the lowest-order Level-2 mimetic transfer (\(p=0\)), which involves no
+patch recovery and no polynomial enrichment, exhibits sub-\(O(h)\) convergence
+in the L\(\infty\) cell-divergence metric at fine resolution: the effective
+rates are \(0.85\) (\(32\to64\)), \(0.37\) (\(64\to128\)), and \(0.25\)
+(\(128\to256\)).  This degradation below first order at fine~\(h\) confirms
+that the metric is dominated by a geometric artifact unrelated to
+reconstruction quality.
+
+\paragraph{Evidence~3: planar tests achieve optimal rates.}
+On planar (Cartesian) meshes, which have no gnomonic chart distortion, the same
+multi-ring \(q=p+1\) patch recovery achieves convergence rate \(3.83\) for
+\(p=2\) on quad meshes---close to the optimal \(O(h^4)\) for the elevated
+fitting space---and \(2.03\) for \(p=1\).  The rate degradation to \(O(h)\) is
+specific to the spherical test.
+
+\paragraph{Error budget.}
+The root cause is the treatment of non-great-circle boundaries in the gnomonic
+chart.  The RLL (regular latitude-longitude) mesh has latitude boundaries that
+are small circles on the sphere: circles of constant colatitude \(\theta=
+\theta_0\).  Under gnomonic projection centered at an arbitrary point, a small
+circle maps to a conic section (ellipse, parabola, or hyperbola depending on
+the relationship between the projection center and the circle's plane).  The
+current clipping code approximates each RLL cell boundary by straight-line
+segments between consecutive RLL vertices, i.e.\ chord approximations to
+the projected conic.
+
+Consider a single chord segment of length \(h_{\mathrm{rll}}\) approximating
+the conic arc.  The sagitta (maximum deviation) scales as
+\[
+  \delta \sim \kappa\, h_{\mathrm{rll}}^2,
+\]
+where \(\kappa\) is the curvature of the projected conic in the chart.  The
+flux error from integrating the reconstructed field \(\mathbf{v}_h\) over the
+straight segment instead of the curved arc is
+\[
+  \bigl|\Delta F_e\bigr|
+    \;=\; \Bigl|\int_{\text{chord}} \mathbf{v}_h\cdot\mathbf{n}\,ds
+           - \int_{\text{arc}} \mathbf{v}_h\cdot\mathbf{n}\,ds\Bigr|
+    \;\sim\; \|\nabla \mathbf{v}_h\|\;\delta\; h_{\mathrm{rll}}
+    \;\sim\; O(h_{\mathrm{rll}}^3).
+\]
+Since each target (CS) cell contains \(O(1)\) latitude crossings as the
+meshes refine proportionally (\(n_{\mathrm{rll}} \propto n_{\mathrm{CS}}^2\),
+so \(h_{\mathrm{rll}} \sim h_{\mathrm{CS}}\)), the total flux error
+accumulated by a cell is \(O(h^3)\).  The cell-average divergence is obtained
+by dividing by the cell area \(O(h^2)\), yielding
+\[
+  \bigl|\text{cell-divergence error}\bigr|
+    \;\sim\; \frac{O(h^3)}{O(h^2)} \;=\; O(h).
+\]
+This is an \(L^\infty\) bound because the cells near the equator experience
+the largest gnomonic distortion of latitude lines.  The bound is independent
+of the polynomial degree~\(p\) of the reconstruction: even a perfect
+(\(p\to\infty\)) source reconstruction cannot eliminate the geometric mismatch
+between the straight-line clipping boundary and the true curved cell boundary.
+
+\paragraph{Implications for higher-order convergence.}
+The \(O(h)\) limit is not intrinsic to the mimetic framework.  It is a
+property of the current straight-line clipping approximation applied to
+non-great-circle boundaries.  Two classes of remedies exist and are discussed
+in Section~\ref{sec:future-clipping}.
 
 \begin{figure}[htbp]
   \centering
@@ -2144,6 +2228,64 @@ logical paths are proposed for future research:
     \item \textbf{Spherical Robustness}: Extend beyond convex cells in one
     gnomonic hemisphere, add projection-singularity handling, and validate
     against larger realistic spherical meshes.
+    \item \phantomsection\label{sec:future-clipping}
+    \textbf{Exact great-circle / small-circle clipping}:
+    As shown in Section~\ref{sec:oh-limit}, the current \(O(h)\) asymptotic
+    limit in the L\(\infty\) cell-divergence metric is a geometric artifact of
+    straight-line clipping of non-great-circle (RLL latitude) boundaries in
+    gnomonic charts.  Two remedies can lift this barrier:
+    \begin{enumerate}
+      \item \emph{Adaptive chord subdivision.}  Before gnomonic projection,
+      subdivide each RLL latitude edge into sub-segments short enough that the
+      sagitta of each sub-chord is below a prescribed tolerance
+      \(\varepsilon_{\mathrm{geo}}\).  Since the sagitta scales as
+      \(\delta \sim \kappa h_{\mathrm{sub}}^2\), choosing
+      \(h_{\mathrm{sub}} \sim h^{(p+2)/2}\) would reduce the geometric
+      cell-divergence error to \(O(h^{p+1})\), matching the reconstruction
+      order.  This approach is straightforward to implement: the RLL mesh
+      preprocessing inserts additional vertices along each latitude edge, and
+      the remainder of the clipping pipeline operates unchanged.  The cost is
+      a modest increase in the number of sub-edges per RLL cell, scaling as
+      \(O(h^{-1/2})\) additional vertices per edge for \(p=2\).
+
+      \item \emph{Exact conic-arc clipping.}  In a gnomonic chart, small
+      circles project to conic sections (ellipses, parabolas, or hyperbolas
+      depending on the angular distance from the projection center to the
+      circle's pole).  An exact clipping algorithm would:
+      \begin{itemize}
+        \item represent each RLL latitude boundary as the conic
+          \(\mathbf{n}_{\mathrm{lat}} \cdot \mathbf{r}(\xi,\eta) = \cos\theta_0\),
+          where \(\mathbf{r}(\xi,\eta)\) is the inverse gnomonic map and
+          \(\theta_0\) the colatitude;
+        \item compute great-circle / conic-arc intersections analytically
+          (a quadratic in the chart coordinates, yielding 0, 1, or 2
+          intersection points per great-circle edge);
+        \item integrate the reconstructed field \(\mathbf{v}_h\) along the
+          conic arc using an appropriate quadrature rule (Gauss-type on the
+          parametric arc, with the Jacobian of the arc parameterization).
+      \end{itemize}
+      The analytical intersection amounts to substituting the great-circle
+      parameterization \(\mathbf{r}(t) = \cos(t)\,\mathbf{a} + \sin(t)\,
+      \mathbf{a}\times\hat{\mathbf{n}}_e\) into the small-circle equation,
+      yielding \(A\cos t + B\sin t = C\) with \(A = \mathbf{n}_{\mathrm{lat}}
+      \cdot \mathbf{a}\), \(B = \mathbf{n}_{\mathrm{lat}} \cdot
+      (\mathbf{a}\times\hat{\mathbf{n}}_e)\), \(C = \cos\theta_0\).
+      This has closed-form solutions \(t = \arg(A,B) \pm \arccos(C/\sqrt{A^2+B^2})\)
+      when \(A^2+B^2 \ge C^2\) (intersection exists).
+
+      This approach eliminates the geometric error entirely for
+      great-circle / small-circle boundaries, achieving
+      \(O(h^{p+1})\) cell-divergence rates without mesh refinement.  It
+      generalizes naturally to any pair of circle types (great/great,
+      great/small, small/small) that arise in mixed-mesh transfers.  The main
+      implementation cost is a specialized quadrature rule for conic-arc
+      segments in the chart and careful handling of tangent/degenerate
+      intersection configurations.
+    \end{enumerate}
+    Of these, adaptive chord subdivision is the simpler near-term path and
+    would directly validate the error-budget analysis.  Exact conic-arc
+    clipping is the long-term target for production implementations where
+    geometric error must be controlled independently of mesh resolution.
     \item \textbf{Broader spherical high-order validation}: Extend the present
     cubed-sphere and deterministic Voronoi-patch regressions to mixed
     Voronoi/cubed-sphere transfers, larger full-sphere meshes, and more
