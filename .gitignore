@@ -1,6 +1,14 @@
 build/
 build-*/
 cmake-build-*/
+Testing/
+.DS_Store
+.omo/
+docs/superpowers/
+scripts/__pycache__/
+__pycache__/
+.ruff_cache/
+claude.sh
 docs/node_modules/
 CMakeFiles/
 CMakeCache.txt
@@ -17,6 +25,12 @@ mimetic_voronoi_report.blg
 mimetic_voronoi_report.log
 mimetic_voronoi_report.out
 mimetic_voronoi_report.pdf
+*.aux
+*.bbl
+*.blg
+*.log
+*.out
+*.synctex.gz
 docs/1-s2.0-S0021999120306276-main.pdf
 docs/A-mimetic-method-for-polygons.pdf
 docs/mimetic_voronoi_report.aux
