@@ -38,6 +38,13 @@
 \noindent\textbf{Abstract.}\,
 We present a first-order mimetic conservative method for transferring edge-normal flux degrees of freedom between two nonmatching polygonal meshes of the same domain (unit square). The method uses a two-stage pipelined approach: (i) a per-cell velocity reconstruction from edge fluxes followed by clipped-overlap edge-to-edge transfer that is exactly conservative on every source-target cell overlap; and (ii) a small constrained least-squares H(div)-conforming projection that further enforces per-target-cell discrete-divergence consistency. The output is a single signed scalar per unique target edge in the intrinsic-normal sign convention. The projected fluxes preserve global integral conservation and per-overlap conservation to machine precision, exhibit machine-precision per-target-cell discrete-divergence consistency, and converge at first order in the $L^2$ norm of edge fluxes for smooth analytical fields. Further studies are needed to combine the local Gnomonic projection with this edge-remap scheme to verify convergence for MPAS meshes on the sphere.
 
+\smallskip
+\noindent\textbf{Scope note.}\,
+This report is a compact standalone reference for the lowest-order planar P0
+workflow and SCRIP-style edge-weight output.  The canonical manuscript for the
+current C++ codebase, including spherical, high-order, VEM, patch-recovery, and
+round-trip studies, is \texttt{mimetic\_voronoi\_report.tex}.
+
 %==========================================================
 \section{Methodology}
 %\subsection{Edge-flux degrees of freedom}

@@ -6,6 +6,14 @@ Voronoi tessellations of the unit square `[0,1]²`, with an optional
 H(div)-conforming post-projection. Outputs the remap weights in SCRIP
 NetCDF format using an "edges-as-grid" layout.
 
+## Scope Note
+
+This is a standalone lowest-order planar reference workflow.  The canonical
+manuscript for the full C++ implementation is `docs/mimetic_voronoi_report.tex`,
+which covers the spherical, high-order, VEM, patch-recovery, and round-trip
+results.  The P0 report remains useful as a compact reproducible reference for
+the first-order Voronoi-to-Voronoi algorithm and SCRIP-style edge-weight output.
+
 ## What it does
 
 Given two nonmatching Voronoi meshes covering the unit square, transfer

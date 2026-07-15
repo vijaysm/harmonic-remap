@@ -32,50 +32,31 @@
 \begin{abstract}
 This manuscript studies conservative transfer of edge-normal flux degrees of
 freedom between nonmatching polygonal meshes in the plane and on the unit
-sphere.  The method follows the mimetic polygon reconstruction of Perot and
-Chartrand \cite{PerotChartrand2021}: in each source cell, signed edge fluxes
-determine a local Raviart--Thomas-like vector field with constant cell
-divergence and a harmonic gradient component.  Target edge fluxes are then
-obtained by clipping each target edge against source cells and integrating the
-source reconstruction on the clipped subsegments.  The manuscript also analyzes
-an alternative based on scalar Wachspress coordinates.  We show that a
-componentwise vertex-based Wachspress interpolant is not a direct substitute for
-the harmonic mimetic reconstruction because its divergence and edge-normal trace
-are generically nonconstant on \(n\)-gons.  Generalized barycentric and virtual
-element H(div) constructions remain plausible future research directions, but
-they require a different vector-valued space and validation program rather than
-a basis swap.  The study also introduces a unified higher-order polygonal
-\(H(\mathrm{div})\)-style split-moment family with user-controlled edge moment
-order, a local decomposition into polynomial-divergence, harmonic-gradient, and
-divergence-free completion modes, exact hard enforcement of the zeroth edge
-flux moment, and weighted higher-moment fitting.  Numerical evidence from
-deterministic planar and spherical structured and unstructured tests verifies
-conservation, direct edge transfer, and sparse projection equivalence to a
-\(5\times 10^{-13}\) absolute tolerance.  On refined planar quad patches, the
-high-order extension shows average edge-flux convergence rates of approximately
-\(2.26/3.39/4.46\) for \(p=1,2,3\); on refined planar Voronoi patches, the
-harmonic \(p=1\) baseline and split-moment \(p=2,3\) enrichments yield average
-rates \(1.89/2.77/3.34\).  The same split-moment hierarchy extends to
-structured cubed-sphere and deterministic spherical Voronoi-patch transfers,
-where a degree-elevated basis captures the leading Piola rational correction
-and yields zeroth-moment convergence rates of approximately
-\(1.75/3.08/4.57\) (cubed-sphere) and \(2.05/2.52/3.62\) (Voronoi patches)
-for \(p=1,2,3\), with machine-precision target-cell closure throughout.
-The conforming-projection step is also generalized to a block-coupled
-multi-degree formulation that exposes the entire moment vector as a
-single unknown over the geometric target skeleton with proper
-edge-mass-weighted L\(^2\) Legendre objective, and exposes a
-source-skeleton trace-jump diagnostic that refines as \(O(h^{p+1})\)
-and serves as the asymptotic indicator of source-reconstruction
-continuity.  A practical single-flux production pipeline (one scalar
-per source edge \(\to\) patch-based moment recovery \(\to\) VEM
-projection) is verified to retain the gradient-subspace asymptotic
-rates without any high-order seed data.  A Hodge-weighted spherical
-lift of the VEM path is implemented and verified to deliver
-\(O(h^{p+1})\) convergence in the gradient subspace at \(p=1\) on
-cubed-sphere meshes; the rotational subspace currently sits at
-\(O(h^2)\) by a centroid-Hodge approximation and is the open task
-of the spherical VEM lift.
+sphere.  The baseline method reconstructs a constant-divergence mimetic field in
+each source cell from signed edge fluxes and transfers target-edge fluxes by
+clipping target edges against source cells.  A conforming target-skeleton
+projection then enforces target-cell divergence constraints at machine
+precision.  The verified implementation covers planar polygons, source-chart
+gnomonic spherical patches, sparse direct-transfer operators, high-order edge
+moments, and topology-independent VEM projection paths.
+
+The main verified results are: conservation, direct edge transfer, and
+sparse-projection equivalence to a \(5\times10^{-13}\) absolute tolerance;
+planar high-order edge-flux rates of approximately \(2.26/3.39/4.46\) on
+quad refinements and \(1.89/2.77/3.34\) on Voronoi refinements for
+\(p=1,2,3\); and spherical zeroth-moment rates of approximately
+\(1.75/3.08/4.57\) on cubed-sphere patches and \(2.05/2.52/3.62\) on
+spherical Voronoi patches.  The VEM path is well conditioned on arbitrary
+polygon topologies when full VEM degrees of freedom are available.  Patch-based
+moment recovery extends VEM transfer to the practical single-flux-per-edge
+setting: it is full-order in the tested \(p=1\) cases and effective on
+structured \(p=2\) cases, but degraded on small irregular Voronoi tests.  A
+Hodge-weighted spherical VEM lift is verified for the \(p=1\) gradient
+subspace; its \(p\ge2\) rotational subspace remains limited by a
+centroid-Hodge approximation.  We also show that componentwise scalar
+Wachspress interpolation is not a drop-in replacement for the mimetic
+\(H(\mathrm{div})\) reconstruction because its divergence and edge-normal trace
+are generically nonconstant on \(n\)-gons.
 \end{abstract}
 
 \section{Introduction}
@@ -144,10 +125,10 @@ The study extends this baseline in several directions:
         triangles, hexagons, and irregular n-gons), and a Hodge-weighted
         spherical lift of the same path;
   \item a patch-based moment recovery from single-flux-per-edge data
-        that synthesizes the missing high-order edge and cell moments
-        for downstream VEM projection, enabling production-style
-        single-flux remap pipelines without any upstream high-order
-        discretization;
+        that synthesizes missing high-order edge and cell moments for
+        downstream VEM projection, with full-order behavior in the tested
+        \(p=1\) cases and clear limitations on irregular \(p=2\) Voronoi
+        patches;
   \item a coupled multi-degree H(div)-conforming target-skeleton
         projection with edge-mass-weighted L\(^2\) Legendre objective and
         a source-skeleton trace-jump diagnostic that refines as
@@ -1770,68 +1751,80 @@ the target-cell divergence residual at roundoff.
   \label{tab:spherical-high-order-hdiv}
 \end{table}
 
+
 \begin{table}[t]
   \centering
   \small
-  \begin{tabular}{@{}L{0.24\linewidth}L{0.34\linewidth}L{0.22\linewidth}L{0.12\linewidth}@{}}
+  \begin{tabular}{@{}L{0.28\linewidth}L{0.62\linewidth}@{}}
   \toprule
-  Test & Geometry exercised & Strongest checked invariant & Observed residual \\
+  Validation group & Checked evidence \\
   \midrule
-  Constant patch &
-  One source quadrilateral and one contained target quadrilateral &
-  Constant field coefficients and closed target-edge flux sum &
-  \(0\) printed \\
-  Rectangular overlay &
-  Four source cells, nine target cells, 16 clipped intersections &
-  Overlap conservation, 36 directed target edge fluxes, and 36-by-16 sparse
-  projection application &
-  \(4.44\times10^{-16}\) \\
-  Voronoi n-gon overlay &
-  Nine source cells, 14 target cells, 36 overlaps, 23 n-gon to n-gon overlaps &
-  Same overlap invariant plus 71 directed target edge fluxes &
-  \(4.44\times10^{-16}\) \\
-  Global target-edge \(H(\mathrm{div})\) projection &
-  Planar Voronoi-to-Voronoi raw transfer corrected on the target skeleton &
-  Exact target-cell divergence constraints and refinement convergence of the raw
-  transfer toward the conforming field &
-  \(4.02\times10^{-17}\) corrected, \(6.72\times10^{-2}\to1.27\times10^{-2}\) correction \\
-  High-order planar split moments &
-  Quad-to-quad and Voronoi-to-Voronoi nonmatching refinements for \(p=1,2,3\) &
-  Exact zeroth edge-moment conservation and order-separated edge-flux
-  convergence for the harmonic \(p=1\) baseline and split-moment \(p=2,3\)
-  enrichments &
-  \(4.44\times10^{-16}\) to \(1.78\times10^{-15}\) conservation, up to \(4.46\) rate \\
-  Spherical high-order split moments &
-  Structured cubed-sphere and deterministic spherical Voronoi-patch refinement
-  sequences for \(p=1,2,3\) &
-  Intrinsic great-circle edge moments, gnomonic/Piola transfer, and conforming
-  target-cell closure on both structured and n-sided unstructured patches &
-  \(2.49\times10^{-5}\) finest Voronoi \(p=3\) moment-0 error, \(O(10^{-16})\) conforming divergence \\
-  Spherical cubed-sphere &
-  \(4\to4\), \(4\to6\), \(6\to4\), and \(6\to8\) great-circle quad meshes &
-  Global conservation, target KKT re-integration, direct-vs-sparse equality,
-  identity transfer, and conforming target-cell closure &
-  \(4.36\times10^{-15}\) global, \(2.78\times10^{-16}\) sparse, \(8.33\times10^{-17}\) conforming \\
-  Spherical Voronoi patch &
-  Deterministic n-sided source and target great-circle polygons &
-  Global conservation, direct-vs-sparse equality, and edge-error convergence &
-  \(4.44\times10^{-15}\) global, \(4.68\times10^{-15}\) sparse \\
-  VEM H(div) projection &
-  Quad and Voronoi planar meshes, exact DOFs, \(p=1,2,3\) &
-  Topology-independent optimal convergence and single-cell polynomial recovery
-  exact to \(10^{-15}\) &
-  2.00/3.00/4.00 quad rates, 1.82/2.56/3.11 Voronoi rates \\
-  Patch recovery + VEM &
-  Quad and Voronoi planar meshes, single flux per edge, \(p=1,2\) &
-  Full-order convergence at \(p=1\); information-theoretic rate loss at \(p=2\)
-  consistent with \(k\)-exact theory &
-  2.03/1.80 at \(p=1\), 1.47/1.21 at \(p=2\) (quad/Voronoi) \\
+  Planar low-order transfer &
+  Constant patch, rectangular overlay, Voronoi n-gon overlay, and global
+  target-edge \(H(\mathrm{div})\) projection tests verify overlap conservation,
+  directed edge transfer, sparse-operator application, and target-cell closure;
+  representative residuals are \(O(10^{-16})\). \\
+  Planar high-order transfer &
+  Quad-to-quad and Voronoi-to-Voronoi refinements for \(p=1,2,3\) preserve the
+  zeroth edge moment at roundoff and show order-separated edge-flux convergence;
+  the strongest quad rate is \(4.46\). \\
+  Spherical transfer &
+  Cubed-sphere and deterministic spherical Voronoi-patch tests verify
+  gnomonic/Piola edge transfer, sparse/direct agreement, and conforming
+  target-cell closure; high-order spherical cases keep conforming residuals at
+  \(O(10^{-16})\). \\
+  VEM and patch recovery &
+  Exact-DOF VEM gives rates \(2.00/3.00/4.00\) on quads and
+  \(1.82/2.56/3.11\) on Voronoi meshes.  Patch recovery from single-flux data is
+  full-order in the tested \(p=1\) cases, strong on structured \(p=2\) quads,
+  and degraded on small irregular Voronoi \(p=2\) tests. \\
   \bottomrule
   \end{tabular}
-  \caption{Verification summary from the deterministic regression studies.
-  Residuals are absolute errors from the reported validation cases.}
+  \caption{Condensed verification summary from the deterministic regression
+  studies.  Full numeric tables are reported in the relevant subsections and in
+  the generated CSV artifacts.}
   \label{tab:verification-summary}
 \end{table}
+
+\subsection{Reproducibility and Validation}
+\label{sec:reproducibility}
+
+The active manuscript source is \texttt{docs/mimetic\_voronoi\_report.tex}.  A
+standalone lowest-order planar reference report is kept separately as
+\texttt{docs/voronoi\_p0\_report.tex}; it is a historical P0 reference, not the
+canonical manuscript for the full C++ implementation.
+
+The current validation workflow is:
+\begin{verbatim}
+cmake --build build -j2
+ctest --test-dir build --output-on-failure
+./build/high_order_hdiv_convergence_test docs/high_order_hdiv_convergence.csv
+./build/spherical_high_order_hdiv_convergence_test \
+  docs/spherical_high_order_hdiv_convergence.csv
+\end{verbatim}
+The last full audit rebuilt the repository and passed all \(19/19\) CTest tests.
+The high-order and round-trip figures are generated from the CSV artifacts with:
+\begin{verbatim}
+python3 scripts/plot_high_order_hdiv_convergence.py
+python3 scripts/plot_spherical_high_order_hdiv_convergence.py
+docs/spherical_roundtrip_convergence.csv
+\end{verbatim}
+These artifacts drive Figures~\ref{fig:high-order-hdiv-convergence},
+\ref{fig:spherical-high-order-hdiv-convergence}, and
+\ref{fig:roundtrip-convergence}.  The manuscript is compiled with the standard
+sequence
+\begin{verbatim}
+cd docs
+pdflatex mimetic_voronoi_report.tex
+bibtex mimetic_voronoi_report
+pdflatex mimetic_voronoi_report.tex
+pdflatex mimetic_voronoi_report.tex
+\end{verbatim}
+using the bibliography and included literature review files:
+\begin{verbatim}
+docs/references.bib
+docs/literature_merged.tex
+\end{verbatim}
 
 \subsection{VEM H(div) Projection and Patch-Based Moment Recovery}
 \label{sec:vem-patch-recovery}
@@ -1936,8 +1929,8 @@ complementary directions:
 \end{itemize}
 
 \noindent The selection among these paths depends on cell topology and data
-availability (see \texttt{ReconstructionMode} in \texttt{code\_documentation.md}
-for the detailed regime-of-validity table).
+availability.  The detailed regime-of-validity table is maintained in
+\texttt{code\_documentation.md} under the reconstruction-mode documentation.
 
 \subsection{Spherical Lift of the VEM Path}
 \label{sec:spherical-vem-lift}
@@ -2009,9 +2002,12 @@ accurate in the rotational subspace, regardless of \(p\); the
 gradient subspace is unaffected.
 
 \paragraph{Regression and observed convergence.}
-The spherical VEM lift is exercised by
-\texttt{tests/spherical\_vem\_test.cpp} on cubed-sphere meshes with the
-\(\nabla_S Y_2^0\) field.  Two refinement levels are recorded:
+The spherical VEM lift is exercised on cubed-sphere meshes with the
+\(\nabla_S Y_2^0\) field by:
+\begin{verbatim}
+tests/spherical_vem_test.cpp
+\end{verbatim}
+Two refinement levels are recorded:
 
 \begin{center}
 \begin{tabular}{lll}
@@ -2060,8 +2056,11 @@ local constrained least-squares fit rather than a fully commuting global
 discretization.
 
 The VEM projection path provides a topology-independent alternative that
-achieves optimal convergence rates when exact DOFs are available, and gracefully
-handles the single-flux-per-edge case through patch recovery.  On the round-trip
+achieves optimal convergence rates when exact DOFs are available.  With
+patch-recovered moments, it also supports the practical single-flux-per-edge
+case, but the accuracy is topology and order dependent: the tested \(p=1\)
+cases retain the expected rate, structured \(p=2\) cases are strong, and small
+irregular Voronoi \(p=2\) tests show a clear rate loss.  On the round-trip
 backward leg, the VEM path now serves as the default reconstruction for all cell
 topologies, resolving the hexagonal \(p=1\) ill-conditioning that prevented
 direct \([\mathbb{P}_1]^2\) solves on 6-edge cells (where
@@ -2071,17 +2070,16 @@ as a fallback for quad cells.
 
 The forward-only diagnostic
 (Section~\ref{sec:practical-roundtrip}) cleanly separates the two
-ingredients of a round-trip remap: at \(p=1\) the patch-recovery
-synthesis adds no detectable error in the gradient subspace (the
-analytical and patch paths agree to \(>4\) significant digits at every
-resolution), and at \(p=2\) it converges at the predicted
-\(O(h^{p+1})\) rate with consecutive rates close to \(2.0\), confirming
-that the production-style single-flux pipeline is sound.  The
-catastrophic round-trip degradation observed at \(p=2\) for
-non-Piola-RT backward reconstructions is therefore not a defect of the
-patch-recovery synthesis but of the backward \([\mathbb{P}_p]^2\)
-reconstruction itself; combining patch recovery with the
-Piola-consistent RT backward solve closes that gap structurally.
+ingredients of a round-trip remap.  At \(p=1\), patch recovery adds no
+detectable error in the gradient subspace: the analytical and patch paths agree
+to more than four significant digits at every resolution.  At \(p=2\), the
+spherical production-style pipeline improves the error constants, but the
+observed cell-divergence metric is limited to \(O(h)\) by the straight-line
+clipping of non-great-circle RLL boundaries.  The catastrophic round-trip
+degradation previously observed at \(p=2\) for non-Piola-RT backward
+reconstructions is therefore not a defect of the patch-recovery synthesis alone;
+it is primarily a backward reconstruction and geometry issue addressed here by
+VEM/Piola-consistent reconstruction and isolated by the forward-only diagnostic.
 
 The block-coupled multi-degree conforming-projection refactor
 (Section~\ref{sec:coupled-conforming}) is a structural rather than
@@ -2173,22 +2171,16 @@ diagnostic, a unified higher-order split-moment extension that covers
 \(p=1,2,3\) on planar polygons, structured spherical charts, and
 deterministic spherical Voronoi patches, a Piola-consistent RT reconstruction
 for quad cells that eliminates conditioning failures at \(p\ge2\), a VEM
-H(div) projection with optional patch-based moment recovery that provides
-topology-independent high-order transfer on arbitrary polygonal meshes
-(triangles, quads, pentagons, hexagons, irregular n-gons), and a
-Hodge-weighted spherical lift of that same VEM path with verified
-\(O(h^{p+1})\) gradient-subspace convergence at \(p=1\) on cubed-sphere
-meshes.  Furthermore, a practical single-flux production pipeline (one
-scalar per source edge \(\to\) patch-based moment recovery \(\to\) VEM
-projection) is verified to retain the gradient-subspace asymptotic rates
-without any high-order seed data, with a forward-only diagnostic that
-isolates source-side reconstruction quality from backward-leg
-amplification.  The remaining gap to a full polygonal compatible finite
-element framework is therefore no longer the absence of conservative
-high-order evidence; it is the absence of a single globally conforming
-cell-interior target space, the rotational-subspace upgrade for the
-spherical VEM lift, and broader verification on mixed-topology and
-production-scale spherical meshes.
+H(div) projection that is topology-independent when its degrees of freedom are
+available, and a Hodge-weighted spherical lift of that same VEM path with
+verified \(p=1\) gradient-subspace convergence on cubed-sphere meshes.  The
+practical single-flux pipeline is promising but not uniform: it retains the
+expected behavior in the tested \(p=1\) cases, improves structured \(p=2\)
+transfers, and still loses rate on small irregular Voronoi \(p=2\) tests.  The
+remaining gap to a full polygonal compatible finite element framework is
+therefore the absence of a single globally conforming cell-interior target
+space, the rotational-subspace upgrade for the spherical VEM lift, and broader
+verification on mixed-topology and production-scale spherical meshes.
 
 \subsection*{Future Research Directions}
 Building on the verified serial planar and spherical framework, the following
@@ -2313,8 +2305,12 @@ should remain the primary acceptance test for these generalized topologies.
 The current spherical backend assumes convex great-circle cells within the
 source-cell gnomonic hemisphere.  The global target-edge conforming projection
 does not yet construct a single globally conforming cell-interior vector field.
-The candidate search is deterministic all-pairs; production use requires spatial
-acceleration.  MPI, distributed ownership, and parallel I/O are out of scope.
+The Hodge-weighted spherical VEM path is verified for the \(p=1\) gradient
+subspace, but its rotational subspace is still limited by the centroid-Hodge
+approximation at \(p\ge2\).  Patch recovery from single-flux data is not a
+uniform high-order substitute for exact VEM degrees of freedom on irregular
+Voronoi patches.  Production use still requires broader mixed-topology
+spherical verification, MPI/distributed ownership, and parallel I/O.
 
 \appendix
 
